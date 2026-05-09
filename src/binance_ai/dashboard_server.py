@@ -1729,6 +1729,28 @@ INDEX_HTML = """<!doctype html>
       if (options.renderChart !== false) scheduleChartRender(payload, { showLoading: options.showChartLoading === true });
     }
 
+    function preserveChartPayload(payload, previousPayload, chartInterval, cachedBars) {
+      const previous = previousPayload || {};
+      const bars = cachedBars?.length
+        ? cachedBars
+        : payload.live_chart_bars?.length
+          ? payload.live_chart_bars
+          : previous.live_chart_bars || [];
+      return {
+        ...previous,
+        ...payload,
+        live_chart_interval: chartInterval || payload.live_chart_interval || previous.live_chart_interval,
+        live_chart_interval_label: payload.live_chart_interval_label || previous.live_chart_interval_label,
+        live_chart_source: bars.length ? (previous.live_chart_source || payload.live_chart_source) : payload.live_chart_source,
+        live_chart_cache: previous.live_chart_cache || payload.live_chart_cache,
+        live_chart_bars: bars,
+        live_trade_markers: payload.live_trade_markers?.length ? payload.live_trade_markers : previous.live_trade_markers || [],
+        order_markers: payload.order_markers?.length ? payload.order_markers : previous.order_markers || [],
+        position_activation_markers: payload.position_activation_markers?.length ? payload.position_activation_markers : previous.position_activation_markers || [],
+        live_ai_veto_markers: payload.live_ai_veto_markers?.length ? payload.live_ai_veto_markers : previous.live_ai_veto_markers || [],
+      };
+    }
+
     function scheduleChartRender(payload, options = {}) {
       if (!payload) return;
       const renderSeq = ++chartRenderSeq;
@@ -2224,15 +2246,15 @@ INDEX_HTML = """<!doctype html>
       const requestSeq = ++dashboardRequestSeq;
       const chartInterval = selectedChartInterval;
       const cachedBars = chartBarsCache[chartInterval] || [];
+      const previousPayload = lastPayloadSnapshot;
       if (!cachedBars.length) setChartLoading(true, `正在读取 ${chartInterval} K 线`);
       try {
         const payload = await loadData(chartInterval, requestSeq, false);
         if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
-        updateDom(payload, { renderChart: false });
+        const hydratedPayload = preserveChartPayload(payload, previousPayload, chartInterval, cachedBars);
+        updateDom(hydratedPayload, { renderChart: false });
         if (cachedBars.length) {
-          const cachedPayload = { ...payload, live_chart_interval: chartInterval, live_chart_bars: cachedBars };
-          lastPayloadSnapshot = cachedPayload;
-          scheduleChartRender(cachedPayload, { showLoading: false });
+          scheduleChartRender(hydratedPayload, { showLoading: false });
         }
         try {
           const chartPayload = await loadChartData(chartInterval, requestSeq);
@@ -2263,11 +2285,11 @@ INDEX_HTML = """<!doctype html>
         selectedChartInterval = els.chartIntervalSelect.value || "1m";
         window.localStorage.setItem("boti.chartInterval", selectedChartInterval);
         if (chartBarsCache[selectedChartInterval]?.length && lastPayloadSnapshot) {
-          redrawCharts({
+          scheduleChartRender({
             ...lastPayloadSnapshot,
             live_chart_interval: selectedChartInterval,
             live_chart_bars: chartBarsCache[selectedChartInterval],
-          });
+          }, { showLoading: false });
         }
         tick();
       });

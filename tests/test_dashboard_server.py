@@ -50,6 +50,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("include_chart", INDEX_HTML)
         self.assertIn("/api/dashboard/chart", INDEX_HTML)
         self.assertIn("scheduleChartRender", INDEX_HTML)
+        self.assertIn("preserveChartPayload", INDEX_HTML)
+        self.assertIn("previous.live_trade_markers", INDEX_HTML)
         self.assertIn("data-drawer=\"evidence\"", INDEX_HTML)
         self.assertIn("data-drawer=\"decision\"", INDEX_HTML)
         self.assertNotIn("bottom-insight-grid", INDEX_HTML)
