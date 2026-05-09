@@ -76,6 +76,25 @@ class SellDecisionDiagnosticTests(unittest.TestCase):
         self.assertTrue(diagnostic.eligible_to_sell)
         self.assertEqual(diagnostic.exit_reason, "stop_loss")
         self.assertAlmostEqual(diagnostic.recommended_sell_quantity, 10.0)
+        self.assertIn("退出比例 100%", diagnostic.blocker_details)
+
+    def test_trailing_stop_recommends_partial_exit(self) -> None:
+        risk = RiskEngine(_settings(), _Client())
+        candles = [Candle(i, 100, 101, 99, 100, 1, i + 1) for i in range(60)]
+        diagnostic = risk.inspect_sell_decision(
+            symbol="XRPJPY",
+            price=99.0,
+            position=PositionSnapshot(quantity=10.0, average_entry_price=100.0, entry_candle_close_time=10),
+            candles=candles,
+            current_timestamp_ms=70,
+            signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "hold"),
+            exit_reason="trailing_stop",
+        )
+
+        self.assertTrue(diagnostic.eligible_to_sell)
+        self.assertEqual(diagnostic.exit_reason, "trailing_stop")
+        self.assertAlmostEqual(diagnostic.recommended_sell_quantity, 5.0)
+        self.assertIn("退出比例 50%", diagnostic.blocker_details)
 
     def test_strategy_sell_marks_sell_eligible(self) -> None:
         risk = RiskEngine(_settings(), _Client())
@@ -92,6 +111,21 @@ class SellDecisionDiagnosticTests(unittest.TestCase):
 
         self.assertTrue(diagnostic.eligible_to_sell)
         self.assertEqual(diagnostic.blocker, "策略 SELL 触发")
+        self.assertAlmostEqual(diagnostic.recommended_sell_quantity, 5.0)
+
+    def test_build_sell_order_honors_exit_fraction(self) -> None:
+        risk = RiskEngine(_settings(), _Client())
+        decision = risk.build_sell_order(
+            "XRPJPY",
+            price=100.0,
+            base_asset_balance=10.0,
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            sell_fraction=0.5,
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertIsNotNone(decision.order)
+        self.assertAlmostEqual(decision.order.quantity, 5.0)
 
 
 if __name__ == "__main__":

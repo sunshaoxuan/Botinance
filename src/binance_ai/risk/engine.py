@@ -142,10 +142,14 @@ class RiskEngine:
         price: float,
         base_asset_balance: float,
         filters: SymbolFilters,
+        sell_fraction: float | None = None,
     ) -> RiskDecision:
-        quantity = self.client.quantize_quantity(base_asset_balance, filters.step_size)
+        fraction = 1.0 if sell_fraction is None else self._normalized_fraction(sell_fraction)
+        quantity = self.client.quantize_quantity(base_asset_balance * fraction, filters.step_size)
         final_notional = quantity * price
         min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        if fraction <= 0:
+            return RiskDecision(False, "sell_fraction_zero")
         if quantity < filters.min_qty or quantity <= 0:
             return RiskDecision(False, f"position_too_small_to_sell:{quantity}")
         if final_notional < min_notional:
@@ -155,6 +159,23 @@ class RiskEngine:
             reason="sell_order_approved",
             order=OrderRequest(symbol=symbol, side="SELL", order_type="MARKET", quantity=quantity),
         )
+
+    def exit_sell_fraction(self, exit_reason: str | None, *, strategy_sell: bool = False) -> float:
+        if exit_reason == "stop_loss":
+            return self._normalized_fraction(self.settings.exit_stop_loss_fraction)
+        if exit_reason == "trailing_stop":
+            return self._normalized_fraction(self.settings.exit_trailing_stop_fraction)
+        if exit_reason == "take_profit":
+            return self._normalized_fraction(self.settings.exit_take_profit_fraction)
+        if exit_reason == "max_hold_exit":
+            return self._normalized_fraction(self.settings.exit_max_hold_fraction)
+        if strategy_sell:
+            return self._normalized_fraction(self.settings.strategy_sell_fraction)
+        return 1.0
+
+    @staticmethod
+    def _normalized_fraction(value: float) -> float:
+        return min(1.0, max(0.0, float(value)))
 
     def inspect_sell_decision(
         self,
@@ -206,15 +227,23 @@ class RiskEngine:
         )
         activation_trigger = activation_decision.trigger if activation_decision else ""
         activation_qty = activation_decision.quantity if activation_decision and activation_decision.action == "SELL" else 0.0
-        eligible_to_sell = bool(exit_reason or signal.action.value == "SELL" or activation_qty > 0)
-        recommended_sell_quantity = position.quantity if exit_reason or signal.action.value == "SELL" else activation_qty
+        strategy_sell = signal.action.value == "SELL"
+        eligible_to_sell = bool(exit_reason or strategy_sell or activation_qty > 0)
+        if exit_reason or strategy_sell:
+            sell_fraction = self.exit_sell_fraction(exit_reason, strategy_sell=strategy_sell)
+            recommended_sell_quantity = position.quantity * sell_fraction
+        else:
+            sell_fraction = 0.0
+            recommended_sell_quantity = activation_qty
         blocker_details = []
         if exit_reason:
             blocker = f"规则退出触发：{exit_reason}"
             blocker_details.append(blocker)
-        elif signal.action.value == "SELL":
+            blocker_details.append(f"退出比例 {sell_fraction:.0%}")
+        elif strategy_sell:
             blocker = "策略 SELL 触发"
             blocker_details.append(signal.reason)
+            blocker_details.append(f"退出比例 {sell_fraction:.0%}")
         elif activation_qty > 0:
             blocker = f"仓位激活触发：{activation_trigger}"
             blocker_details.append(activation_decision.reason if activation_decision else blocker)

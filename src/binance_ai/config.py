@@ -92,6 +92,11 @@ class Settings:
     order_urgent_cross_pct: float = 0.001
     order_max_open_per_symbol: int = 1
     live_order_execution_enabled: bool = False
+    exit_stop_loss_fraction: float = 1.0
+    exit_trailing_stop_fraction: float = 0.5
+    exit_take_profit_fraction: float = 0.5
+    exit_max_hold_fraction: float = 0.25
+    strategy_sell_fraction: float = 0.5
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -171,4 +176,9 @@ def load_settings() -> Settings:
         order_urgent_cross_pct=float(os.getenv("ORDER_URGENT_CROSS_PCT", "0.001")),
         order_max_open_per_symbol=int(os.getenv("ORDER_MAX_OPEN_PER_SYMBOL", "1")),
         live_order_execution_enabled=_parse_bool(os.getenv("LIVE_ORDER_EXECUTION_ENABLED"), False),
+        exit_stop_loss_fraction=float(os.getenv("EXIT_STOP_LOSS_FRACTION", "1.0")),
+        exit_trailing_stop_fraction=float(os.getenv("EXIT_TRAILING_STOP_FRACTION", "0.5")),
+        exit_take_profit_fraction=float(os.getenv("EXIT_TAKE_PROFIT_FRACTION", "0.5")),
+        exit_max_hold_fraction=float(os.getenv("EXIT_MAX_HOLD_FRACTION", "0.25")),
+        strategy_sell_fraction=float(os.getenv("STRATEGY_SELL_FRACTION", "0.5")),
     )

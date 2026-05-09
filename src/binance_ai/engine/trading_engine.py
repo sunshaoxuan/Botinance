@@ -306,7 +306,13 @@ class TradingEngine:
                         "trigger": open_orders[0].trigger,
                     }
             elif exit_reason is not None and has_position:
-                decision = self.risk.build_sell_order(symbol, price, base_balance, filters)
+                decision = self.risk.build_sell_order(
+                    symbol,
+                    price,
+                    base_balance,
+                    filters,
+                    sell_fraction=self.risk.exit_sell_fraction(exit_reason),
+                )
                 if decision.order is not None:
                     order = self._as_limit_order(
                         decision.order,
@@ -363,7 +369,13 @@ class TradingEngine:
                     else:
                         execution_result = {"status": "BLOCKED", "reason": decision.reason}
             elif signal.action == SignalAction.SELL and has_position:
-                decision = self.risk.build_sell_order(symbol, price, base_balance, filters)
+                decision = self.risk.build_sell_order(
+                    symbol,
+                    price,
+                    base_balance,
+                    filters,
+                    sell_fraction=self.risk.exit_sell_fraction(None, strategy_sell=True),
+                )
                 if decision.order is not None:
                     order = self._as_limit_order(
                         decision.order,
