@@ -1041,6 +1041,7 @@ INDEX_HTML = """<!doctype html>
     let selectedChartInterval = window.localStorage.getItem("boti.chartInterval") || "1m";
     let fillPageSize = 50;
     let fillPage = 0;
+    let dashboardRequestSeq = 0;
     const chartBarsCache = {};
 
     const els = {};
@@ -1255,7 +1256,11 @@ INDEX_HTML = """<!doctype html>
           <option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>
         `).join("");
       }
-      selectedChartInterval = payload.live_chart_interval || selectedChartInterval;
+      const responseInterval = payload.live_chart_interval || selectedChartInterval;
+      const requestInterval = payload.requested_chart_interval || responseInterval;
+      if (requestInterval === selectedChartInterval) {
+        selectedChartInterval = responseInterval;
+      }
       window.localStorage.setItem("boti.chartInterval", selectedChartInterval);
       els.chartIntervalSelect.value = selectedChartInterval;
     }
@@ -2129,19 +2134,26 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
-    async function loadData() {
+    async function loadData(chartInterval, requestSeq) {
       const params = new URLSearchParams();
-      if (selectedChartInterval) params.set("chart_interval", selectedChartInterval);
+      if (chartInterval) params.set("chart_interval", chartInterval);
       const response = await fetch(`/api/dashboard?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.json();
+      const payload = await response.json();
+      payload.requested_chart_interval = chartInterval;
+      payload.request_seq = requestSeq;
+      return payload;
     }
 
     async function tick() {
+      const requestSeq = ++dashboardRequestSeq;
+      const chartInterval = selectedChartInterval;
       try {
-        const payload = await loadData();
+        const payload = await loadData(chartInterval, requestSeq);
+        if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
         updateDom(payload);
       } catch (err) {
+        if (requestSeq !== dashboardRequestSeq) return;
         console.error(err);
         els.topMode.textContent = "数据读取失败";
       }
