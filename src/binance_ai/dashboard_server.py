@@ -1383,6 +1383,7 @@ INDEX_HTML = """<!doctype html>
           vetoes: c.vetoes,
           riskLines: activeRiskLines(c).numeric,
           quoteAsset: c.quoteAsset,
+          maxVisibleBars: 80,
           hover: chartHover
         });
       }
@@ -1424,7 +1425,8 @@ INDEX_HTML = """<!doctype html>
       const setup = setupCanvas(canvas);
       if (!setup) return;
       const { ctx, width, height } = setup;
-      const data = (bars || []).filter((b) => Number.isFinite(Number(b.close))).slice(-160);
+      const maxVisibleBars = Number(options.maxVisibleBars || 80);
+      const data = (bars || []).filter((b) => Number.isFinite(Number(b.close))).slice(-maxVisibleBars);
       if (!data.length) {
         drawEmptyChart(canvas, "等待主周期 K 线数据");
         return;
@@ -1450,7 +1452,7 @@ INDEX_HTML = """<!doctype html>
       const y = (value) => pad.top + (max - value) / (max - min) * priceH;
       const x = (idx) => pad.left + (idx + 0.5) / data.length * plotW;
       const barSlot = plotW / data.length;
-      const candleW = Math.max(3, Math.min(13, barSlot * 0.58));
+      const candleW = Math.max(5, Math.min(15, barSlot * 0.72));
       const maxVol = Math.max(...data.map((b) => asNumber(b.sample_count || b.volume || 1, 1)), 1);
 
       ctx.fillStyle = "#ffffff";
@@ -2116,7 +2118,7 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         else []
     )
     refresh_bars = (
-        _build_live_main_interval_bars(history, symbol=chart_symbol, interval="1m", limit=180)
+        _build_live_main_interval_bars(history, symbol=chart_symbol, interval="1m", limit=96)
         if chart_symbol
         else []
     )
