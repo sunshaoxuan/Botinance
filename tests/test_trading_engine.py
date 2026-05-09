@@ -60,8 +60,11 @@ class _MarketAnalystStub:
         self.allow_entry = allow_entry
         self.position_multiplier = position_multiplier
         self.veto_reason = veto_reason
+        self.assess_calls = 0
+        self.analyze_calls = 0
 
     def assess_entry_risk(self, quote_asset: str, kline_interval: str, market_snapshots, news_evidence):
+        self.assess_calls += 1
         return {
             snapshot["symbol"]: AiRiskAssessment(
                 symbol=snapshot["symbol"],
@@ -75,6 +78,7 @@ class _MarketAnalystStub:
         }
 
     def analyze(self, quote_asset: str, kline_interval: str, market_snapshots, news_evidence):
+        self.analyze_calls += 1
         return LlmAnalysis(
             status="READY",
             provider="openai_compat",
@@ -142,6 +146,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
                 state_path=runtime_dir / "decision_state.json",
                 price_move_threshold_pct=settings.decision_price_move_threshold_pct,
             )
+            analyst = _MarketAnalystStub(allow_entry=True, position_multiplier=1.0)
             engine = TradingEngine(
                 settings=settings,
                 client=client,
@@ -151,7 +156,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
                 executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
                 scheduler=scheduler,
                 paper_portfolio=portfolio,
-                market_analyst=None,
+                market_analyst=analyst,
                 news_service=None,
             )
 
@@ -168,6 +173,9 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(len(second_report.sell_diagnostics), 1)
         self.assertEqual(len(second_report.decision_ledger), 1)
         self.assertEqual(second_report.decision_ledger[0].final_action, "REFRESH_ONLY")
+        self.assertEqual(analyst.assess_calls, 1)
+        self.assertEqual(analyst.analyze_calls, 1)
+        self.assertEqual(second_report.llm_analysis.status, "SKIPPED_REFRESH_ONLY")
 
     def test_ai_veto_blocks_buy_order(self) -> None:
         settings = Settings(

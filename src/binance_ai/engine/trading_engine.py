@@ -10,7 +10,7 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
@@ -171,18 +171,19 @@ class TradingEngine:
             )
 
         llm_analysis = None
+        should_run_llm = any(item.should_run_decision for item in scheduling_diagnostics)
         ai_risk_map = {
             str(snapshot["symbol"]).upper(): AiRiskAssessment(
                 symbol=str(snapshot["symbol"]).upper(),
-                status="DISABLED",
+                status="PENDING_DECISION" if should_run_llm else "SKIPPED_REFRESH_ONLY",
                 allow_entry=True,
                 risk_score=0.0,
                 position_multiplier=1.0,
-                veto_reason="",
+                veto_reason="" if should_run_llm else "刷新轮不调用大模型",
             )
             for snapshot in market_snapshots
         }
-        if self.market_analyst is not None:
+        if self.market_analyst is not None and should_run_llm:
             ai_risk_map = self.market_analyst.assess_entry_risk(
                 quote_asset=self.settings.quote_asset,
                 kline_interval=self.settings.kline_interval,
@@ -194,6 +195,17 @@ class TradingEngine:
                 kline_interval=self.settings.kline_interval,
                 market_snapshots=market_snapshots,
                 news_evidence=news_evidence,
+            )
+        elif self.market_analyst is not None:
+            llm_analysis = LlmAnalysis(
+                status="SKIPPED_REFRESH_ONLY",
+                provider="none",
+                model="",
+                regime_cn="刷新轮",
+                summary_cn="当前无新K线或关键阈值事件，本轮不调用大模型。",
+                action_bias_cn="观望",
+                confidence=0.0,
+                risk_note_cn="刷新轮仅更新行情和账本，避免模型端点阻塞实时刷新。",
             )
 
         for context in symbol_contexts:
