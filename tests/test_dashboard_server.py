@@ -10,6 +10,7 @@ from binance_ai.dashboard_server import (
     _aggregate_chart_bars,
     _build_dashboard_chart_payload,
     _build_live_main_interval_bars,
+    _extract_chart_trade_markers_from_file,
     _extract_recent_fills_from_file,
     _extract_position_activation_markers,
     _extract_live_ai_veto_markers,
@@ -292,13 +293,18 @@ class DashboardServerTests(unittest.TestCase):
             _write_text(runtime_dir / "cycle_reports.jsonl", "\n".join(lines))
 
             payload = build_dashboard_payload(runtime_dir, chart_interval="5m", include_chart=False)
+            chart_payload = _build_dashboard_chart_payload(runtime_dir, chart_interval="1d")
             fills = _extract_recent_fills_from_file(runtime_dir / "cycle_reports.jsonl")
+            markers = _extract_chart_trade_markers_from_file(runtime_dir / "cycle_reports.jsonl")
 
         self.assertEqual(payload["history_count"], 300)
         self.assertEqual(payload["history"], [])
         self.assertEqual(len(payload["recent_fills"]), 1)
         self.assertEqual(payload["recent_fills"][0]["status"], "PAPER_FILLED")
         self.assertEqual(len(fills), 1)
+        self.assertEqual(len(markers), 1)
+        self.assertEqual(len(chart_payload["live_trade_markers"]), 1)
+        self.assertEqual(chart_payload["live_trade_markers"][0]["trigger"], "")
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

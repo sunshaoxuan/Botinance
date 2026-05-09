@@ -2528,6 +2528,29 @@ def _extract_position_activation_markers(history: List[Dict[str, Any]], limit: i
     return markers[-limit:]
 
 
+def _extract_trade_marker_cycles_from_file(path: Path, scan_lines: int = 8000) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    cycles: List[Dict[str, Any]] = []
+    for line in _read_recent_lines(path, scan_lines):
+        if '"PAPER_FILLED"' not in line and '"FILLED"' not in line:
+            continue
+        try:
+            cycle = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        cycles.append(cycle)
+    return cycles
+
+
+def _extract_chart_trade_markers_from_file(path: Path, limit: int = 200) -> List[Dict[str, Any]]:
+    return _extract_live_trade_markers(_extract_trade_marker_cycles_from_file(path), limit=limit)
+
+
+def _extract_position_activation_markers_from_file(path: Path, limit: int = 200) -> List[Dict[str, Any]]:
+    return _extract_position_activation_markers(_extract_trade_marker_cycles_from_file(path), limit=limit)
+
+
 def _extract_live_ai_veto_markers(history: List[Dict[str, Any]], limit: int = 200) -> List[Dict[str, Any]]:
     markers: List[Dict[str, Any]] = []
     for cycle in history:
@@ -2957,7 +2980,10 @@ def _build_dashboard_chart_payload(
     backtest_manifest: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     latest_report = latest_report if latest_report is not None else _load_json(runtime_dir / "latest_report.json", {})
-    history = history if history is not None else _read_history(runtime_dir / "cycle_reports.jsonl")
+    history_path = runtime_dir / "cycle_reports.jsonl"
+    history = history if history is not None else _read_history(history_path)
+    trade_markers = _extract_chart_trade_markers_from_file(history_path)
+    activation_markers = _extract_position_activation_markers_from_file(history_path)
     chart_symbol = _dashboard_chart_symbol(latest_report)
     selected_chart_interval = _normalize_chart_interval(chart_interval)
     main_interval = _detect_main_interval(latest_report, backtest_manifest or {})
@@ -2981,9 +3007,9 @@ def _build_dashboard_chart_payload(
         "live_chart_source": chart_meta.get("source", "runtime_sample"),
         "live_chart_cache": chart_meta,
         "live_chart_bars": chart_bars,
-        "live_trade_markers": _extract_live_trade_markers(history),
+        "live_trade_markers": trade_markers or _extract_live_trade_markers(history),
         "order_markers": _extract_order_markers(history),
-        "position_activation_markers": _extract_position_activation_markers(history),
+        "position_activation_markers": activation_markers or _extract_position_activation_markers(history),
         "live_ai_veto_markers": _extract_live_ai_veto_markers(history),
     }
 
