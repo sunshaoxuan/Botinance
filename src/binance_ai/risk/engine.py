@@ -148,10 +148,18 @@ class RiskEngine:
         quantity = self.client.quantize_quantity(base_asset_balance * fraction, filters.step_size)
         final_notional = quantity * price
         min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        full_quantity = self.client.quantize_quantity(base_asset_balance, filters.step_size)
+        full_notional = full_quantity * price
         if fraction <= 0:
             return RiskDecision(False, "sell_fraction_zero")
         if quantity < filters.min_qty or quantity <= 0:
             return RiskDecision(False, f"position_too_small_to_sell:{quantity}")
+        if final_notional < min_notional:
+            if full_quantity >= filters.min_qty and full_notional >= min_notional:
+                quantity = full_quantity
+                final_notional = full_notional
+            else:
+                return RiskDecision(False, f"sell_notional_below_min_notional:{final_notional:.2f}")
         if final_notional < min_notional:
             return RiskDecision(False, f"sell_notional_below_min_notional:{final_notional:.2f}")
         return RiskDecision(

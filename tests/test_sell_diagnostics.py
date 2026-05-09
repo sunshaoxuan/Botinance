@@ -11,6 +11,13 @@ class _Client:
         return quantity
 
 
+class _SteppedClient:
+    def quantize_quantity(self, quantity: float, step_size: float) -> float:
+        if step_size <= 0:
+            return quantity
+        return int(quantity / step_size) * step_size
+
+
 def _settings() -> Settings:
     return Settings(
         api_key="",
@@ -126,6 +133,33 @@ class SellDecisionDiagnosticTests(unittest.TestCase):
         self.assertTrue(decision.approved)
         self.assertIsNotNone(decision.order)
         self.assertAlmostEqual(decision.order.quantity, 5.0)
+
+    def test_build_sell_order_sells_remaining_position_when_partial_falls_below_min_notional(self) -> None:
+        risk = RiskEngine(_settings(), _SteppedClient())
+        decision = risk.build_sell_order(
+            "XRPJPY",
+            price=223.0,
+            base_asset_balance=0.90789259,
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+            sell_fraction=0.5,
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertIsNotNone(decision.order)
+        self.assertAlmostEqual(decision.order.quantity, 0.9)
+
+    def test_build_sell_order_still_blocks_dust_position_below_min_notional(self) -> None:
+        risk = RiskEngine(_settings(), _SteppedClient())
+        decision = risk.build_sell_order(
+            "XRPJPY",
+            price=223.0,
+            base_asset_balance=0.3,
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+            sell_fraction=0.5,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertTrue(decision.reason.startswith("sell_notional_below_min_notional"))
 
 
 if __name__ == "__main__":
