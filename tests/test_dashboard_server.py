@@ -17,6 +17,7 @@ from binance_ai.dashboard_server import (
     _extract_live_ai_veto_markers,
     _extract_live_trade_markers,
     _merge_chart_bars,
+    _sample_rows,
     build_dashboard_payload,
 )
 
@@ -57,6 +58,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
         self.assertIn("chartRenderSeq", INDEX_HTML)
         self.assertIn("tickInFlight", INDEX_HTML)
+        self.assertIn("setChartLoading(false", INDEX_HTML)
         self.assertIn("requestSeq !== dashboardRequestSeq", INDEX_HTML)
         self.assertIn("requestInterval === selectedChartInterval", INDEX_HTML)
         self.assertIn("include_chart", INDEX_HTML)
@@ -477,6 +479,15 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("runtime_sample", merged[0]["source"])
         merged_again = _merge_chart_bars(merged, runtime, limit=10)
         self.assertEqual(merged_again[0]["source"].count("runtime_sample"), 1)
+
+    def test_sample_rows_keeps_first_last_and_limits_payload(self) -> None:
+        rows = [{"i": index} for index in range(1000)]
+
+        sampled = _sample_rows(rows, 100)
+
+        self.assertEqual(len(sampled), 100)
+        self.assertEqual(sampled[0]["i"], 0)
+        self.assertEqual(sampled[-1]["i"], 999)
 
     def test_chart_cache_tail_refresh_only_when_latest_report_passes_cached_close(self) -> None:
         fresh_enough = {

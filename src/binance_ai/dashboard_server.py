@@ -2347,6 +2347,11 @@ INDEX_HTML = """<!doctype html>
       const cachedBars = chartBarsCache[chartInterval] || [];
       const previousPayload = lastPayloadSnapshot;
       if (!cachedBars.length) setChartLoading(true, `正在读取 ${chartInterval} K 线`);
+      window.setTimeout(() => {
+        if (requestSeq === dashboardRequestSeq && els.chartLoading?.classList.contains("active")) {
+          setChartLoading(false);
+        }
+      }, 8000);
       try {
         const payload = await loadData(chartInterval, requestSeq, false);
         if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
@@ -2363,13 +2368,13 @@ INDEX_HTML = """<!doctype html>
         } catch (chartErr) {
           if (requestSeq !== dashboardRequestSeq) return;
           console.error(chartErr);
-          setChartLoading(Boolean(!cachedBars.length), "图表读取失败，文字数据已更新");
+          setChartLoading(false, "图表读取失败，文字数据已更新");
         }
       } catch (err) {
         if (requestSeq !== dashboardRequestSeq) return;
         console.error(err);
         els.topMode.textContent = "数据读取失败";
-        setChartLoading(Boolean(!cachedBars.length), "图表读取失败，其他数据保留");
+        setChartLoading(false, "图表读取失败，其他数据保留");
       } finally {
         tickInFlight = false;
       }
@@ -2945,7 +2950,7 @@ def _extract_live_ai_veto_markers(history: List[Dict[str, Any]], limit: int = 20
     return markers[-limit:]
 
 
-def _extract_decision_ledger(history: List[Dict[str, Any]], latest_report: Dict[str, Any], limit: int = 200) -> List[Dict[str, Any]]:
+def _extract_decision_ledger(history: List[Dict[str, Any]], latest_report: Dict[str, Any], limit: int = 50) -> List[Dict[str, Any]]:
     entries: List[Dict[str, Any]] = []
     for cycle in history:
         ledger = cycle.get("decision_ledger", [])
@@ -3368,7 +3373,7 @@ def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
             "backtest_source": directory.name,
             "backtest_summary": summary,
             "backtest_segments": _load_json(directory / "segments.json", []),
-            "backtest_equity_curve": _load_csv_rows(directory / "equity_curve.csv"),
+            "backtest_equity_curve": _sample_rows(_load_csv_rows(directory / "equity_curve.csv"), 160),
             "backtest_trades": _load_csv_rows(directory / "trades.csv"),
             "backtest_manifest": _load_json(directory / "run_manifest.json", {}),
             "backtest_missing_reason": None,
@@ -3389,6 +3394,25 @@ def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
         "backtest_manifest": {},
         "backtest_missing_reason": missing_reason,
     }
+
+
+def _sample_rows(rows: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    if limit <= 0 or len(rows) <= limit:
+        return rows
+    if limit == 1:
+        return [rows[-1]]
+    step = (len(rows) - 1) / (limit - 1)
+    sampled: List[Dict[str, Any]] = []
+    seen: set[int] = set()
+    for index in range(limit):
+        source_index = round(index * step)
+        if source_index in seen:
+            continue
+        sampled.append(rows[source_index])
+        seen.add(source_index)
+    if sampled[-1] is not rows[-1]:
+        sampled[-1] = rows[-1]
+    return sampled
 
 
 def _dashboard_chart_symbol(latest_report: Dict[str, Any]) -> str:
