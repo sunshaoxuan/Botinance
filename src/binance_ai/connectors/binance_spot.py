@@ -69,6 +69,29 @@ class BinanceSpotClient:
             "/api/v3/klines",
             params={"symbol": symbol, "interval": interval, "limit": limit},
         )
+        return self._parse_klines(rows)
+
+    def get_klines_range(
+        self,
+        symbol: str,
+        interval: str,
+        start_time_ms: int,
+        end_time_ms: int | None = None,
+        limit: int = 1000,
+    ) -> List[Candle]:
+        params: Dict[str, Any] = {
+            "symbol": symbol,
+            "interval": interval,
+            "startTime": start_time_ms,
+            "limit": limit,
+        }
+        if end_time_ms is not None:
+            params["endTime"] = end_time_ms
+        rows = self._public_get("/api/v3/klines", params=params)
+        return self._parse_klines(rows)
+
+    @staticmethod
+    def _parse_klines(rows: List[List[Any]]) -> List[Candle]:
         return [
             Candle(
                 open_time=int(row[0]),

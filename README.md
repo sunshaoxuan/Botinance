@@ -74,6 +74,47 @@ The runtime loads:
 PYTHONPATH=src python3 -m binance_ai.main --loop --sleep-seconds 300
 ```
 
+## Offline backtest
+
+Single-run backtest:
+
+```bash
+PYTHONPATH=src python3 -m binance_ai.backtest.main \
+  --symbol XRPJPY \
+  --from 2026-03-01 \
+  --to 2026-05-01 \
+  --output-dir runtime_backtest
+```
+
+Walk-forward backtest:
+
+```bash
+PYTHONPATH=src python3 -m binance_ai.backtest.main \
+  --symbol XRPJPY \
+  --from 2025-12-01 \
+  --to 2026-05-01 \
+  --output-dir runtime_backtest_walk \
+  --walk-forward \
+  --train-days 90 \
+  --test-days 30 \
+  --step-days 30
+```
+
+Backtest output files:
+
+- `summary.json`
+- `trades.csv`
+- `equity_curve.csv`
+- `segments.json`
+- `run_manifest.json`
+
+Backtest defaults:
+
+- single symbol only
+- main interval close price as fill price
+- no fee or slippage model
+- no news or LLM gating in the official evaluation path
+
 ## Direct scripts
 
 Continuous paper monitoring:
