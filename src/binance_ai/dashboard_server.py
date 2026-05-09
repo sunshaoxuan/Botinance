@@ -1073,7 +1073,11 @@ INDEX_HTML = """<!doctype html>
       const realAvg = asNumber(c.activationState.real_average_entry_price, 0);
       const highest = asNumber(pos.highest_price || c.positionDiag.highest_price, 0);
       const holdBars = asNumber(pos.hold_bars || pos.bars_held || c.positionDiag.bars_held, 0);
-      const unrealized = asNumber(pos.unrealized_pnl ?? c.positionDiag.unrealized_pnl ?? c.paper.unrealized_pnl, 0);
+      const botiUnrealized = asNumber(pos.unrealized_pnl ?? c.positionDiag.unrealized_pnl ?? c.paper.unrealized_pnl, 0);
+      const realUnrealized = qty > 0 && realAvg > 0 && c.currentPrice > 0 ? qty * (c.currentPrice - realAvg) : botiUnrealized;
+      const realTotalEquity = realAvg > 0 && qty > 0 && c.currentPrice > 0
+        ? asNumber(c.paper.quote_balance, 0) + qty * c.currentPrice
+        : c.paper.total_equity;
       const realized = asNumber(c.paper.realized_pnl, 0);
       const riskLines = activeRiskLines(c);
       const allowEntry = c.aiRisk.allow_entry;
@@ -1086,13 +1090,13 @@ INDEX_HTML = """<!doctype html>
       els.positionCard.innerHTML = `
         <div class="card-label"><span>当前持仓</span>${qty > 0 ? statusChip("持仓中", "buy") : statusChip("空仓", "wait")}</div>
         <div class="card-value">${qty > 0 ? `${fmtNumber(qty, 6)} XRP` : "0 XRP"}</div>
-        <div class="card-note">模拟参考 ${avg ? fmtCurrency(avg, c.quoteAsset) : "--"}${realAvg ? `，真实成本 ${fmtCurrency(realAvg, c.quoteAsset)}` : ""}，最高价 ${fmtCurrency(highest, c.quoteAsset)}</div>
+        <div class="card-note">真实成本 ${realAvg ? fmtCurrency(realAvg, c.quoteAsset) : "--"}，Boti接管价 ${avg ? fmtCurrency(avg, c.quoteAsset) : "--"}，最高价 ${fmtCurrency(highest, c.quoteAsset)}</div>
       `;
 
       els.pnlCard.innerHTML = `
-        <div class="card-label"><span>模拟起点盈亏</span><span class="${pnlClass(unrealized)}">未实现</span></div>
-        <div class="card-value ${pnlClass(unrealized)}">${fmtCurrency(unrealized, c.quoteAsset)}</div>
-        <div class="card-note">已实现 ${fmtCurrency(realized, c.quoteAsset)}，总权益 ${fmtCurrency(c.paper.total_equity, c.quoteAsset)}</div>
+        <div class="card-label"><span>真实仓位盈亏</span><span class="${pnlClass(realUnrealized)}">未实现</span></div>
+        <div class="card-value ${pnlClass(realUnrealized)}">${fmtCurrency(realUnrealized, c.quoteAsset)}</div>
+        <div class="card-note">Boti接管后 ${fmtCurrency(botiUnrealized, c.quoteAsset)}，模拟已实现 ${fmtCurrency(realized, c.quoteAsset)}，当前市值 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
       `;
 
       els.sellDecisionCard.innerHTML = `
