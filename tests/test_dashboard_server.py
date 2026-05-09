@@ -12,6 +12,7 @@ from binance_ai.dashboard_server import (
     _extract_position_activation_markers,
     _extract_live_ai_veto_markers,
     _extract_live_trade_markers,
+    _merge_chart_bars,
     build_dashboard_payload,
 )
 
@@ -232,7 +233,7 @@ class DashboardServerTests(unittest.TestCase):
                     "interval": "10m",
                     "label": "10分",
                     "source": "aggregate:5m",
-                    "fetched_at": 4_102_444_800.0,
+                    "fetched_at": 1.0,
                     "bars": [
                         {
                             "symbol": "XRPJPY",
@@ -256,7 +257,47 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["live_chart_interval_label"], "10分")
         self.assertEqual(payload["live_chart_source"], "aggregate:5m")
         self.assertTrue(payload["live_chart_cache"]["cache_hit"])
+        self.assertEqual(payload["live_chart_cache"]["cache_policy"], "immutable_history")
         self.assertEqual(payload["live_chart_bars"][0]["close"], 224.0)
+
+    def test_cached_chart_bars_merge_runtime_sample_without_refetching(self) -> None:
+        cached = [
+            {
+                "symbol": "XRPJPY",
+                "open_time": 0,
+                "close_time": 599_999,
+                "open": 220.0,
+                "high": 225.0,
+                "low": 219.0,
+                "close": 224.0,
+                "volume": 10.0,
+                "sample_count": 2,
+                "source": "aggregate:10m",
+            }
+        ]
+        runtime = [
+            {
+                "symbol": "XRPJPY",
+                "open_time": 0,
+                "close_time": 599_999,
+                "open": 223.0,
+                "high": 226.0,
+                "low": 222.0,
+                "close": 225.5,
+                "volume": 0.0,
+                "sample_count": 4,
+                "source": "runtime_sample",
+            }
+        ]
+
+        merged = _merge_chart_bars(cached, runtime, limit=10)
+
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0]["open"], 220.0)
+        self.assertEqual(merged[0]["high"], 226.0)
+        self.assertEqual(merged[0]["low"], 219.0)
+        self.assertEqual(merged[0]["close"], 225.5)
+        self.assertIn("runtime_sample", merged[0]["source"])
 
     def test_aggregate_chart_bars_builds_non_native_10m_candles(self) -> None:
         bars = [

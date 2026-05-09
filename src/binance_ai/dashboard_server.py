@@ -2157,6 +2157,13 @@ INDEX_HTML = """<!doctype html>
       els.chartIntervalSelect.addEventListener("change", () => {
         selectedChartInterval = els.chartIntervalSelect.value || "1m";
         window.localStorage.setItem("boti.chartInterval", selectedChartInterval);
+        if (chartBarsCache[selectedChartInterval]?.length && lastPayloadSnapshot) {
+          redrawCharts({
+            ...lastPayloadSnapshot,
+            live_chart_interval: selectedChartInterval,
+            live_chart_bars: chartBarsCache[selectedChartInterval],
+          });
+        }
         tick();
       });
       els.fillPageSize.addEventListener("change", () => {
@@ -2442,14 +2449,6 @@ def _chart_interval_source(interval: str) -> str:
     return "runtime"
 
 
-def _chart_cache_ttl_seconds(interval: str) -> int:
-    if interval in {"1m", "3m", "5m", "10m"}:
-        return 60
-    if interval in {"30m", "1h", "4h", "8h"}:
-        return 300
-    return 3_600
-
-
 def _chart_cache_path(runtime_dir: Path, symbol: str, interval: str) -> Path:
     safe_symbol = re.sub(r"[^A-Z0-9_-]", "", symbol.upper()) or "UNKNOWN"
     safe_interval = re.sub(r"[^A-Za-z0-9_-]", "", interval) or "1m"
@@ -2543,12 +2542,9 @@ def _fetch_chart_bars_from_binance(
         client.close()
 
 
-def _read_cached_chart_bars(path: Path, ttl_seconds: int) -> Dict[str, Any] | None:
+def _read_cached_chart_bars(path: Path) -> Dict[str, Any] | None:
     payload = _load_json(path, {})
     if not payload:
-        return None
-    fetched_at = _coerce_float(payload.get("fetched_at"))
-    if fetched_at <= 0 or time.time() - fetched_at > ttl_seconds:
         return None
     bars = payload.get("bars")
     if not isinstance(bars, list):
@@ -2561,6 +2557,26 @@ def _write_chart_cache(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _merge_chart_bars(base_bars: List[Dict[str, Any]], overlay_bars: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    merged = {_coerce_int(bar.get("open_time")): dict(bar) for bar in base_bars if _coerce_int(bar.get("open_time")) >= 0}
+    for bar in overlay_bars:
+        open_time = _coerce_int(bar.get("open_time"))
+        if open_time < 0:
+            continue
+        existing = merged.get(open_time)
+        if existing is None:
+            merged[open_time] = dict(bar)
+            continue
+        existing["high"] = max(_coerce_float(existing.get("high")), _coerce_float(bar.get("high")))
+        existing["low"] = min(_coerce_float(existing.get("low")), _coerce_float(bar.get("low")))
+        existing["close"] = _coerce_float(bar.get("close"), _coerce_float(existing.get("close")))
+        existing["close_time"] = max(_coerce_int(existing.get("close_time")), _coerce_int(bar.get("close_time")))
+        existing["volume"] = max(_coerce_float(existing.get("volume")), _coerce_float(bar.get("volume")))
+        existing["sample_count"] = max(_coerce_int(existing.get("sample_count"), 1), _coerce_int(bar.get("sample_count"), 1))
+        existing["source"] = f"{existing.get('source', 'cache')}+runtime_sample"
+    return [merged[key] for key in sorted(merged)][-limit:]
+
+
 def _load_or_fetch_chart_bars(
     *,
     runtime_dir: Path,
@@ -2571,6 +2587,7 @@ def _load_or_fetch_chart_bars(
     limit: int = 160,
     allow_fetch: bool,
 ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    started_at = time.perf_counter()
     interval = _normalize_chart_interval(interval)
     fallback = _build_live_main_interval_bars(
         history,
@@ -2580,14 +2597,20 @@ def _load_or_fetch_chart_bars(
         limit=limit,
     )
     cache_path = _chart_cache_path(runtime_dir, symbol, interval)
-    ttl_seconds = _chart_cache_ttl_seconds(interval)
-    cached = _read_cached_chart_bars(cache_path, ttl_seconds)
+    cached = _read_cached_chart_bars(cache_path)
     if cached:
-        return list(cached.get("bars", []))[-limit:], {
+        bars = _merge_chart_bars(
+            list(cached.get("bars", [])),
+            fallback,
+            limit,
+        )
+        return bars, {
             "source": cached.get("source", "cache"),
             "cache_path": str(cache_path),
             "cache_hit": True,
             "fetched_at": cached.get("fetched_at"),
+            "cache_policy": "immutable_history",
+            "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
         }
 
     if not allow_fetch or not symbol:
@@ -2595,6 +2618,8 @@ def _load_or_fetch_chart_bars(
             "source": "runtime_sample",
             "cache_path": str(cache_path),
             "cache_hit": False,
+            "cache_policy": "no_fetch_without_explicit_interval",
+            "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
             "error": "",
         }
 
@@ -2615,12 +2640,16 @@ def _load_or_fetch_chart_bars(
                 "cache_path": str(cache_path),
                 "cache_hit": False,
                 "fetched_at": payload["fetched_at"],
+                "cache_policy": "download_once",
+                "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
             }
     except Exception as exc:  # noqa: BLE001 - dashboard must degrade to runtime samples instead of 500.
         return fallback, {
             "source": "runtime_sample",
             "cache_path": str(cache_path),
             "cache_hit": False,
+            "cache_policy": "fallback_after_fetch_error",
+            "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
             "error": str(exc),
         }
 
@@ -2628,6 +2657,8 @@ def _load_or_fetch_chart_bars(
         "source": "runtime_sample",
         "cache_path": str(cache_path),
         "cache_hit": False,
+        "cache_policy": "fallback_after_empty_fetch",
+        "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
         "error": "empty_binance_response",
     }
 
