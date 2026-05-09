@@ -4,17 +4,23 @@ import argparse
 import csv
 import json
 import re
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Dict, List
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
+
+from binance_ai.config import load_settings
+from binance_ai.connectors.binance_spot import BinanceSpotClient
+from binance_ai.models import Candle
 
 
 INTERVAL_MS: Dict[str, int] = {
     "1m": 60_000,
     "3m": 180_000,
     "5m": 300_000,
+    "10m": 600_000,
     "15m": 900_000,
     "30m": 1_800_000,
     "1h": 3_600_000,
@@ -24,7 +30,51 @@ INTERVAL_MS: Dict[str, int] = {
     "8h": 28_800_000,
     "12h": 43_200_000,
     "1d": 86_400_000,
+    "7d": 604_800_000,
+    "10d": 864_000_000,
+    "30d": 2_592_000_000,
+    "90d": 7_776_000_000,
+    "180d": 15_552_000_000,
+    "1y": 31_536_000_000,
 }
+
+NATIVE_BINANCE_INTERVALS = {
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "8h",
+    "12h",
+    "1d",
+    "3d",
+    "1w",
+    "1M",
+}
+
+CHART_INTERVAL_OPTIONS: List[Dict[str, str]] = [
+    {"value": "1m", "label": "1分", "source": "binance"},
+    {"value": "3m", "label": "3分", "source": "binance"},
+    {"value": "5m", "label": "5分", "source": "binance"},
+    {"value": "10m", "label": "10分", "source": "aggregate:5m"},
+    {"value": "30m", "label": "30分", "source": "binance"},
+    {"value": "1h", "label": "1小时", "source": "binance"},
+    {"value": "4h", "label": "4小时", "source": "binance"},
+    {"value": "8h", "label": "8小时", "source": "binance"},
+    {"value": "1d", "label": "日线", "source": "binance"},
+    {"value": "7d", "label": "7日线", "source": "aggregate:1d"},
+    {"value": "10d", "label": "10日线", "source": "aggregate:1d"},
+    {"value": "30d", "label": "30日线", "source": "aggregate:1d"},
+    {"value": "90d", "label": "90日线", "source": "aggregate:1d"},
+    {"value": "180d", "label": "180日线", "source": "aggregate:1d"},
+    {"value": "1y", "label": "1年线", "source": "aggregate:1d"},
+]
+
+CHART_INTERVAL_VALUES = {item["value"] for item in CHART_INTERVAL_OPTIONS}
 
 
 INDEX_HTML = """<!doctype html>
@@ -418,6 +468,19 @@ INDEX_HTML = """<!doctype html>
       background: var(--blue-soft);
     }
 
+    .chart-select {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink);
+      padding: 5px 26px 5px 10px;
+      font-size: 11px;
+      font-weight: 760;
+      font-family: var(--mono);
+      outline: none;
+      cursor: pointer;
+    }
+
     .drawer-backdrop {
       position: fixed;
       inset: 0;
@@ -769,6 +832,7 @@ INDEX_HTML = """<!doctype html>
                 <div class="panel-subtitle" id="chartSubtitle">K 线、成交量、成交点、AI 否决点、退出线</div>
               </div>
               <div class="tool-row">
+                <select class="chart-select" id="chartIntervalSelect" aria-label="K线周期"></select>
                 <span class="tool-pill blue" id="chartInterval">主周期 --</span>
                 <span class="tool-pill green">PAPER</span>
                 <span class="tool-pill coral" id="chartPointCount">0 bars</span>
@@ -924,11 +988,12 @@ INDEX_HTML = """<!doctype html>
     let lastPayloadSnapshot = null;
     let chartHover = { active: false, x: 0, y: 0 };
     let activeDrawerKind = null;
+    let selectedChartInterval = "1m";
 
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
-      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
+      "chartIntervalSelect", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1089,7 +1154,11 @@ INDEX_HTML = """<!doctype html>
       const positions = paper.positions || {};
       const position = positions[symbol] || null;
       const quoteAsset = primary.quote_asset || paper.quote_asset || "JPY";
-      const chartBars = payload.live_refresh_bars?.length ? payload.live_refresh_bars : payload.live_main_interval_bars || [];
+      const chartBars = payload.live_chart_bars?.length
+        ? payload.live_chart_bars
+        : payload.live_refresh_bars?.length
+          ? payload.live_refresh_bars
+          : payload.live_main_interval_bars || [];
       const currentPrice = asNumber(primary.current_price || primary.mark_price || (latest.market_prices || {})[symbol] || chartBars.slice(-1)[0]?.close, 0);
       const decision = (latest.decisions || [])[0] || {};
       const strategy = decision.strategy_decision || {};
@@ -1113,6 +1182,20 @@ INDEX_HTML = """<!doctype html>
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
       return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, bars, markers, vetoes, openOrders, orderEvents, orderMarkers };
+    }
+
+    function syncChartIntervalOptions(payload) {
+      const options = payload.chart_interval_options || [];
+      if (!els.chartIntervalSelect || !options.length) return;
+      const currentValues = Array.from(els.chartIntervalSelect.options).map((item) => item.value).join(",");
+      const nextValues = options.map((item) => item.value).join(",");
+      if (currentValues !== nextValues) {
+        els.chartIntervalSelect.innerHTML = options.map((item) => `
+          <option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>
+        `).join("");
+      }
+      selectedChartInterval = payload.live_chart_interval || selectedChartInterval;
+      els.chartIntervalSelect.value = selectedChartInterval;
     }
 
     function activateTab(tabName) {
@@ -1153,7 +1236,8 @@ INDEX_HTML = """<!doctype html>
       const executionResult = c.executionStatus || "无执行";
 
       els.chartSubtitle.textContent = `${c.symbol} 实时观察 K 线、成交量、模拟成交点、AI 否决点、退出线`;
-      els.chartInterval.textContent = `观察 ${payload.live_refresh_interval || "1m"} / 策略 ${payload.live_main_interval || "--"}`;
+      const chartSource = payload.live_chart_source || "runtime";
+      els.chartInterval.textContent = `图表 ${payload.live_chart_interval_label || payload.live_chart_interval || "1m"} / 策略 ${payload.live_main_interval || "--"} / ${chartSource}`;
       els.chartPointCount.textContent = `${c.bars.length} bars`;
 
       els.positionCard.innerHTML = `
@@ -1509,6 +1593,7 @@ INDEX_HTML = """<!doctype html>
 
     function updateDom(payload) {
       lastPayloadSnapshot = payload;
+      syncChartIntervalOptions(payload);
       updateTopBar(payload);
       updateTradingTab(payload);
       updateAiTab(payload);
@@ -1970,7 +2055,9 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function loadData() {
-      const response = await fetch("/api/dashboard", { cache: "no-store" });
+      const params = new URLSearchParams();
+      if (selectedChartInterval) params.set("chart_interval", selectedChartInterval);
+      const response = await fetch(`/api/dashboard?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return response.json();
     }
@@ -1991,6 +2078,10 @@ INDEX_HTML = """<!doctype html>
       });
       document.querySelectorAll("[data-drawer]").forEach((btn) => {
         btn.addEventListener("click", () => openInsightDrawer(btn.dataset.drawer));
+      });
+      els.chartIntervalSelect.addEventListener("change", () => {
+        selectedChartInterval = els.chartIntervalSelect.value || "1m";
+        tick();
       });
       els.insightDrawerClose.addEventListener("click", closeInsightDrawer);
       els.insightDrawerBackdrop.addEventListener("click", closeInsightDrawer);
@@ -2243,6 +2334,215 @@ def _detect_main_interval(latest_report: Dict[str, Any], backtest_manifest: Dict
     return str(config.get("main_interval") or "1h")
 
 
+def _normalize_chart_interval(interval: str | None) -> str:
+    value = (interval or "1m").strip()
+    return value if value in CHART_INTERVAL_VALUES else "1m"
+
+
+def _chart_interval_label(interval: str) -> str:
+    for item in CHART_INTERVAL_OPTIONS:
+        if item["value"] == interval:
+            return item["label"]
+    return interval
+
+
+def _chart_interval_source(interval: str) -> str:
+    for item in CHART_INTERVAL_OPTIONS:
+        if item["value"] == interval:
+            return item["source"]
+    return "runtime"
+
+
+def _chart_cache_ttl_seconds(interval: str) -> int:
+    if interval in {"1m", "3m", "5m", "10m"}:
+        return 60
+    if interval in {"30m", "1h", "4h", "8h"}:
+        return 300
+    return 3_600
+
+
+def _chart_cache_path(runtime_dir: Path, symbol: str, interval: str) -> Path:
+    safe_symbol = re.sub(r"[^A-Z0-9_-]", "", symbol.upper()) or "UNKNOWN"
+    safe_interval = re.sub(r"[^A-Za-z0-9_-]", "", interval) or "1m"
+    return runtime_dir / "chart_cache" / f"{safe_symbol}_{safe_interval}.json"
+
+
+def _bar_from_candle(symbol: str, candle: Candle, *, source: str) -> Dict[str, Any]:
+    return {
+        "symbol": symbol,
+        "open_time": candle.open_time,
+        "close_time": candle.close_time,
+        "open": candle.open,
+        "high": candle.high,
+        "low": candle.low,
+        "close": candle.close,
+        "volume": candle.volume,
+        "sample_count": 1,
+        "source": source,
+    }
+
+
+def _aggregate_chart_bars(
+    bars: List[Dict[str, Any]],
+    *,
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    interval_ms = INTERVAL_MS.get(interval)
+    if not interval_ms:
+        return bars[-limit:]
+    buckets: Dict[int, Dict[str, Any]] = {}
+    for raw in sorted(bars, key=lambda item: _coerce_int(item.get("open_time"))):
+        open_time = _coerce_int(raw.get("open_time"))
+        close_time = _coerce_int(raw.get("close_time"), open_time)
+        open_price = _coerce_float(raw.get("open"))
+        high = _coerce_float(raw.get("high"))
+        low = _coerce_float(raw.get("low"))
+        close = _coerce_float(raw.get("close"))
+        volume = _coerce_float(raw.get("volume"))
+        if open_time < 0 or close <= 0:
+            continue
+        bucket_open = open_time - (open_time % interval_ms)
+        bucket = buckets.get(bucket_open)
+        if bucket is None:
+            bucket = {
+                "symbol": symbol,
+                "open_time": bucket_open,
+                "close_time": bucket_open + interval_ms - 1,
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": volume,
+                "sample_count": 0,
+                "source": f"aggregate:{interval}",
+            }
+            buckets[bucket_open] = bucket
+        else:
+            bucket["high"] = max(_coerce_float(bucket.get("high")), high)
+            bucket["low"] = min(_coerce_float(bucket.get("low")), low)
+            bucket["close"] = close
+            bucket["close_time"] = max(_coerce_int(bucket.get("close_time")), close_time)
+            bucket["volume"] = _coerce_float(bucket.get("volume")) + volume
+        bucket["sample_count"] = _coerce_int(bucket.get("sample_count"), 0) + max(1, _coerce_int(raw.get("sample_count"), 1))
+    return [buckets[key] for key in sorted(buckets)][-limit:]
+
+
+def _fetch_chart_bars_from_binance(
+    *,
+    symbol: str,
+    interval: str,
+    limit: int,
+) -> tuple[List[Dict[str, Any]], str]:
+    settings = load_settings()
+    client = BinanceSpotClient(settings)
+    try:
+        if interval in NATIVE_BINANCE_INTERVALS:
+            candles = client.get_klines(symbol=symbol, interval=interval, limit=min(limit, 1000))
+            return [_bar_from_candle(symbol, candle, source="binance") for candle in candles], "binance"
+
+        source = _chart_interval_source(interval)
+        base_interval = source.split(":", 1)[1] if source.startswith("aggregate:") else "1m"
+        base_ms = INTERVAL_MS.get(base_interval, INTERVAL_MS["1m"])
+        interval_ms = INTERVAL_MS.get(interval, base_ms)
+        required = max(2, min(1000, int((limit * interval_ms) / base_ms) + 4))
+        candles = client.get_klines(symbol=symbol, interval=base_interval, limit=required)
+        base_bars = [_bar_from_candle(symbol, candle, source=f"binance:{base_interval}") for candle in candles]
+        return _aggregate_chart_bars(base_bars, symbol=symbol, interval=interval, limit=limit), source
+    finally:
+        client.close()
+
+
+def _read_cached_chart_bars(path: Path, ttl_seconds: int) -> Dict[str, Any] | None:
+    payload = _load_json(path, {})
+    if not payload:
+        return None
+    fetched_at = _coerce_float(payload.get("fetched_at"))
+    if fetched_at <= 0 or time.time() - fetched_at > ttl_seconds:
+        return None
+    bars = payload.get("bars")
+    if not isinstance(bars, list):
+        return None
+    return payload
+
+
+def _write_chart_cache(path: Path, payload: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _load_or_fetch_chart_bars(
+    *,
+    runtime_dir: Path,
+    history: List[Dict[str, Any]],
+    latest_report: Dict[str, Any],
+    symbol: str,
+    interval: str,
+    limit: int = 160,
+    allow_fetch: bool,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    interval = _normalize_chart_interval(interval)
+    fallback = _build_live_main_interval_bars(
+        history,
+        symbol=symbol,
+        interval=interval,
+        latest_report=latest_report,
+        limit=limit,
+    )
+    cache_path = _chart_cache_path(runtime_dir, symbol, interval)
+    ttl_seconds = _chart_cache_ttl_seconds(interval)
+    cached = _read_cached_chart_bars(cache_path, ttl_seconds)
+    if cached:
+        return list(cached.get("bars", []))[-limit:], {
+            "source": cached.get("source", "cache"),
+            "cache_path": str(cache_path),
+            "cache_hit": True,
+            "fetched_at": cached.get("fetched_at"),
+        }
+
+    if not allow_fetch or not symbol:
+        return fallback, {
+            "source": "runtime_sample",
+            "cache_path": str(cache_path),
+            "cache_hit": False,
+            "error": "",
+        }
+
+    try:
+        bars, source = _fetch_chart_bars_from_binance(symbol=symbol, interval=interval, limit=limit)
+        if bars:
+            payload = {
+                "symbol": symbol,
+                "interval": interval,
+                "label": _chart_interval_label(interval),
+                "source": source,
+                "fetched_at": time.time(),
+                "bars": bars,
+            }
+            _write_chart_cache(cache_path, payload)
+            return bars[-limit:], {
+                "source": source,
+                "cache_path": str(cache_path),
+                "cache_hit": False,
+                "fetched_at": payload["fetched_at"],
+            }
+    except Exception as exc:  # noqa: BLE001 - dashboard must degrade to runtime samples instead of 500.
+        return fallback, {
+            "source": "runtime_sample",
+            "cache_path": str(cache_path),
+            "cache_hit": False,
+            "error": str(exc),
+        }
+
+    return fallback, {
+        "source": "runtime_sample",
+        "cache_path": str(cache_path),
+        "cache_hit": False,
+        "error": "empty_binance_response",
+    }
+
+
 def _build_live_main_interval_bars(
     history: List[Dict[str, Any]],
     *,
@@ -2358,7 +2658,7 @@ def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
     }
 
 
-def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
+def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None) -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
     history = _read_history(runtime_dir / "cycle_reports.jsonl")
@@ -2371,7 +2671,7 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         chart_symbol = next(iter(latest_report["market_prices"]))
 
     main_interval = _detect_main_interval(latest_report, backtest_payload["backtest_manifest"])
-    bars = (
+    main_bars = (
         _build_live_main_interval_bars(history, symbol=chart_symbol, interval=main_interval, latest_report=latest_report)
         if chart_symbol
         else []
@@ -2380,6 +2680,19 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         _build_live_main_interval_bars(history, symbol=chart_symbol, interval="1m", limit=96)
         if chart_symbol
         else []
+    )
+    selected_chart_interval = _normalize_chart_interval(chart_interval)
+    chart_bars, chart_meta = (
+        _load_or_fetch_chart_bars(
+            runtime_dir=runtime_dir,
+            history=history,
+            latest_report=latest_report,
+            symbol=chart_symbol,
+            interval=selected_chart_interval,
+            allow_fetch=chart_interval is not None,
+        )
+        if chart_symbol
+        else ([], {"source": "runtime_sample", "cache_path": "", "cache_hit": False})
     )
 
     return {
@@ -2394,9 +2707,15 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         "position_activation_state": paper_state.get("activation_state", {}),
         "live_chart_symbol": chart_symbol,
         "live_main_interval": main_interval,
-        "live_main_interval_bars": bars,
+        "live_main_interval_bars": main_bars,
         "live_refresh_interval": "1m",
         "live_refresh_bars": refresh_bars,
+        "live_chart_interval": selected_chart_interval,
+        "live_chart_interval_label": _chart_interval_label(selected_chart_interval),
+        "live_chart_source": chart_meta.get("source", "runtime_sample"),
+        "live_chart_cache": chart_meta,
+        "live_chart_bars": chart_bars,
+        "chart_interval_options": CHART_INTERVAL_OPTIONS,
         "live_trade_markers": _extract_live_trade_markers(history),
         "order_markers": _extract_order_markers(history),
         "position_activation_markers": _extract_position_activation_markers(history),
@@ -2414,7 +2733,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_html(INDEX_HTML)
             return
         if parsed.path == "/api/dashboard":
-            self._send_json(build_dashboard_payload(self.runtime_dir))
+            query = parse_qs(parsed.query)
+            requested_interval = query.get("chart_interval", [None])[0]
+            self._send_json(build_dashboard_payload(self.runtime_dir, chart_interval=requested_interval))
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 

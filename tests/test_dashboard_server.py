@@ -7,6 +7,7 @@ from pathlib import Path
 
 from binance_ai.dashboard_server import (
     INDEX_HTML,
+    _aggregate_chart_bars,
     _build_live_main_interval_bars,
     _extract_position_activation_markers,
     _extract_live_ai_veto_markers,
@@ -34,6 +35,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("trade-workspace", INDEX_HTML)
         self.assertIn("trade-fill-panel", INDEX_HTML)
         self.assertIn("insight-drawer", INDEX_HTML)
+        self.assertIn("chartIntervalSelect", INDEX_HTML)
         self.assertIn("data-drawer=\"evidence\"", INDEX_HTML)
         self.assertIn("data-drawer=\"decision\"", INDEX_HTML)
         self.assertNotIn("bottom-insight-grid", INDEX_HTML)
@@ -165,6 +167,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["backtest_summary"]["symbol"], "WALK")
         self.assertEqual(payload["live_chart_symbol"], "XRPJPY")
         self.assertEqual(payload["live_main_interval"], "1h")
+        self.assertEqual(payload["live_chart_interval"], "1m")
+        self.assertTrue(payload["chart_interval_options"])
         self.assertEqual(len(payload["live_main_interval_bars"]), 1)
         self.assertEqual(payload["live_refresh_interval"], "1m")
         self.assertEqual(len(payload["live_refresh_bars"]), 1)
@@ -202,6 +206,69 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["open_orders"], [])
         self.assertEqual(payload["order_lifecycle_events"], [])
         self.assertEqual(payload["order_markers"], [])
+
+    def test_build_dashboard_payload_uses_cached_requested_chart_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            runtime_dir = root / "runtime_visual"
+            _write_json(
+                runtime_dir / "latest_report.json",
+                {
+                    "timestamp_ms": 120_000,
+                    "decisions": [{"symbol": "XRPJPY", "signal": {"action": "HOLD"}, "execution_result": {}}],
+                    "market_prices": {"XRPJPY": 223.0},
+                },
+            )
+            _write_json(runtime_dir / "paper_state.json", {"quote_asset": "JPY", "quote_balance": 1000})
+            _write_text(runtime_dir / "cycle_reports.jsonl", "")
+            _write_json(
+                runtime_dir / "chart_cache" / "XRPJPY_10m.json",
+                {
+                    "symbol": "XRPJPY",
+                    "interval": "10m",
+                    "label": "10分",
+                    "source": "aggregate:5m",
+                    "fetched_at": 4_102_444_800.0,
+                    "bars": [
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 0,
+                            "close_time": 599_999,
+                            "open": 220.0,
+                            "high": 225.0,
+                            "low": 219.0,
+                            "close": 224.0,
+                            "volume": 10.0,
+                            "sample_count": 2,
+                            "source": "aggregate:10m",
+                        }
+                    ],
+                },
+            )
+
+            payload = build_dashboard_payload(runtime_dir, chart_interval="10m")
+
+        self.assertEqual(payload["live_chart_interval"], "10m")
+        self.assertEqual(payload["live_chart_interval_label"], "10分")
+        self.assertEqual(payload["live_chart_source"], "aggregate:5m")
+        self.assertTrue(payload["live_chart_cache"]["cache_hit"])
+        self.assertEqual(payload["live_chart_bars"][0]["close"], 224.0)
+
+    def test_aggregate_chart_bars_builds_non_native_10m_candles(self) -> None:
+        bars = [
+            {"symbol": "XRPJPY", "open_time": 0, "close_time": 299_999, "open": 100, "high": 105, "low": 99, "close": 103, "volume": 2},
+            {"symbol": "XRPJPY", "open_time": 300_000, "close_time": 599_999, "open": 103, "high": 108, "low": 101, "close": 107, "volume": 3},
+            {"symbol": "XRPJPY", "open_time": 600_000, "close_time": 899_999, "open": 107, "high": 109, "low": 106, "close": 108, "volume": 4},
+        ]
+
+        aggregated = _aggregate_chart_bars(bars, symbol="XRPJPY", interval="10m", limit=10)
+
+        self.assertEqual(len(aggregated), 2)
+        self.assertEqual(aggregated[0]["open"], 100)
+        self.assertEqual(aggregated[0]["high"], 108)
+        self.assertEqual(aggregated[0]["low"], 99)
+        self.assertEqual(aggregated[0]["close"], 107)
+        self.assertEqual(aggregated[0]["volume"], 5)
 
     def test_extract_live_trade_veto_markers_and_bars(self) -> None:
         history = [
