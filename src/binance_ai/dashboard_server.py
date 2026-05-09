@@ -1513,13 +1513,14 @@ INDEX_HTML = """<!doctype html>
     function updateSystemTab(payload) {
       const c = context(payload);
       const history = payload.history || [];
+      const historyCount = payload.history_count ?? history.length;
       const ledger = payload.decision_ledger || [];
       const schedule = c.schedule || {};
 
       els.systemStateCard.innerHTML = kvRows([
         ["Cycle Mode", escapeHtml(cycleModeLabel(c.latest.cycle_mode))],
         ["本轮时间", escapeHtml(fmtTime(c.latest.generated_at || c.latest.timestamp || c.latest.timestamp_ms))],
-        ["历史周期", escapeHtml(String(history.length))],
+        ["最近周期", escapeHtml(String(historyCount))],
         ["最近成交", escapeHtml(String(c.fills.length))],
         ["主周期 bars", escapeHtml(String(c.bars.length))]
       ]);
@@ -2345,11 +2346,31 @@ def _load_csv_rows(path: Path) -> List[Dict[str, str]]:
         return list(csv.DictReader(handle))
 
 
+def _read_recent_lines(path: Path, limit: int, *, chunk_size: int = 256 * 1024) -> List[str]:
+    if not path.exists() or limit <= 0:
+        return []
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        file_size = handle.tell()
+        position = file_size
+        chunks: List[bytes] = []
+        newline_count = 0
+        while position > 0 and newline_count <= limit:
+            read_size = min(chunk_size, position)
+            position -= read_size
+            handle.seek(position)
+            chunk = handle.read(read_size)
+            chunks.append(chunk)
+            newline_count += chunk.count(b"\n")
+        data = b"".join(reversed(chunks)).decode("utf-8", errors="ignore")
+    return data.splitlines()[-limit:]
+
+
 def _read_history(path: Path, limit: int = 6000) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
     rows: List[Dict[str, Any]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in _read_recent_lines(path, limit):
         line = line.strip()
         if not line:
             continue
@@ -2357,7 +2378,7 @@ def _read_history(path: Path, limit: int = 6000) -> List[Dict[str, Any]]:
             rows.append(json.loads(line))
         except json.JSONDecodeError:
             continue
-    return rows[-limit:]
+    return rows
 
 
 def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 300) -> List[Dict[str, Any]]:
@@ -2933,7 +2954,7 @@ def _build_dashboard_chart_payload(
 def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
-    history = _read_history(runtime_dir / "cycle_reports.jsonl")
+    history = _read_history(runtime_dir / "cycle_reports.jsonl", limit=800 if include_chart else 300)
     backtest_payload = _load_backtest_payload(runtime_dir)
 
     chart_symbol = _dashboard_chart_symbol(latest_report)
@@ -2969,7 +2990,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     return {
         "latest_report": latest_report,
         "paper_state": paper_state,
-        "history": history,
+        "history": history[-80:] if include_chart else [],
+        "history_count": len(history),
         "recent_fills": _extract_recent_fills(history),
         "open_orders": list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", []),
         "order_lifecycle_events": _extract_order_lifecycle_events(history, latest_report),

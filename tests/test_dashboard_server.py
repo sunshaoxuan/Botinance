@@ -183,6 +183,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["live_main_interval"], "1h")
         self.assertEqual(payload["live_chart_interval"], "1m")
         self.assertTrue(payload["chart_interval_options"])
+        self.assertEqual(payload["history_count"], 3)
+        self.assertEqual(len(payload["history"]), 3)
         self.assertEqual(len(payload["live_main_interval_bars"]), 1)
         self.assertEqual(payload["live_refresh_interval"], "1m")
         self.assertEqual(len(payload["live_refresh_bars"]), 1)
@@ -243,6 +245,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["live_chart_source"], "deferred")
         self.assertEqual(payload["live_chart_bars"], [])
         self.assertEqual(payload["live_main_interval_bars"], [])
+        self.assertEqual(payload["history_count"], 3)
+        self.assertEqual(payload["history"], [])
         self.assertEqual(chart_payload["live_chart_interval"], "1h")
         self.assertGreaterEqual(len(chart_payload["live_chart_bars"]), 1)
 
