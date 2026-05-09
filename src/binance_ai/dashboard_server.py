@@ -2426,6 +2426,21 @@ def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 300) -> Li
     return fills[-limit:][::-1]
 
 
+def _extract_recent_fills_from_file(path: Path, limit: int = 300, scan_lines: int = 8000) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    matching_cycles: List[Dict[str, Any]] = []
+    for line in _read_recent_lines(path, scan_lines):
+        if '"PAPER_FILLED"' not in line and '"order_lifecycle_events"' not in line:
+            continue
+        try:
+            cycle = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        matching_cycles.append(cycle)
+    return _extract_recent_fills(matching_cycles, limit=limit)
+
+
 def _extract_order_lifecycle_events(
     history: List[Dict[str, Any]],
     latest_report: Dict[str, Any],
@@ -2976,7 +2991,8 @@ def _build_dashboard_chart_payload(
 def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
-    history = _read_history(runtime_dir / "cycle_reports.jsonl", limit=800 if include_chart else 300)
+    history_path = runtime_dir / "cycle_reports.jsonl"
+    history = _read_history(history_path, limit=800 if include_chart else 300)
     backtest_payload = _load_backtest_payload(runtime_dir)
 
     chart_symbol = _dashboard_chart_symbol(latest_report)
@@ -3014,7 +3030,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "paper_state": paper_state,
         "history": history[-80:] if include_chart else [],
         "history_count": len(history),
-        "recent_fills": _extract_recent_fills(history),
+        "recent_fills": _extract_recent_fills(history) if include_chart else _extract_recent_fills_from_file(history_path),
         "open_orders": list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", []),
         "order_lifecycle_events": _extract_order_lifecycle_events(history, latest_report),
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),

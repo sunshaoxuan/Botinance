@@ -10,6 +10,7 @@ from binance_ai.dashboard_server import (
     _aggregate_chart_bars,
     _build_dashboard_chart_payload,
     _build_live_main_interval_bars,
+    _extract_recent_fills_from_file,
     _extract_position_activation_markers,
     _extract_live_ai_veto_markers,
     _extract_live_trade_markers,
@@ -251,6 +252,53 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["history"], [])
         self.assertEqual(chart_payload["live_chart_interval"], "1h")
         self.assertGreaterEqual(len(chart_payload["live_chart_bars"]), 1)
+
+    def test_deferred_dashboard_keeps_fills_outside_light_history_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(
+                runtime_dir / "latest_report.json",
+                {
+                    "timestamp_ms": 500_000,
+                    "decisions": [{"symbol": "XRPJPY", "signal": {"action": "HOLD"}}],
+                    "market_prices": {"XRPJPY": 223.4},
+                },
+            )
+            lines = [
+                json.dumps(
+                    {
+                        "timestamp_ms": 1_000,
+                        "market_prices": {"XRPJPY": 222.0},
+                        "decisions": [
+                            {
+                                "symbol": "XRPJPY",
+                                "execution_result": {
+                                    "status": "PAPER_FILLED",
+                                    "symbol": "XRPJPY",
+                                    "side": "SELL",
+                                    "quantity": 1.0,
+                                    "fill_price": 222.0,
+                                    "timestamp_ms": 1_000,
+                                },
+                            }
+                        ],
+                    }
+                )
+            ]
+            lines.extend(
+                json.dumps({"timestamp_ms": 2_000 + i, "market_prices": {"XRPJPY": 223.0}, "decisions": []})
+                for i in range(400)
+            )
+            _write_text(runtime_dir / "cycle_reports.jsonl", "\n".join(lines))
+
+            payload = build_dashboard_payload(runtime_dir, chart_interval="5m", include_chart=False)
+            fills = _extract_recent_fills_from_file(runtime_dir / "cycle_reports.jsonl")
+
+        self.assertEqual(payload["history_count"], 300)
+        self.assertEqual(payload["history"], [])
+        self.assertEqual(len(payload["recent_fills"]), 1)
+        self.assertEqual(payload["recent_fills"][0]["status"], "PAPER_FILLED")
+        self.assertEqual(len(fills), 1)
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
