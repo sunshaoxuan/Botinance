@@ -1080,6 +1080,7 @@ INDEX_HTML = """<!doctype html>
     let fillPage = 0;
     let dashboardRequestSeq = 0;
     let chartRenderSeq = 0;
+    let tickInFlight = false;
     const chartBarsCache = {};
 
     const els = {};
@@ -2339,6 +2340,8 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function tick() {
+      if (tickInFlight) return;
+      tickInFlight = true;
       const requestSeq = ++dashboardRequestSeq;
       const chartInterval = selectedChartInterval;
       const cachedBars = chartBarsCache[chartInterval] || [];
@@ -2367,6 +2370,8 @@ INDEX_HTML = """<!doctype html>
         console.error(err);
         els.topMode.textContent = "数据读取失败";
         setChartLoading(Boolean(!cachedBars.length), "图表读取失败，其他数据保留");
+      } finally {
+        tickInFlight = false;
       }
     }
 
@@ -3133,6 +3138,13 @@ def _chart_cache_needs_tail_refresh(cached: Dict[str, Any], interval: str, lates
     return (time.time() - fetched_at) >= _chart_cache_refresh_seconds(interval)
 
 
+def _append_chart_source(existing_source: object, source: str) -> str:
+    parts = [item for item in str(existing_source or "cache").split("+") if item]
+    if source not in parts:
+        parts.append(source)
+    return "+".join(parts)
+
+
 def _merge_chart_bars(base_bars: List[Dict[str, Any]], overlay_bars: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
     merged = {_coerce_int(bar.get("open_time")): dict(bar) for bar in base_bars if _coerce_int(bar.get("open_time")) >= 0}
     for bar in overlay_bars:
@@ -3149,7 +3161,7 @@ def _merge_chart_bars(base_bars: List[Dict[str, Any]], overlay_bars: List[Dict[s
         existing["close_time"] = max(_coerce_int(existing.get("close_time")), _coerce_int(bar.get("close_time")))
         existing["volume"] = max(_coerce_float(existing.get("volume")), _coerce_float(bar.get("volume")))
         existing["sample_count"] = max(_coerce_int(existing.get("sample_count"), 1), _coerce_int(bar.get("sample_count"), 1))
-        existing["source"] = f"{existing.get('source', 'cache')}+runtime_sample"
+        existing["source"] = _append_chart_source(existing.get("source", "cache"), "runtime_sample")
     return [merged[key] for key in sorted(merged)][-limit:]
 
 

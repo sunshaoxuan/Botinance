@@ -56,6 +56,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("chartLoading", INDEX_HTML)
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
         self.assertIn("chartRenderSeq", INDEX_HTML)
+        self.assertIn("tickInFlight", INDEX_HTML)
         self.assertIn("requestSeq !== dashboardRequestSeq", INDEX_HTML)
         self.assertIn("requestInterval === selectedChartInterval", INDEX_HTML)
         self.assertIn("include_chart", INDEX_HTML)
@@ -474,6 +475,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(merged[0]["close"], 225.5)
         self.assertEqual(merged[0]["volume"], 10.0)
         self.assertIn("runtime_sample", merged[0]["source"])
+        merged_again = _merge_chart_bars(merged, runtime, limit=10)
+        self.assertEqual(merged_again[0]["source"].count("runtime_sample"), 1)
 
     def test_chart_cache_tail_refresh_only_when_latest_report_passes_cached_close(self) -> None:
         fresh_enough = {
