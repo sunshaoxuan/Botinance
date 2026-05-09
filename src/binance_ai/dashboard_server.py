@@ -1325,11 +1325,12 @@ INDEX_HTML = """<!doctype html>
           <td>${statusChip(side || "--", side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
           <td>${fmtNumber(f.quantity, 8)}</td>
           <td>${fmtCurrency(f.price || f.fill_price, quoteAsset)}</td>
+          <td>${fmtCurrency(f.fee, quoteAsset)}</td>
           <td class="${pnlClass(f.realized_pnl)}">${fmtCurrency(f.realized_pnl, quoteAsset)}</td>
           <td class="nowrap">${escapeHtml(fmtTime(f.timestamp || f.timestamp_ms || f.time))}</td>
         </tr>`;
       });
-      return table(["方向", "数量", "价格", "已实现", "时间"], rows, "暂无模拟成交");
+      return table(["方向", "数量", "价格", "手续费", "已实现", "时间"], rows, "暂无模拟成交");
     }
 
     function activeRiskLines(c) {

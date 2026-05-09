@@ -186,6 +186,7 @@ Two-layer monitoring defaults:
 
 You can override the slow layer interval in `.env` with `NEWS_REFRESH_SECONDS=60` or another value.
 You can override the decision threshold with `DECISION_PRICE_MOVE_THRESHOLD_PCT=0.005`.
+Paper trading and backtest fills include quote-asset fees through `TRADING_FEE_RATE`; the default is `0.001` (`0.1%`) per fill.
 
 Seed the paper portfolio from the current Binance account without enabling live trading:
 

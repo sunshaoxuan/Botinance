@@ -10,12 +10,12 @@ from binance_ai.paper.state_engine import PortfolioStateEngine
 
 
 class PaperPortfolio:
-    def __init__(self, quote_asset: str, initial_quote_balance: float, state_path: Path) -> None:
+    def __init__(self, quote_asset: str, initial_quote_balance: float, state_path: Path, fee_rate: float = 0.0) -> None:
         self.quote_asset = quote_asset
         self.initial_quote_balance = initial_quote_balance
         self.state_path = state_path
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.engine = PortfolioStateEngine(quote_asset)
+        self.engine = PortfolioStateEngine(quote_asset, fee_rate=fee_rate)
 
     def load_snapshot(self) -> PortfolioSnapshot:
         if not self.state_path.exists():

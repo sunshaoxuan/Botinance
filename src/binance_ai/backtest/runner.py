@@ -58,6 +58,7 @@ class BacktestRunner:
         portfolio = BacktestPortfolioEngine(
             quote_asset=self.config.quote_asset,
             initial_quote_balance=self.config.initial_quote_balance,
+            fee_rate=self.config.trading_fee_rate,
         )
         trades: List[BacktestTrade] = []
         equity_curve: List[EquityPoint] = []
@@ -311,7 +312,7 @@ class BacktestRunner:
         if result.get("status") != "PAPER_FILLED":
             return False
 
-        notional = open_trade.entry_price * open_trade.quantity
+        notional = open_trade.entry_price * open_trade.quantity * (1.0 + self.config.trading_fee_rate)
         realized_pnl = float(result.get("realized_pnl_delta", 0.0))
         trades.append(
             BacktestTrade(

@@ -5,8 +5,8 @@ from binance_ai.paper.state_engine import PortfolioStateEngine
 
 
 class BacktestPortfolioEngine:
-    def __init__(self, quote_asset: str, initial_quote_balance: float) -> None:
-        self.engine = PortfolioStateEngine(quote_asset)
+    def __init__(self, quote_asset: str, initial_quote_balance: float, fee_rate: float = 0.0) -> None:
+        self.engine = PortfolioStateEngine(quote_asset, fee_rate=fee_rate)
         self.snapshot = PortfolioSnapshot(
             quote_asset=quote_asset,
             quote_balance=initial_quote_balance,

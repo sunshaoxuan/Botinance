@@ -31,6 +31,36 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertAlmostEqual(summary["realized_pnl"], 20.0)
             self.assertAlmostEqual(summary["net_pnl"], 20.0)
 
+    def test_buy_and_sell_apply_quote_fee_to_cash_cost_basis_and_pnl(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=1000.0,
+                state_path=Path(tmpdir) / "paper_state.json",
+                fee_rate=0.001,
+            )
+            buy_result = portfolio.apply_order(
+                OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=1.0),
+                fill_price=200.0,
+            )
+            self.assertEqual(buy_result["status"], "PAPER_FILLED")
+            self.assertAlmostEqual(buy_result["fee"], 0.2)
+            snapshot_after_buy = portfolio.load_snapshot()
+            self.assertAlmostEqual(snapshot_after_buy.quote_balance, 799.8)
+            self.assertAlmostEqual(snapshot_after_buy.positions["XRPJPY"].average_entry_price, 200.2)
+
+            sell_result = portfolio.apply_order(
+                OrderRequest(symbol="XRPJPY", side="SELL", order_type="MARKET", quantity=1.0),
+                fill_price=220.0,
+            )
+            self.assertEqual(sell_result["status"], "PAPER_FILLED")
+            self.assertAlmostEqual(sell_result["fee"], 0.22)
+            self.assertAlmostEqual(sell_result["realized_pnl_delta"], 19.58)
+
+            summary = portfolio.equity_summary({"XRPJPY": 220.0})
+            self.assertAlmostEqual(summary["realized_pnl"], 19.58)
+            self.assertAlmostEqual(summary["net_pnl"], 19.58)
+
     def test_apply_order_blocks_notional_below_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             portfolio = PaperPortfolio(

@@ -32,6 +32,7 @@ class OrderExecutorTests(unittest.TestCase):
             slow_window=50,
             risk_per_trade=0.10,
             min_order_notional=100.0,
+            trading_fee_rate=0.0,
             paper_quote_balance=1000.0,
             dry_run=True,
             llm_base_url="",

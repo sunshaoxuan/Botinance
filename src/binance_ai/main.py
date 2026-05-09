@@ -53,6 +53,7 @@ def build_engine(output_dir: Path) -> TradingEngine:
             quote_asset=settings.quote_asset,
             initial_quote_balance=settings.paper_quote_balance,
             state_path=output_dir / "paper_state.json",
+            fee_rate=settings.trading_fee_rate,
         )
     executor = OrderExecutor(settings, client, paper_portfolio=paper_portfolio)
     scheduler = DecisionScheduler(

@@ -101,6 +101,7 @@ class BacktestTests(unittest.TestCase):
             trend_slow_window=1,
             risk_per_trade=0.10,
             min_order_notional=10.0,
+            trading_fee_rate=0.0,
             stop_loss_pct=0.05,
             take_profit_pct=0.02,
             trailing_stop_pct=0.50,
@@ -173,6 +174,30 @@ class BacktestTests(unittest.TestCase):
         self.assertAlmostEqual(result.trades[0].mfe_pct, 3.0)
         self.assertAlmostEqual(result.trades[0].mae_pct, 0.0)
         self.assertGreater(result.summary.total_return_pct, 0.0)
+
+    def test_runner_applies_fee_to_trade_metrics(self) -> None:
+        candles = [make_candle(value, idx) for idx, value in enumerate([100.0, 101.0, 103.0], start=1)]
+        dataset = BacktestDataset(
+            candles_by_interval={
+                "1h": candles,
+                "15m": list(candles),
+                "4h": list(candles),
+            },
+            infos=[],
+        )
+        base_config = self.build_config()
+        config = BacktestConfig(**{**base_config.__dict__, "trading_fee_rate": 0.001})
+        runner = BacktestRunner(
+            config=config,
+            client=_ClientStub(),
+            strategy=_BuyThenHoldStrategy(),
+            risk=RiskEngine(self.build_settings_like(), _ClientStub()),
+        )
+        result = runner.run(dataset)
+
+        self.assertEqual(result.summary.completed_trade_count, 1)
+        self.assertAlmostEqual(result.trades[0].realized_pnl, 2.797, places=6)
+        self.assertLess(result.trades[0].return_pct, 3.0)
 
     def test_runner_returns_zero_metrics_when_no_trades(self) -> None:
         candles = [make_candle(100.0 + idx, idx) for idx in range(1, 6)]

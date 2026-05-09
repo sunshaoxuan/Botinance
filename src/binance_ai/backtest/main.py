@@ -48,6 +48,7 @@ def build_backtest_config(args: argparse.Namespace, settings: Settings) -> Backt
         trend_slow_window=settings.mtf_trend_slow_window,
         risk_per_trade=settings.risk_per_trade,
         min_order_notional=settings.min_order_notional,
+        trading_fee_rate=settings.trading_fee_rate,
         stop_loss_pct=settings.stop_loss_pct,
         take_profit_pct=settings.take_profit_pct,
         trailing_stop_pct=settings.trailing_stop_pct,
@@ -127,7 +128,7 @@ def main() -> None:
                 baseline_summary=None,
                 notes=[
                     "official backtest path disables LLM and news evidence",
-                    "orders fill at the main interval close price with no fee or slippage model",
+                    "orders fill at the main interval close price with the configured fee model and no slippage model",
                 ],
             )
             reporter.write_single_run(result, manifest)

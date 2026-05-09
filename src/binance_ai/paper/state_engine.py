@@ -8,8 +8,9 @@ from binance_ai.models import AccountSnapshot, OrderRequest, PortfolioSnapshot, 
 
 
 class PortfolioStateEngine:
-    def __init__(self, quote_asset: str) -> None:
+    def __init__(self, quote_asset: str, fee_rate: float = 0.0) -> None:
         self.quote_asset = quote_asset
+        self.fee_rate = max(0.0, fee_rate)
 
     def account_snapshot(self, snapshot: PortfolioSnapshot) -> AccountSnapshot:
         balances = {self.quote_asset: snapshot.quote_balance}
@@ -57,6 +58,7 @@ class PortfolioStateEngine:
         positions = dict(snapshot.positions)
         realized_pnl_delta = 0.0
         notional = order.quantity * fill_price
+        fee = notional * self.fee_rate
         applied_timestamp_ms = timestamp_ms or int(time.time() * 1000)
 
         if min_qty is not None and (order.quantity < min_qty or order.quantity <= 0):
@@ -75,24 +77,26 @@ class PortfolioStateEngine:
             }
 
         if order.side == "BUY":
-            cost = notional
-            if cost > snapshot.quote_balance:
+            gross_cost = notional + fee
+            if gross_cost > snapshot.quote_balance:
                 return snapshot, {
                     "status": "BLOCKED",
                     "reason": f"paper_insufficient_{self.quote_asset.lower()}",
+                    "required_quote": gross_cost,
                 }
+            cost_basis = notional + fee
             existing = positions.get(order.symbol)
             if existing is None:
                 updated_position = PositionSnapshot(
                     quantity=order.quantity,
-                    average_entry_price=fill_price,
+                    average_entry_price=cost_basis / order.quantity,
                     opened_at_ms=applied_timestamp_ms,
                     entry_candle_close_time=entry_candle_close_time_ms or applied_timestamp_ms,
                     highest_price=fill_price,
                 )
             else:
                 new_quantity = existing.quantity + order.quantity
-                avg_price = ((existing.quantity * existing.average_entry_price) + cost) / new_quantity
+                avg_price = ((existing.quantity * existing.average_entry_price) + cost_basis) / new_quantity
                 updated_position = PositionSnapshot(
                     quantity=new_quantity,
                     average_entry_price=avg_price,
@@ -101,14 +105,15 @@ class PortfolioStateEngine:
                     highest_price=max(existing.highest_price or existing.average_entry_price, fill_price),
                 )
             positions[order.symbol] = updated_position
-            updated_snapshot = replace(snapshot, quote_balance=snapshot.quote_balance - cost, positions=positions)
+            updated_snapshot = replace(snapshot, quote_balance=snapshot.quote_balance - gross_cost, positions=positions)
         else:
             existing = positions.get(order.symbol)
             if existing is None or order.quantity > existing.quantity:
                 return snapshot, {"status": "BLOCKED", "reason": "paper_position_not_available"}
             proceeds = order.quantity * fill_price
             cost_basis = order.quantity * existing.average_entry_price
-            realized_pnl_delta = proceeds - cost_basis
+            net_proceeds = proceeds - fee
+            realized_pnl_delta = net_proceeds - cost_basis
             remaining = existing.quantity - order.quantity
             if remaining <= 0:
                 positions.pop(order.symbol, None)
@@ -122,7 +127,7 @@ class PortfolioStateEngine:
                 )
             updated_snapshot = replace(
                 snapshot,
-                quote_balance=snapshot.quote_balance + proceeds,
+                quote_balance=snapshot.quote_balance + net_proceeds,
                 positions=positions,
                 realized_pnl=snapshot.realized_pnl + realized_pnl_delta,
             )
@@ -134,6 +139,9 @@ class PortfolioStateEngine:
             "quantity": order.quantity,
             "fill_price": fill_price,
             "notional": notional,
+            "fee": fee,
+            "fee_rate": self.fee_rate,
+            "net_notional": notional + fee if order.side == "BUY" else notional - fee,
             "realized_pnl_delta": realized_pnl_delta,
             "timestamp_ms": applied_timestamp_ms,
         }

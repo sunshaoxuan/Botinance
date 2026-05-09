@@ -25,6 +25,7 @@ class BacktestConfig:
     trend_slow_window: int
     risk_per_trade: float
     min_order_notional: float
+    trading_fee_rate: float
     stop_loss_pct: float
     take_profit_pct: float
     trailing_stop_pct: float

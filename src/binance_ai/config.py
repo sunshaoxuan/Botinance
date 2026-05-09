@@ -50,6 +50,7 @@ class Settings:
     slow_window: int
     risk_per_trade: float
     min_order_notional: float
+    trading_fee_rate: float
     paper_quote_balance: float
     dry_run: bool
     llm_base_url: str
@@ -118,6 +119,7 @@ def load_settings() -> Settings:
         mtf_trend_slow_window=int(os.getenv("MTF_TREND_SLOW_WINDOW", "50")),
         risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.10")),
         min_order_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "25")),
+        trading_fee_rate=float(os.getenv("TRADING_FEE_RATE", "0.001")),
         paper_quote_balance=float(os.getenv("PAPER_QUOTE_BALANCE", "1000")),
         dry_run=_parse_bool(os.getenv("DRY_RUN"), True),
         llm_base_url=_normalize_base_url(os.getenv("LLM_BASE_URL", "").strip()),
