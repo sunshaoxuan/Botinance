@@ -1153,11 +1153,17 @@ INDEX_HTML = """<!doctype html>
       if (s === "HOLD") return "观望";
       if (s === "PAPER_FILLED") return "模拟成交";
       if (s === "ORDER_OPEN") return "挂单中";
+      if (s === "OPEN") return "挂单中";
       if (s === "FILLED") return "已成交";
       if (s === "CANCELED") return "已撤单";
+      if (s === "SUBMITTED") return "已提交";
       if (s === "EXPIRED") return "已过期";
+      if (s === "REJECTED") return "已拒绝";
       if (s === "UNKNOWN") return "状态待确认";
       if (s === "BLOCKED") return "已阻塞";
+      if (s === "REFRESH_ONLY") return "仅刷新";
+      if (s === "SKIPPED_REFRESH_ONLY") return "刷新观察";
+      if (s === "NO_ACTION") return "无动作";
       return signal || "--";
     }
 
@@ -1169,6 +1175,10 @@ INDEX_HTML = """<!doctype html>
       if (s === "NO_ACTION") return "无动作";
       if (s === "PASS") return "通过";
       if (s === "HOLD") return "持有";
+      if (s === "ORDER_OPEN") return "挂单中";
+      if (s === "FILLED") return "已成交";
+      if (s === "CANCELED") return "已撤单";
+      if (s === "EXPIRED") return "已过期";
       return status || "--";
     }
 
@@ -1184,6 +1194,52 @@ INDEX_HTML = """<!doctype html>
       if (s === "NO_ACTION" || s === "HOLD") return "本轮未下单，继续等待策略或退出条件。";
       if (s === "PASS") return "检查通过，但本轮没有需要执行的交易动作。";
       return "暂无执行说明。";
+    }
+
+    function triggerLabel(trigger) {
+      const raw = String(trigger || "");
+      const key = raw.toLowerCase();
+      const labels = {
+        strategy_buy: "策略买入",
+        strategy_sell: "策略卖出",
+        stop_loss: "硬止损",
+        take_profit: "止盈",
+        trailing_stop: "跟踪止损",
+        max_hold_exit: "超时退出",
+        grid_profit_sell: "网格止盈卖出",
+        grid_loss_recovery_sell: "亏损修复卖出",
+        grid_buyback: "网格回补",
+        grid_wait_buyback: "等待回补",
+        refresh_only: "仅刷新",
+      };
+      return labels[key] || raw || "--";
+    }
+
+    function reasonLabel(reason) {
+      const raw = String(reason || "");
+      const key = raw.toLowerCase();
+      const labels = {
+        refresh_only: "仅刷新行情",
+        existing_open_order: "已有挂单，等待处理",
+        paper_limit_order_open: "模拟限价单已挂出",
+        paper_limit_order_filled: "模拟限价单已成交",
+        paper_limit_order_canceled: "模拟限价单已撤销",
+        paper_limit_order_expired: "模拟限价单已过期",
+        ai_entry_veto: "AI 风险闸门否决入场",
+        sell_order_approved: "卖出订单已通过风控",
+        buy_order_approved: "买入订单已通过风控",
+      };
+      if (key.startsWith("position_too_small_to_sell")) return "持仓低于可卖最小数量";
+      if (key.startsWith("sell_notional_below_min_notional")) return "卖出金额低于最小成交额";
+      if (key.startsWith("final_notional_below_min_notional")) return "买入金额低于最小成交额";
+      if (key.startsWith("quantity_below_min_qty")) return "数量低于最小下单量";
+      return labels[key] || raw || "--";
+    }
+
+    function labelWithRaw(label, raw) {
+      const rawText = String(raw || "");
+      if (!rawText || rawText === label || label === "--") return escapeHtml(label);
+      return `${escapeHtml(label)}<br><span class="muted code">${escapeHtml(rawText)}</span>`;
     }
 
     function stateBlock(label, raw) {
@@ -1594,20 +1650,20 @@ INDEX_HTML = """<!doctype html>
       const orderEvents = c.orderEvents || [];
       const ledgerRows = ledger.slice(0, 40).map((r) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(r.timestamp_ms || r.time))}</td>
-        <td>${escapeHtml(r.cycle_mode || "--")}</td>
+        <td>${labelWithRaw(cycleModeLabel(r.cycle_mode), r.cycle_mode)}</td>
         <td>${escapeHtml(r.symbol || c.symbol)}</td>
         <td>${escapeHtml(fmtCurrency(r.price, c.quoteAsset))}</td>
-        <td>${escapeHtml(r.buy_signal || "--")}<br><span class="muted">${escapeHtml(r.buy_blocker || "--")}</span></td>
-        <td>${escapeHtml(r.sell_signal || "--")}<br><span class="muted">${escapeHtml(r.sell_blocker || "--")}</span></td>
-        <td>${escapeHtml(r.final_action || "--")}<br><span class="muted">${escapeHtml(r.execution_status || "--")}</span></td>
+        <td>${labelWithRaw(signalLabel(r.buy_signal), r.buy_signal)}<br><span class="muted">${escapeHtml(reasonLabel(r.buy_blocker))}</span></td>
+        <td>${labelWithRaw(signalLabel(r.sell_signal), r.sell_signal)}<br><span class="muted">${escapeHtml(reasonLabel(r.sell_blocker))}</span></td>
+        <td>${labelWithRaw(signalLabel(r.final_action), r.final_action)}<br><span class="muted">${escapeHtml(executionLabel(r.execution_status))}</span></td>
       </tr>`);
       const eventRows = orderEvents.slice(0, 40).map((e) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(e.timestamp_ms || e.time))}</td>
-        <td>${statusChip(e.status || e.event_type || "--", signalClass(e.status || e.side))}</td>
-        <td>${escapeHtml(e.side || "--")}</td>
+        <td>${statusChip(signalLabel(e.status || e.event_type || "--"), signalClass(e.status || e.side))}<br><span class="muted code">${escapeHtml(e.status || e.event_type || "--")}</span></td>
+        <td>${labelWithRaw(signalLabel(e.side), e.side)}</td>
         <td>${fmtCurrency(e.fill_price || e.limit_price, c.quoteAsset)}</td>
         <td>${fmtNumber(e.filled_quantity || e.quantity, 8)}</td>
-        <td>${escapeHtml(e.reason || e.trigger || "--")}</td>
+        <td>${escapeHtml(reasonLabel(e.reason || e.trigger))}<br><span class="muted">${escapeHtml(triggerLabel(e.trigger))}</span></td>
       </tr>`);
       return `
         <div class="drawer-section">
