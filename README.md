@@ -156,7 +156,7 @@ This script starts:
 - a background paper monitor loop writing to `runtime_visual/`
 - a local dashboard server reading from the same directory
 
-The dashboard is a five-tab local trading workstation:
+The dashboard is a five-tab Botinance interface:
 
 - `实时交易`: main-interval candlesticks, volume bars, paper fills, exit lines, AI veto markers, live position state
 - `AI 决策`: GPT-5.5 assessment, rule signal, AI verdict, risk-gate explanation, evidence sources

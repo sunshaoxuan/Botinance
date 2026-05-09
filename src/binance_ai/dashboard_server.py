@@ -32,7 +32,7 @@ INDEX_HTML = """<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Botinance 高级交易工作台</title>
+  <title>Botinance</title>
   <style>
     :root {
       --bg: #f5f8fc;
@@ -703,8 +703,8 @@ INDEX_HTML = """<!doctype html>
       <header class="top-bar">
         <div class="top-title">
           <div>
-            <div class="top-kicker">Botinance Workstation</div>
-            <div class="top-name">高级交易工作台</div>
+            <div class="top-kicker">XRPJPY PAPER TRADING</div>
+            <div class="top-name">Botinance</div>
           </div>
           <div class="market-pill"><span class="market-dot"></span><span id="topSymbol">XRPJPY</span></div>
         </div>

@@ -25,7 +25,7 @@ def _write_text(path: Path, value: str) -> None:
 
 
 class DashboardServerTests(unittest.TestCase):
-    def test_index_html_exposes_advanced_workstation_shell(self) -> None:
+    def test_index_html_exposes_botinance_shell(self) -> None:
         self.assertIn("app-shell", INDEX_HTML)
         self.assertIn("side-rail", INDEX_HTML)
         self.assertIn("top-bar", INDEX_HTML)
