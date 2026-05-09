@@ -341,9 +341,44 @@ INDEX_HTML = """<!doctype html>
     }
 
     .chart-frame {
+      position: relative;
       height: 506px;
       padding: 10px;
       background: #fff;
+    }
+
+    .chart-loading {
+      position: absolute;
+      inset: 10px;
+      z-index: 2;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      border-radius: var(--radius-sm);
+      background: rgba(255, 255, 255, 0.72);
+      color: var(--ink-soft);
+      font-size: 12px;
+      font-weight: 720;
+      backdrop-filter: blur(2px);
+      pointer-events: none;
+    }
+
+    .chart-loading.active {
+      display: flex;
+    }
+
+    .chart-spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(31, 63, 109, 0.16);
+      border-top-color: var(--blue);
+      border-radius: 999px;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
     }
 
     canvas {
@@ -881,6 +916,7 @@ INDEX_HTML = """<!doctype html>
                 </div>
               </div>
               <div class="chart-frame">
+                <div class="chart-loading active" id="chartLoading"><span class="chart-spinner"></span><span>正在读取行情图表</span></div>
                 <canvas id="tradeChart"></canvas>
               </div>
             </article>
@@ -1042,11 +1078,12 @@ INDEX_HTML = """<!doctype html>
     let fillPageSize = 50;
     let fillPage = 0;
     let dashboardRequestSeq = 0;
+    let chartRenderSeq = 0;
     const chartBarsCache = {};
 
     const els = {};
     const ids = [
-      "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
+      "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
       "chartIntervalSelect", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
@@ -1265,11 +1302,18 @@ INDEX_HTML = """<!doctype html>
       els.chartIntervalSelect.value = selectedChartInterval;
     }
 
+    function setChartLoading(active, text) {
+      if (!els.chartLoading) return;
+      els.chartLoading.classList.toggle("active", Boolean(active));
+      const label = els.chartLoading.querySelector("span:last-child");
+      if (label && text) label.textContent = text;
+    }
+
     function activateTab(tabName) {
       activeTab = tabName;
       document.querySelectorAll(".tab-button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabName));
       document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tabName}`));
-      window.requestAnimationFrame(() => redrawCharts(lastPayloadSnapshot));
+      scheduleChartRender(lastPayloadSnapshot, { showLoading: false });
     }
 
     function updateTopBar(payload) {
@@ -1671,7 +1715,7 @@ INDEX_HTML = """<!doctype html>
       return out;
     }
 
-    function updateDom(payload) {
+    function updateDom(payload, options = {}) {
       lastPayloadSnapshot = payload;
       syncChartIntervalOptions(payload);
       updateTopBar(payload);
@@ -1681,7 +1725,25 @@ INDEX_HTML = """<!doctype html>
       updateRiskTab(payload);
       updateSystemTab(payload);
       if (activeDrawerKind) openInsightDrawer(activeDrawerKind);
-      redrawCharts(payload);
+      if (options.renderChart !== false) scheduleChartRender(payload, { showLoading: options.showChartLoading === true });
+    }
+
+    function scheduleChartRender(payload, options = {}) {
+      if (!payload) return;
+      const renderSeq = ++chartRenderSeq;
+      if (options.showLoading) setChartLoading(true, options.loadingText || "正在绘制 K 线");
+      window.setTimeout(() => {
+        window.requestAnimationFrame(() => {
+          if (renderSeq !== chartRenderSeq) return;
+          try {
+            redrawCharts(payload);
+            if (activeTab === "trading") setChartLoading(false);
+          } catch (err) {
+            console.error(err);
+            if (activeTab === "trading") setChartLoading(true, "图表渲染失败，其他数据不受影响");
+          }
+        });
+      }, 0);
     }
 
     function redrawCharts(payload) {
@@ -2134,10 +2196,22 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
-    async function loadData(chartInterval, requestSeq) {
+    async function loadData(chartInterval, requestSeq, includeChart = true) {
       const params = new URLSearchParams();
       if (chartInterval) params.set("chart_interval", chartInterval);
+      if (!includeChart) params.set("include_chart", "false");
       const response = await fetch(`/api/dashboard?${params.toString()}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      payload.requested_chart_interval = chartInterval;
+      payload.request_seq = requestSeq;
+      return payload;
+    }
+
+    async function loadChartData(chartInterval, requestSeq) {
+      const params = new URLSearchParams();
+      if (chartInterval) params.set("chart_interval", chartInterval);
+      const response = await fetch(`/api/dashboard/chart?${params.toString()}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
       payload.requested_chart_interval = chartInterval;
@@ -2148,14 +2222,32 @@ INDEX_HTML = """<!doctype html>
     async function tick() {
       const requestSeq = ++dashboardRequestSeq;
       const chartInterval = selectedChartInterval;
+      const cachedBars = chartBarsCache[chartInterval] || [];
+      if (!cachedBars.length) setChartLoading(true, `正在读取 ${chartInterval} K 线`);
       try {
-        const payload = await loadData(chartInterval, requestSeq);
+        const payload = await loadData(chartInterval, requestSeq, false);
         if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
-        updateDom(payload);
+        updateDom(payload, { renderChart: false });
+        if (cachedBars.length) {
+          const cachedPayload = { ...payload, live_chart_interval: chartInterval, live_chart_bars: cachedBars };
+          lastPayloadSnapshot = cachedPayload;
+          scheduleChartRender(cachedPayload, { showLoading: false });
+        }
+        try {
+          const chartPayload = await loadChartData(chartInterval, requestSeq);
+          if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
+          const mergedPayload = { ...lastPayloadSnapshot, ...chartPayload };
+          updateDom(mergedPayload, { renderChart: true, showChartLoading: !cachedBars.length });
+        } catch (chartErr) {
+          if (requestSeq !== dashboardRequestSeq) return;
+          console.error(chartErr);
+          setChartLoading(Boolean(!cachedBars.length), "图表读取失败，文字数据已更新");
+        }
       } catch (err) {
         if (requestSeq !== dashboardRequestSeq) return;
         console.error(err);
         els.topMode.textContent = "数据读取失败";
+        setChartLoading(Boolean(!cachedBars.length), "图表读取失败，其他数据保留");
       }
     }
 
@@ -2202,14 +2294,14 @@ INDEX_HTML = """<!doctype html>
             x: event.clientX - rect.left,
             y: event.clientY - rect.top
           };
-          redrawCharts(lastPayloadSnapshot);
+          scheduleChartRender(lastPayloadSnapshot, { showLoading: false });
         });
         tradeChart.addEventListener("mouseleave", () => {
           chartHover = { active: false, x: 0, y: 0 };
-          redrawCharts(lastPayloadSnapshot);
+          scheduleChartRender(lastPayloadSnapshot, { showLoading: false });
         });
       }
-      window.addEventListener("resize", () => redrawCharts(lastPayloadSnapshot));
+      window.addEventListener("resize", () => scheduleChartRender(lastPayloadSnapshot, { showLoading: false }));
     }
 
     cacheEls();
@@ -2790,30 +2882,27 @@ def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
     }
 
 
-def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None) -> Dict[str, Any]:
-    latest_report = _load_json(runtime_dir / "latest_report.json", {})
-    paper_state = _load_json(runtime_dir / "paper_state.json", {})
-    history = _read_history(runtime_dir / "cycle_reports.jsonl")
-    backtest_payload = _load_backtest_payload(runtime_dir)
-
-    chart_symbol = ""
+def _dashboard_chart_symbol(latest_report: Dict[str, Any]) -> str:
     if latest_report.get("decisions"):
-        chart_symbol = latest_report["decisions"][0].get("symbol", "")
-    if not chart_symbol and latest_report.get("market_prices"):
-        chart_symbol = next(iter(latest_report["market_prices"]))
+        return latest_report["decisions"][0].get("symbol", "")
+    if latest_report.get("market_prices"):
+        return next(iter(latest_report["market_prices"]))
+    return ""
 
-    main_interval = _detect_main_interval(latest_report, backtest_payload["backtest_manifest"])
-    main_bars = (
-        _build_live_main_interval_bars(history, symbol=chart_symbol, interval=main_interval, latest_report=latest_report)
-        if chart_symbol
-        else []
-    )
-    refresh_bars = (
-        _build_live_main_interval_bars(history, symbol=chart_symbol, interval="1m", limit=96)
-        if chart_symbol
-        else []
-    )
+
+def _build_dashboard_chart_payload(
+    runtime_dir: Path,
+    *,
+    latest_report: Dict[str, Any] | None = None,
+    history: List[Dict[str, Any]] | None = None,
+    chart_interval: str | None = None,
+    backtest_manifest: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    latest_report = latest_report if latest_report is not None else _load_json(runtime_dir / "latest_report.json", {})
+    history = history if history is not None else _read_history(runtime_dir / "cycle_reports.jsonl")
+    chart_symbol = _dashboard_chart_symbol(latest_report)
     selected_chart_interval = _normalize_chart_interval(chart_interval)
+    main_interval = _detect_main_interval(latest_report, backtest_manifest or {})
     chart_bars, chart_meta = (
         _load_or_fetch_chart_bars(
             runtime_dir=runtime_dir,
@@ -2826,6 +2915,56 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         if chart_symbol
         else ([], {"source": "runtime_sample", "cache_path": "", "cache_hit": False})
     )
+    return {
+        "live_chart_symbol": chart_symbol,
+        "live_main_interval": main_interval,
+        "live_chart_interval": selected_chart_interval,
+        "live_chart_interval_label": _chart_interval_label(selected_chart_interval),
+        "live_chart_source": chart_meta.get("source", "runtime_sample"),
+        "live_chart_cache": chart_meta,
+        "live_chart_bars": chart_bars,
+        "live_trade_markers": _extract_live_trade_markers(history),
+        "order_markers": _extract_order_markers(history),
+        "position_activation_markers": _extract_position_activation_markers(history),
+        "live_ai_veto_markers": _extract_live_ai_veto_markers(history),
+    }
+
+
+def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
+    latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    paper_state = _load_json(runtime_dir / "paper_state.json", {})
+    history = _read_history(runtime_dir / "cycle_reports.jsonl")
+    backtest_payload = _load_backtest_payload(runtime_dir)
+
+    chart_symbol = _dashboard_chart_symbol(latest_report)
+    main_interval = _detect_main_interval(latest_report, backtest_payload["backtest_manifest"])
+    selected_chart_interval = _normalize_chart_interval(chart_interval)
+    if include_chart and chart_symbol:
+        main_bars = _build_live_main_interval_bars(history, symbol=chart_symbol, interval=main_interval, latest_report=latest_report)
+        refresh_bars = _build_live_main_interval_bars(history, symbol=chart_symbol, interval="1m", limit=96)
+        chart_payload = _build_dashboard_chart_payload(
+            runtime_dir,
+            latest_report=latest_report,
+            history=history,
+            chart_interval=selected_chart_interval,
+            backtest_manifest=backtest_payload["backtest_manifest"],
+        )
+    else:
+        main_bars = []
+        refresh_bars = []
+        chart_payload = {
+            "live_chart_symbol": chart_symbol,
+            "live_main_interval": main_interval,
+            "live_chart_interval": selected_chart_interval,
+            "live_chart_interval_label": _chart_interval_label(selected_chart_interval),
+            "live_chart_source": "deferred",
+            "live_chart_cache": {"source": "deferred", "cache_hit": False, "cache_policy": "deferred_chart_request"},
+            "live_chart_bars": [],
+            "live_trade_markers": [],
+            "order_markers": [],
+            "position_activation_markers": [],
+            "live_ai_veto_markers": [],
+        }
 
     return {
         "latest_report": latest_report,
@@ -2837,21 +2976,11 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "decision_ledger": _extract_decision_ledger(history, latest_report),
         "position_activation_state": paper_state.get("activation_state", {}),
-        "live_chart_symbol": chart_symbol,
-        "live_main_interval": main_interval,
         "live_main_interval_bars": main_bars,
         "live_refresh_interval": "1m",
         "live_refresh_bars": refresh_bars,
-        "live_chart_interval": selected_chart_interval,
-        "live_chart_interval_label": _chart_interval_label(selected_chart_interval),
-        "live_chart_source": chart_meta.get("source", "runtime_sample"),
-        "live_chart_cache": chart_meta,
-        "live_chart_bars": chart_bars,
         "chart_interval_options": CHART_INTERVAL_OPTIONS,
-        "live_trade_markers": _extract_live_trade_markers(history),
-        "order_markers": _extract_order_markers(history),
-        "position_activation_markers": _extract_position_activation_markers(history),
-        "live_ai_veto_markers": _extract_live_ai_veto_markers(history),
+        **chart_payload,
         **backtest_payload,
     }
 
@@ -2867,7 +2996,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/dashboard":
             query = parse_qs(parsed.query)
             requested_interval = query.get("chart_interval", [None])[0]
-            self._send_json(build_dashboard_payload(self.runtime_dir, chart_interval=requested_interval))
+            include_chart = str(query.get("include_chart", ["true"])[0]).lower() not in {"0", "false", "no"}
+            self._send_json(build_dashboard_payload(self.runtime_dir, chart_interval=requested_interval, include_chart=include_chart))
+            return
+        if parsed.path == "/api/dashboard/chart":
+            query = parse_qs(parsed.query)
+            requested_interval = query.get("chart_interval", [None])[0]
+            self._send_json(_build_dashboard_chart_payload(self.runtime_dir, chart_interval=requested_interval))
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
@@ -2876,20 +3011,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _send_html(self, html: str) -> None:
         body = html.encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
     def _send_json(self, payload: Dict[str, Any]) -> None:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
 
 def parse_args() -> argparse.Namespace:

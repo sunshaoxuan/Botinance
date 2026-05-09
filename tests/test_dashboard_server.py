@@ -8,6 +8,7 @@ from pathlib import Path
 from binance_ai.dashboard_server import (
     INDEX_HTML,
     _aggregate_chart_bars,
+    _build_dashboard_chart_payload,
     _build_live_main_interval_bars,
     _extract_position_activation_markers,
     _extract_live_ai_veto_markers,
@@ -41,9 +42,14 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("fillNext", INDEX_HTML)
         self.assertIn("insight-drawer", INDEX_HTML)
         self.assertIn("chartIntervalSelect", INDEX_HTML)
+        self.assertIn("chartLoading", INDEX_HTML)
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
+        self.assertIn("chartRenderSeq", INDEX_HTML)
         self.assertIn("requestSeq !== dashboardRequestSeq", INDEX_HTML)
         self.assertIn("requestInterval === selectedChartInterval", INDEX_HTML)
+        self.assertIn("include_chart", INDEX_HTML)
+        self.assertIn("/api/dashboard/chart", INDEX_HTML)
+        self.assertIn("scheduleChartRender", INDEX_HTML)
         self.assertIn("data-drawer=\"evidence\"", INDEX_HTML)
         self.assertIn("data-drawer=\"decision\"", INDEX_HTML)
         self.assertNotIn("bottom-insight-grid", INDEX_HTML)
@@ -189,6 +195,56 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["order_lifecycle_events"][0]["status"], "OPEN")
         self.assertEqual(len(payload["order_markers"]), 1)
         self.assertEqual(payload["order_markers"][0]["status"], "OPEN")
+
+    def test_dashboard_payload_can_defer_chart_data(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(
+                runtime_dir / "latest_report.json",
+                {
+                    "timestamp_ms": 3_000,
+                    "decisions": [{"symbol": "XRPJPY", "signal": {"action": "HOLD"}}],
+                    "market_prices": {"XRPJPY": 223.4},
+                },
+            )
+            _write_text(
+                runtime_dir / "cycle_reports.jsonl",
+                "\n".join(
+                    json.dumps({"timestamp_ms": ts, "decisions": [], "market_prices": {"XRPJPY": price}})
+                    for ts, price in [(1_000, 221.0), (2_000, 222.0), (3_000, 223.0)]
+                ),
+            )
+            _write_json(
+                runtime_dir / "chart_cache" / "XRPJPY_1h.json",
+                {
+                    "symbol": "XRPJPY",
+                    "interval": "1h",
+                    "source": "cache",
+                    "bars": [
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 0,
+                            "close_time": 3_599_999,
+                            "open": 221.0,
+                            "high": 223.0,
+                            "low": 221.0,
+                            "close": 223.0,
+                            "volume": 1.0,
+                            "sample_count": 3,
+                        }
+                    ],
+                },
+            )
+
+            payload = build_dashboard_payload(runtime_dir, chart_interval="1h", include_chart=False)
+            chart_payload = _build_dashboard_chart_payload(runtime_dir, chart_interval="1h")
+
+        self.assertEqual(payload["live_chart_interval"], "1h")
+        self.assertEqual(payload["live_chart_source"], "deferred")
+        self.assertEqual(payload["live_chart_bars"], [])
+        self.assertEqual(payload["live_main_interval_bars"], [])
+        self.assertEqual(chart_payload["live_chart_interval"], "1h")
+        self.assertGreaterEqual(len(chart_payload["live_chart_bars"]), 1)
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
