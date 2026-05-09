@@ -414,17 +414,6 @@ INDEX_HTML = """<!doctype html>
       line-height: 1.5;
     }
 
-    .cash-card {
-      background:
-        linear-gradient(135deg, rgba(232, 240, 252, 0.82), rgba(255, 255, 255, 0.94) 52%),
-        rgba(255, 255, 255, 0.94);
-      border-color: rgba(83, 113, 154, 0.22);
-    }
-
-    .cash-card .card-value {
-      color: var(--blue);
-    }
-
     .metric-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -761,7 +750,6 @@ INDEX_HTML = """<!doctype html>
 
           <aside class="right-command-stack">
             <div class="card" id="positionCard"></div>
-            <div class="card cash-card" id="cashCard"></div>
             <div class="card" id="pnlCard"></div>
             <div class="card" id="sellDecisionCard"></div>
             <div class="card" id="riskGateCard"></div>
@@ -897,7 +885,7 @@ INDEX_HTML = """<!doctype html>
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
-      "positionCard", "cashCard", "pnlCard", "sellDecisionCard", "riskGateCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
+      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1107,12 +1095,6 @@ INDEX_HTML = """<!doctype html>
         <div class="card-label"><span>当前持仓</span>${qty > 0 ? statusChip("持仓中", "buy") : statusChip("空仓", "wait")}</div>
         <div class="card-value">${qty > 0 ? `${fmtNumber(qty, 6)} XRP` : "0 XRP"}</div>
         <div class="card-note">真实成本 ${realAvg ? fmtCurrency(realAvg, c.quoteAsset) : "--"}，Boti接管价 ${avg ? fmtCurrency(avg, c.quoteAsset) : "--"}，最高价 ${fmtCurrency(highest, c.quoteAsset)}</div>
-      `;
-
-      els.cashCard.innerHTML = `
-        <div class="card-label"><span>可用现金</span>${statusChip(c.quoteAsset, "wait")}</div>
-        <div class="card-value">${fmtCurrency(availableCash, c.quoteAsset)}</div>
-        <div class="card-note">来自当前纸面账户现金余额；用于后续模拟买入、网格回补和风险预算计算。</div>
       `;
 
       els.pnlCard.innerHTML = `
