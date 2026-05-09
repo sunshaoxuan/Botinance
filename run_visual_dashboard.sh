@@ -44,6 +44,7 @@ PY
 echo "Starting local paper monitor in background"
 echo "Output dir: $OUTPUT_DIR"
 echo "Monitor interval: ${SLEEP_SECONDS}s"
+echo "Config source: $ROOT_DIR/.env + $ROOT_DIR/.secrets.enc + macOS Keychain"
 echo "Dashboard: http://${DASHBOARD_HOST}:${RESOLVED_PORT}"
 echo
 

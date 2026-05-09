@@ -33,14 +33,32 @@ source .venv/bin/activate
 pip install -e .
 ```
 
-3. Copy `.env.example` to `.env` and fill in your API key and secret.
-4. Keep `DRY_RUN=true` until you have reviewed the logs and sizing behavior.
+3. Copy `.env.example` to `.env` and fill only non-sensitive settings.
+4. Put sensitive keys in a temporary plaintext `.env`, then migrate them into an encrypted file:
+
+```bash
+PYTHONPATH=src python3 -m binance_ai.secrets migrate-dotenv
+```
+
+This command:
+
+- rewrites `.env` into a git-safe public config file
+- writes encrypted secrets to `.secrets.enc`
+- stores the decryption passphrase in macOS Keychain
+
+5. Keep `DRY_RUN=true` until you have reviewed the logs and sizing behavior.
 
 ## Run once
 
 ```bash
 PYTHONPATH=src python3 -m binance_ai.main
 ```
+
+The runtime loads:
+
+- public settings from `.env`
+- sensitive settings from `.secrets.enc`
+- the decryption passphrase from macOS Keychain
 
 ## Run in a loop
 

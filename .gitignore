@@ -1,5 +1,9 @@
-.env
 __pycache__/
 *.pyc
 runtime/
 runtime_*/
+.env.local
+.env.plain
+.env.bak
+.secrets.dec
+.secrets.tmp

@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlparse
 
+from binance_ai.secrets import load_encrypted_secrets, parse_env_file
+
 
 def _parse_bool(value: str, default: bool) -> bool:
     if value is None:
@@ -13,16 +15,14 @@ def _parse_bool(value: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _load_dotenv(path: Path) -> None:
-    if not path.exists():
-        return
+def _load_config_environment(path: Path) -> None:
+    public_values = parse_env_file(path)
+    for key, value in public_values.items():
+        os.environ.setdefault(key, value)
 
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip())
+    secret_values = load_encrypted_secrets(public_values, path)
+    for key, value in secret_values.items():
+        os.environ.setdefault(key, value)
 
 
 def _normalize_base_url(value: str) -> str:
@@ -74,7 +74,7 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    _load_dotenv(Path(".env"))
+    _load_config_environment(Path(".env"))
 
     symbols = [
         symbol.strip().upper()
