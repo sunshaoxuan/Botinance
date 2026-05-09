@@ -917,7 +917,7 @@ INDEX_HTML = """<!doctype html>
                 </div>
               </div>
               <div class="chart-frame">
-                <div class="chart-loading active" id="chartLoading"><span class="chart-spinner"></span><span>正在读取行情图表</span></div>
+                <div class="chart-loading" id="chartLoading"><span class="chart-spinner"></span><span>图表后台加载</span></div>
                 <canvas id="tradeChart"></canvas>
               </div>
             </article>
@@ -1367,7 +1367,7 @@ INDEX_HTML = """<!doctype html>
 
     function setChartLoading(active, text) {
       if (!els.chartLoading) return;
-      els.chartLoading.classList.toggle("active", Boolean(active));
+      els.chartLoading.classList.toggle("active", false);
       const label = els.chartLoading.querySelector("span:last-child");
       if (label && text) label.textContent = text;
     }
@@ -1845,7 +1845,7 @@ INDEX_HTML = """<!doctype html>
     function scheduleChartRender(payload, options = {}) {
       if (!payload) return;
       const renderSeq = ++chartRenderSeq;
-      if (options.showLoading) setChartLoading(true, options.loadingText || "正在绘制 K 线");
+      if (options.showLoading) setChartLoading(false, options.loadingText || "正在绘制 K 线");
       window.setTimeout(() => {
         window.requestAnimationFrame(() => {
           if (renderSeq !== chartRenderSeq) return;
@@ -1854,7 +1854,7 @@ INDEX_HTML = """<!doctype html>
             if (activeTab === "trading") setChartLoading(false);
           } catch (err) {
             console.error(err);
-            if (activeTab === "trading") setChartLoading(true, "图表渲染失败，其他数据不受影响");
+            if (activeTab === "trading") setChartLoading(false, "图表渲染失败，其他数据不受影响");
           }
         });
       }, 0);
@@ -2346,7 +2346,7 @@ INDEX_HTML = """<!doctype html>
       const chartInterval = selectedChartInterval;
       const cachedBars = chartBarsCache[chartInterval] || [];
       const previousPayload = lastPayloadSnapshot;
-      if (!cachedBars.length) setChartLoading(true, `正在读取 ${chartInterval} K 线`);
+      if (!cachedBars.length) setChartLoading(false, `后台读取 ${chartInterval} K 线`);
       window.setTimeout(() => {
         if (requestSeq === dashboardRequestSeq && els.chartLoading?.classList.contains("active")) {
           setChartLoading(false);
@@ -2364,7 +2364,7 @@ INDEX_HTML = """<!doctype html>
           const chartPayload = await loadChartData(chartInterval, requestSeq);
           if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
           const mergedPayload = { ...lastPayloadSnapshot, ...chartPayload };
-          updateDom(mergedPayload, { renderChart: true, showChartLoading: !cachedBars.length });
+          updateDom(mergedPayload, { renderChart: true, showChartLoading: false });
         } catch (chartErr) {
           if (requestSeq !== dashboardRequestSeq) return;
           console.error(chartErr);
