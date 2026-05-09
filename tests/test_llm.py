@@ -126,6 +126,8 @@ class MarketAnalystTests(unittest.TestCase):
         self.assertEqual(snapshot["long_window_size"], 50)
         self.assertEqual(snapshot["long_window_closes"][0], 11.0)
         self.assertEqual(snapshot["long_window_closes"][-1], 60.0)
+        self.assertEqual(len(snapshot["main_interval_bars"]), 60)
+        self.assertEqual(snapshot["main_interval_bars"][-1]["close"], 60.0)
         self.assertEqual(snapshot["entry_interval_summary"]["interval"], "15m")
         self.assertEqual(snapshot["trend_interval_summary"]["interval"], "4h")
 

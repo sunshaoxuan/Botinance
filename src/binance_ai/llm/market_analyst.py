@@ -269,6 +269,19 @@ def build_market_snapshot(
     closes = [candle.close for candle in candles]
     recent_closes = closes[-12:]
     long_window = closes[-slow_window:] if len(closes) >= slow_window else closes[:]
+    main_interval_bars = [
+        {
+            "symbol": symbol,
+            "open_time": candle.open_time,
+            "close_time": candle.close_time,
+            "open": candle.open,
+            "high": candle.high,
+            "low": candle.low,
+            "close": candle.close,
+            "volume": candle.volume,
+        }
+        for candle in candles[-160:]
+    ]
     fast_now = mean(closes[-fast_window:]) if len(closes) >= fast_window else (closes[-1] if closes else 0.0)
     slow_now = mean(closes[-slow_window:]) if len(closes) >= slow_window else (closes[-1] if closes else 0.0)
     latest_price = closes[-1] if closes else 0.0
@@ -325,6 +338,7 @@ def build_market_snapshot(
         "signal_regime": signal.regime,
         "has_position": has_position,
         "recent_closes": recent_closes,
+        "main_interval_bars": main_interval_bars,
         "long_window_size": len(long_window),
         "long_window_closes": long_window,
         "ma_fast": round(fast_now, 4),

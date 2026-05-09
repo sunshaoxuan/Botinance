@@ -1892,8 +1892,33 @@ def _build_live_main_interval_bars(
     *,
     symbol: str,
     interval: str,
+    latest_report: Dict[str, Any] | None = None,
     limit: int = 120,
 ) -> List[Dict[str, Any]]:
+    latest_report = latest_report or {}
+    snapshot_bars: List[Dict[str, Any]] = []
+    for snapshot in latest_report.get("market_snapshots", []):
+        if str(snapshot.get("symbol", "")).upper() != symbol.upper():
+            continue
+        for raw_bar in snapshot.get("main_interval_bars", []):
+            if not isinstance(raw_bar, dict):
+                continue
+            bar = {
+                "symbol": symbol,
+                "open_time": _coerce_int(raw_bar.get("open_time")),
+                "close_time": _coerce_int(raw_bar.get("close_time")),
+                "open": _coerce_float(raw_bar.get("open")),
+                "high": _coerce_float(raw_bar.get("high")),
+                "low": _coerce_float(raw_bar.get("low")),
+                "close": _coerce_float(raw_bar.get("close")),
+                "volume": _coerce_float(raw_bar.get("volume")),
+                "sample_count": _coerce_int(raw_bar.get("sample_count"), 1),
+                "source": "binance_kline",
+            }
+            if bar["open_time"] > 0 and bar["close"] > 0:
+                snapshot_bars.append(bar)
+        break
+
     interval_ms = INTERVAL_MS.get(interval, INTERVAL_MS["1h"])
     buckets: Dict[int, Dict[str, Any]] = {}
     for cycle in history:
@@ -1921,7 +1946,21 @@ def _build_live_main_interval_bars(
         bucket["close"] = price
 
     bars = [buckets[key] for key in sorted(buckets)]
-    return bars[-limit:]
+    if not snapshot_bars:
+        return bars[-limit:]
+
+    merged = {bar["open_time"]: dict(bar) for bar in snapshot_bars}
+    for bar in bars:
+        existing = merged.get(bar["open_time"])
+        if existing:
+            existing["high"] = max(_coerce_float(existing.get("high")), _coerce_float(bar.get("high")))
+            existing["low"] = min(_coerce_float(existing.get("low")), _coerce_float(bar.get("low")))
+            existing["close"] = _coerce_float(bar.get("close"), _coerce_float(existing.get("close")))
+            existing["sample_count"] = _coerce_int(existing.get("sample_count"), 1) + _coerce_int(bar.get("sample_count"), 0)
+            existing["source"] = "binance_kline+runtime_sample"
+        else:
+            merged[bar["open_time"]] = dict(bar, source="runtime_sample")
+    return [merged[key] for key in sorted(merged)][-limit:]
 
 
 def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
@@ -1968,7 +2007,11 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         chart_symbol = next(iter(latest_report["market_prices"]))
 
     main_interval = _detect_main_interval(latest_report, backtest_payload["backtest_manifest"])
-    bars = _build_live_main_interval_bars(history, symbol=chart_symbol, interval=main_interval) if chart_symbol else []
+    bars = (
+        _build_live_main_interval_bars(history, symbol=chart_symbol, interval=main_interval, latest_report=latest_report)
+        if chart_symbol
+        else []
+    )
 
     return {
         "latest_report": latest_report,

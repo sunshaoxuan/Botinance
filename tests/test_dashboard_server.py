@@ -225,6 +225,77 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(bars[0]["low"], 218.0)
         self.assertEqual(bars[0]["close"], 218.0)
 
+    def test_live_bars_fall_back_to_latest_report_real_klines(self) -> None:
+        latest_report = {
+            "market_snapshots": [
+                {
+                    "symbol": "XRPJPY",
+                    "main_interval_bars": [
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 1_000,
+                            "close_time": 1_999,
+                            "open": 220.0,
+                            "high": 225.0,
+                            "low": 219.0,
+                            "close": 224.0,
+                            "volume": 10.0,
+                        },
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 2_000,
+                            "close_time": 2_999,
+                            "open": 224.0,
+                            "high": 226.0,
+                            "low": 223.0,
+                            "close": 225.0,
+                            "volume": 12.0,
+                        },
+                    ],
+                }
+            ]
+        }
+
+        bars = _build_live_main_interval_bars([], symbol="XRPJPY", interval="1m", latest_report=latest_report)
+
+        self.assertEqual(len(bars), 2)
+        self.assertEqual(bars[0]["open"], 220.0)
+        self.assertEqual(bars[0]["high"], 225.0)
+        self.assertEqual(bars[0]["low"], 219.0)
+        self.assertEqual(bars[0]["close"], 224.0)
+        self.assertEqual(bars[0]["source"], "binance_kline")
+
+    def test_live_bars_merge_runtime_sample_without_flattening_real_kline(self) -> None:
+        latest_report = {
+            "market_snapshots": [
+                {
+                    "symbol": "XRPJPY",
+                    "main_interval_bars": [
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 60_000,
+                            "close_time": 119_999,
+                            "open": 220.0,
+                            "high": 225.0,
+                            "low": 219.0,
+                            "close": 224.0,
+                            "volume": 10.0,
+                        }
+                    ],
+                }
+            ]
+        }
+        history = [{"timestamp_ms": 90_000, "market_prices": {"XRPJPY": 223.0}}]
+
+        bars = _build_live_main_interval_bars(history, symbol="XRPJPY", interval="1m", latest_report=latest_report)
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0]["open"], 220.0)
+        self.assertEqual(bars[0]["high"], 225.0)
+        self.assertEqual(bars[0]["low"], 219.0)
+        self.assertEqual(bars[0]["close"], 223.0)
+        self.assertEqual(bars[0]["source"], "binance_kline+runtime_sample")
+
 
 if __name__ == "__main__":
     unittest.main()
