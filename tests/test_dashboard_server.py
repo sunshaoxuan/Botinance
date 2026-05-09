@@ -10,6 +10,7 @@ from binance_ai.dashboard_server import (
     _aggregate_chart_bars,
     _build_dashboard_chart_payload,
     _build_live_main_interval_bars,
+    _chart_cache_needs_tail_refresh,
     _extract_chart_trade_markers_from_file,
     _extract_recent_fills_from_file,
     _extract_position_activation_markers,
@@ -71,6 +72,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("系统日志", INDEX_HTML)
         self.assertIn("drawCandlestickChart", INDEX_HTML)
         self.assertIn("volumeHeight", INDEX_HTML)
+        self.assertIn("barVolumeValue", INDEX_HTML)
+        self.assertNotIn("sample_count || b.volume", INDEX_HTML)
 
     def test_build_dashboard_payload_prefers_walk_forward_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -432,7 +435,33 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(merged[0]["high"], 226.0)
         self.assertEqual(merged[0]["low"], 219.0)
         self.assertEqual(merged[0]["close"], 225.5)
+        self.assertEqual(merged[0]["volume"], 10.0)
         self.assertIn("runtime_sample", merged[0]["source"])
+
+    def test_chart_cache_tail_refresh_only_when_latest_report_passes_cached_close(self) -> None:
+        fresh_enough = {
+            "fetched_at": 1.0,
+            "bars": [{"open_time": 0, "close_time": 599_999, "close": 224.0}],
+        }
+        stale = {
+            "fetched_at": 1.0,
+            "bars": [{"open_time": 0, "close_time": 59_999, "close": 224.0}],
+        }
+
+        self.assertFalse(
+            _chart_cache_needs_tail_refresh(
+                fresh_enough,
+                "1m",
+                {"timestamp_ms": 120_000},
+            )
+        )
+        self.assertTrue(
+            _chart_cache_needs_tail_refresh(
+                stale,
+                "1m",
+                {"timestamp_ms": 120_000},
+            )
+        )
 
     def test_aggregate_chart_bars_builds_non_native_10m_candles(self) -> None:
         bars = [

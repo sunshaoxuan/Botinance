@@ -1927,7 +1927,7 @@ INDEX_HTML = """<!doctype html>
       const x = (idx) => pad.left + (idx + 0.5) / data.length * plotW;
       const barSlot = plotW / data.length;
       const candleW = Math.max(5, Math.min(15, barSlot * 0.72));
-      const maxVol = Math.max(...data.map((b) => asNumber(b.sample_count || b.volume || 1, 1)), 1);
+      const maxVol = Math.max(...data.map((b) => barVolumeValue(b)), 1);
 
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, width, height);
@@ -1964,7 +1964,7 @@ INDEX_HTML = """<!doctype html>
         const cx = x(idx);
         const up = close >= open;
         const color = up ? "#15803d" : "#b4232a";
-        const vol = asNumber(b.sample_count || b.volume || 1, 1);
+        const vol = barVolumeValue(b);
         const volH = Math.max(2, vol / maxVol * (volumeHeight - 12));
         ctx.fillStyle = up ? "rgba(21, 128, 61, 0.16)" : "rgba(180, 35, 42, 0.14)";
         ctx.fillRect(cx - candleW / 2, volumeTop + volumeHeight - volH, candleW, volH);
@@ -2044,6 +2044,12 @@ INDEX_HTML = """<!doctype html>
         height,
         quoteAsset: options.quoteAsset || ""
       });
+    }
+
+    function barVolumeValue(bar) {
+      const volume = asNumber(bar.volume, NaN);
+      if (Number.isFinite(volume) && volume > 0) return volume;
+      return asNumber(bar.sample_count, 1);
     }
 
     function drawChartHover(ctx, options) {
@@ -2988,6 +2994,40 @@ def _write_chart_cache(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _chart_cache_refresh_seconds(interval: str) -> int:
+    interval_ms = INTERVAL_MS.get(interval, INTERVAL_MS["1m"])
+    if interval_ms <= INTERVAL_MS["5m"]:
+        return 20
+    if interval_ms <= INTERVAL_MS["1h"]:
+        return 60
+    if interval_ms <= INTERVAL_MS["8h"]:
+        return 180
+    return 900
+
+
+def _latest_report_timestamp_ms(latest_report: Dict[str, Any]) -> int:
+    return _coerce_int(
+        latest_report.get("timestamp_ms"),
+        _coerce_int(latest_report.get("generated_at_ms"), _coerce_int(latest_report.get("news_last_updated_ms"))),
+    )
+
+
+def _chart_cache_needs_tail_refresh(cached: Dict[str, Any], interval: str, latest_report: Dict[str, Any]) -> bool:
+    bars = [bar for bar in cached.get("bars", []) if isinstance(bar, dict)]
+    if not bars:
+        return True
+    latest_timestamp_ms = _latest_report_timestamp_ms(latest_report)
+    if latest_timestamp_ms <= 0:
+        return False
+    last_close_time = max(_coerce_int(bar.get("close_time"), _coerce_int(bar.get("open_time"))) for bar in bars)
+    if latest_timestamp_ms <= last_close_time:
+        return False
+    fetched_at = _coerce_float(cached.get("fetched_at"))
+    if fetched_at <= 0:
+        return True
+    return (time.time() - fetched_at) >= _chart_cache_refresh_seconds(interval)
+
+
 def _merge_chart_bars(base_bars: List[Dict[str, Any]], overlay_bars: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
     merged = {_coerce_int(bar.get("open_time")): dict(bar) for bar in base_bars if _coerce_int(bar.get("open_time")) >= 0}
     for bar in overlay_bars:
@@ -3030,17 +3070,42 @@ def _load_or_fetch_chart_bars(
     cache_path = _chart_cache_path(runtime_dir, symbol, interval)
     cached = _read_cached_chart_bars(cache_path)
     if cached:
+        cache_source = cached.get("source", "cache")
+        cache_refreshed = False
+        refresh_error = ""
+        cache_bars = list(cached.get("bars", []))
+        if allow_fetch and _chart_cache_needs_tail_refresh(cached, interval, latest_report):
+            try:
+                fetched_bars, fetched_source = _fetch_chart_bars_from_binance(symbol=symbol, interval=interval, limit=limit)
+                if fetched_bars:
+                    cache_bars = _merge_chart_bars(cache_bars, fetched_bars, max(limit, len(cache_bars)))
+                    cache_source = fetched_source
+                    cache_refreshed = True
+                    cached = {
+                        "symbol": symbol,
+                        "interval": interval,
+                        "label": _chart_interval_label(interval),
+                        "source": cache_source,
+                        "fetched_at": time.time(),
+                        "bars": cache_bars[-limit:],
+                    }
+                    _write_chart_cache(cache_path, cached)
+                    cache_bars = list(cached.get("bars", []))
+            except Exception as exc:  # noqa: BLE001 - chart should keep cached data if tail refresh fails.
+                refresh_error = str(exc)
         bars = _merge_chart_bars(
-            list(cached.get("bars", [])),
+            cache_bars,
             fallback,
             limit,
         )
         return bars, {
-            "source": cached.get("source", "cache"),
+            "source": cache_source,
             "cache_path": str(cache_path),
             "cache_hit": True,
             "fetched_at": cached.get("fetched_at"),
             "cache_policy": "immutable_history",
+            "cache_refreshed": cache_refreshed,
+            "refresh_error": refresh_error,
             "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
         }
 
