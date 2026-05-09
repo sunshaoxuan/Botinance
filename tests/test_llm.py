@@ -41,15 +41,28 @@ class MarketAnalystTests(unittest.TestCase):
         ]
         snapshot = build_market_snapshot(
             symbol="XRPJPY",
-            candles=candles,
+            candles_by_interval={
+                "1h": candles,
+                "15m": candles[-30:],
+                "4h": candles,
+            },
             signal=TradeSignal(symbol="XRPJPY", action=SignalAction.HOLD, confidence=0.5, reason="test"),
             has_position=False,
+            main_interval="1h",
             fast_window=20,
             slow_window=50,
+            entry_interval="15m",
+            entry_fast_window=12,
+            entry_slow_window=26,
+            trend_interval="4h",
+            trend_fast_window=20,
+            trend_slow_window=50,
         )
         self.assertEqual(snapshot["long_window_size"], 50)
         self.assertEqual(snapshot["long_window_closes"][0], 11.0)
         self.assertEqual(snapshot["long_window_closes"][-1], 60.0)
+        self.assertEqual(snapshot["entry_interval_summary"]["interval"], "15m")
+        self.assertEqual(snapshot["trend_interval_summary"]["interval"], "4h")
 
     def test_assess_entry_risk_parses_decision_payload(self) -> None:
         class _ClientStub:
@@ -78,6 +91,22 @@ class MarketAnalystTests(unittest.TestCase):
                     "change_long_pct": 1.0,
                     "high_long": 221.0,
                     "low_long": 220.0,
+                    "entry_interval_summary": {
+                        "interval": "15m",
+                        "last_price": 221.0,
+                        "fast_ma": 220.8,
+                        "slow_ma": 220.4,
+                        "state": "above",
+                        "change_pct": 0.5,
+                    },
+                    "trend_interval_summary": {
+                        "interval": "4h",
+                        "last_price": 221.0,
+                        "fast_ma": 220.7,
+                        "slow_ma": 220.2,
+                        "state": "above",
+                        "change_pct": 1.2,
+                    },
                 }
             ],
             news_evidence=[],
@@ -85,6 +114,51 @@ class MarketAnalystTests(unittest.TestCase):
         self.assertFalse(assessment["XRPJPY"].allow_entry)
         self.assertAlmostEqual(assessment["XRPJPY"].position_multiplier, 0.25)
         self.assertEqual(assessment["XRPJPY"].veto_reason, "新闻风险过高")
+
+    def test_build_market_snapshot_respects_configured_intervals_and_windows(self) -> None:
+        main_candles = [
+            Candle(
+                open_time=index,
+                open=float(index),
+                high=float(index),
+                low=float(index),
+                close=float(index),
+                volume=1.0,
+                close_time=index + 1,
+            )
+            for index in range(1, 61)
+        ]
+        entry_candles = [
+            Candle(open_time=index, open=value, high=value, low=value, close=value, volume=1.0, close_time=index + 1)
+            for index, value in enumerate([1.0, 1.0, 1.0, 10.0, 10.0], start=1)
+        ]
+        trend_candles = [
+            Candle(open_time=index, open=value, high=value, low=value, close=value, volume=1.0, close_time=index + 1)
+            for index, value in enumerate([10.0, 9.0, 8.0, 7.0, 6.0], start=1)
+        ]
+        snapshot = build_market_snapshot(
+            symbol="XRPJPY",
+            candles_by_interval={
+                "30m": main_candles,
+                "5m": entry_candles,
+                "1d": trend_candles,
+            },
+            signal=TradeSignal(symbol="XRPJPY", action=SignalAction.HOLD, confidence=0.5, reason="test"),
+            has_position=False,
+            main_interval="30m",
+            fast_window=20,
+            slow_window=50,
+            entry_interval="5m",
+            entry_fast_window=2,
+            entry_slow_window=4,
+            trend_interval="1d",
+            trend_fast_window=2,
+            trend_slow_window=4,
+        )
+        self.assertEqual(snapshot["entry_interval_summary"]["interval"], "5m")
+        self.assertEqual(snapshot["entry_interval_summary"]["state"], "above")
+        self.assertEqual(snapshot["trend_interval_summary"]["interval"], "1d")
+        self.assertEqual(snapshot["trend_interval_summary"]["state"], "below")
 
 
 if __name__ == "__main__":

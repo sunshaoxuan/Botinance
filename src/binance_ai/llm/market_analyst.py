@@ -193,6 +193,7 @@ class MarketAnalyst:
                     f"策略动作: {item['signal_action']}",
                     f"策略原因: {item['signal_reason']}",
                     f"策略置信度: {item['signal_confidence']}",
+                    f"策略市场结构: {item.get('signal_regime', '')}",
                     f"是否有持仓: {item['has_position']}",
                     f"短周期收盘价(最近12根): [{close_text}]",
                     f"长周期窗口长度: {item['long_window_size']}",
@@ -204,6 +205,8 @@ class MarketAnalyst:
                     f"长周期涨跌幅: {item['change_long_pct']}",
                     f"长周期最高价: {item['high_long']}",
                     f"长周期最低价: {item['low_long']}",
+                    f"{item['entry_interval_summary']['interval']} 概要: {item['entry_interval_summary']}",
+                    f"{item['trend_interval_summary']['interval']} 概要: {item['trend_interval_summary']}",
                 ]
             )
         lines.append("新闻与公告证据如下：")
@@ -240,12 +243,24 @@ class MarketAnalyst:
 
 def build_market_snapshot(
     symbol: str,
-    candles: Sequence[Candle],
+    candles_by_interval: Dict[str, Sequence[Candle]],
     signal: TradeSignal,
     has_position: bool,
+    main_interval: str,
     fast_window: int,
     slow_window: int,
+    entry_interval: str,
+    entry_fast_window: int,
+    entry_slow_window: int,
+    trend_interval: str,
+    trend_fast_window: int,
+    trend_slow_window: int,
 ) -> Dict[str, object]:
+    candles = list(
+        candles_by_interval[main_interval]
+        if main_interval in candles_by_interval
+        else next(iter(candles_by_interval.values()), ())
+    )
     closes = [candle.close for candle in candles]
     recent_closes = closes[-12:]
     long_window = closes[-slow_window:] if len(closes) >= slow_window else closes[:]
@@ -260,12 +275,49 @@ def build_market_snapshot(
             return 0.0
         return round((current - base) / base * 100, 4)
 
+    def summarize_interval(interval: str, interval_candles: Sequence[Candle], fast: int, slow: int) -> Dict[str, object]:
+        interval_closes = [candle.close for candle in interval_candles]
+        if len(interval_closes) < slow:
+            return {
+                "interval": interval,
+                "last_price": interval_closes[-1] if interval_closes else 0.0,
+                "fast_ma": 0.0,
+                "slow_ma": 0.0,
+                "state": "insufficient",
+                "change_pct": 0.0,
+            }
+        fast_now = mean(interval_closes[-fast:])
+        slow_now = mean(interval_closes[-slow:])
+        state = "above" if fast_now > slow_now else "below" if fast_now < slow_now else "flat"
+        return {
+            "interval": interval,
+            "last_price": interval_closes[-1],
+            "fast_ma": round(fast_now, 4),
+            "slow_ma": round(slow_now, 4),
+            "state": state,
+            "change_pct": pct_change(interval_closes[-1], interval_closes[0]),
+        }
+
+    entry_summary = summarize_interval(
+        entry_interval,
+        candles_by_interval.get(entry_interval, ()),
+        entry_fast_window,
+        entry_slow_window,
+    )
+    trend_summary = summarize_interval(
+        trend_interval,
+        candles_by_interval.get(trend_interval, ()),
+        trend_fast_window,
+        trend_slow_window,
+    )
+
     return {
         "symbol": symbol,
         "last_price": latest_price,
         "signal_action": signal.action.value,
         "signal_reason": signal.reason,
         "signal_confidence": round(signal.confidence, 4),
+        "signal_regime": signal.regime,
         "has_position": has_position,
         "recent_closes": recent_closes,
         "long_window_size": len(long_window),
@@ -277,4 +329,6 @@ def build_market_snapshot(
         "change_long_pct": pct_change(latest_price, long_base),
         "high_long": round(max(long_window), 4) if long_window else 0.0,
         "low_long": round(min(long_window), 4) if long_window else 0.0,
+        "entry_interval_summary": entry_summary,
+        "trend_interval_summary": trend_summary,
     }

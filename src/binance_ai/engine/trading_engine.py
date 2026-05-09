@@ -61,11 +61,16 @@ class TradingEngine:
         symbol_contexts: List[Dict[str, object]] = []
 
         for symbol in self.settings.trading_symbols:
-            candles = self.market_data.recent_candles(
+            candles_by_interval = self.market_data.recent_candles_by_interval(
                 symbol=symbol,
-                interval=self.settings.kline_interval,
+                intervals=[
+                    self.settings.kline_interval,
+                    self.settings.mtf_entry_interval,
+                    self.settings.mtf_trend_interval,
+                ],
                 limit=self.settings.kline_limit,
             )
+            candles = candles_by_interval[self.settings.kline_interval]
             price = candles[-1].close
             mark_prices[symbol] = price
             latest_closed_candle_close_time = self._latest_closed_candle_close_time(
@@ -99,7 +104,7 @@ class TradingEngine:
                     )
                 )
 
-            signal = self.strategy.generate(symbol=symbol, candles=candles, has_position=has_position)
+            signal = self.strategy.generate(symbol=symbol, candles_by_interval=candles_by_interval, has_position=has_position)
             exit_reason = (
                 self.risk.determine_exit_reason(
                     price=price,
@@ -120,17 +125,25 @@ class TradingEngine:
             scheduling_diagnostics.append(scheduling)
             market_snapshot = build_market_snapshot(
                 symbol=symbol,
-                candles=candles,
+                candles_by_interval=candles_by_interval,
                 signal=signal,
                 has_position=has_position,
+                main_interval=self.settings.kline_interval,
                 fast_window=self.settings.fast_window,
                 slow_window=self.settings.slow_window,
+                entry_interval=self.settings.mtf_entry_interval,
+                entry_fast_window=self.settings.mtf_entry_fast_window,
+                entry_slow_window=self.settings.mtf_entry_slow_window,
+                trend_interval=self.settings.mtf_trend_interval,
+                trend_fast_window=self.settings.mtf_trend_fast_window,
+                trend_slow_window=self.settings.mtf_trend_slow_window,
             )
             market_snapshots.append(market_snapshot)
             symbol_contexts.append(
                 {
                     "symbol": symbol,
                     "candles": candles,
+                    "candles_by_interval": candles_by_interval,
                     "price": price,
                     "filters": filters,
                     "base_balance": base_balance,
@@ -292,6 +305,7 @@ class TradingEngine:
             scheduling_diagnostics=scheduling_diagnostics,
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
             market_prices=mark_prices,
+            market_snapshots=market_snapshots,
             news_evidence=news_evidence,
             news_refresh_status=news_result.refresh_status if news_result is not None else "DISABLED",
             news_last_updated_ms=news_result.last_updated_ms if news_result is not None else 0,

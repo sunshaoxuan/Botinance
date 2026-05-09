@@ -28,6 +28,7 @@ class TradeSignal:
     action: SignalAction
     confidence: float
     reason: str
+    regime: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,6 +143,7 @@ class CycleReport:
     scheduling_diagnostics: List[SchedulingDiagnostic]
     ai_risk_assessments: List[AiRiskAssessment]
     market_prices: Dict[str, float]
+    market_snapshots: List[Dict[str, object]]
     news_evidence: List["NewsItem"]
     news_refresh_status: str
     news_last_updated_ms: int

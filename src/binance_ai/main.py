@@ -26,8 +26,15 @@ def build_engine(output_dir: Path) -> TradingEngine:
     client = BinanceSpotClient(settings)
     market_data = MarketDataService(client)
     strategy = MovingAverageMomentumStrategy(
+        main_interval=settings.kline_interval,
         fast_window=settings.fast_window,
         slow_window=settings.slow_window,
+        entry_interval=settings.mtf_entry_interval,
+        entry_fast_window=settings.mtf_entry_fast_window,
+        entry_slow_window=settings.mtf_entry_slow_window,
+        trend_interval=settings.mtf_trend_interval,
+        trend_fast_window=settings.mtf_trend_fast_window,
+        trend_slow_window=settings.mtf_trend_slow_window,
     )
     risk = RiskEngine(settings, client)
     news_service = NewsService(

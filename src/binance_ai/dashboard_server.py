@@ -372,6 +372,16 @@ INDEX_HTML = """<!doctype html>
     </section>
 
     <section class="grid" style="margin-top:18px">
+      <div class="panel" style="grid-column: 1 / -1;">
+        <div class="kicker">
+          <h2>多时间框架结构</h2>
+          <div class="mini">15m 入场动量 / 1h 主决策 / 4h 趋势过滤</div>
+        </div>
+        <div id="marketStructure"></div>
+      </div>
+    </section>
+
+    <section class="grid" style="margin-top:18px">
       <div class="panel">
         <div class="kicker">
           <h2>账户快照</h2>
@@ -466,6 +476,18 @@ INDEX_HTML = """<!doctype html>
     function signalClass(action) {
       const key = String(action || "").toLowerCase();
       return `badge signal-${key || "hold"}`;
+    }
+
+    function structureStateLabel(value) {
+      const key = String(value || "").toLowerCase();
+      if (key === "uptrend") return "上升趋势";
+      if (key === "downtrend") return "下降趋势";
+      if (key === "above") return "快线在上";
+      if (key === "below") return "快线在下";
+      if (key === "flat") return "均线走平";
+      if (key === "insufficient") return "数据不足";
+      if (key === "trend_unknown") return "趋势未知";
+      return value || "-";
     }
 
     function signalLabel(action) {
@@ -605,6 +627,7 @@ INDEX_HTML = """<!doctype html>
       const history = payload.history || [];
       const fills = payload.recent_fills || [];
       const evidence = latest.news_evidence || [];
+      const marketSnapshots = latest.market_snapshots || [];
       const buyDiagnostics = latest.buy_diagnostics || [];
       const aiRiskAssessments = latest.ai_risk_assessments || [];
       const schedulingDiagnostics = latest.scheduling_diagnostics || [];
@@ -670,18 +693,67 @@ INDEX_HTML = """<!doctype html>
       renderTableRows(
         document.getElementById("signals"),
         [`<table class="table">
-          <thead><tr><th>交易对</th><th>动作</th><th>置信度</th><th>原因</th></tr></thead>
+          <thead><tr><th>交易对</th><th>动作</th><th>结构</th><th>置信度</th><th>原因</th></tr></thead>
           <tbody>
           ${(latest.decisions || []).map(decision => `
             <tr>
               <td>${decision.symbol}</td>
               <td><span class="${signalClass(decision.signal.action)}">${signalLabel(decision.signal.action)}</span></td>
+              <td>${decision.signal.regime || "-"}</td>
               <td>${fmtNumber((decision.signal.confidence || 0) * 100, 1)}%</td>
               <td>${decision.signal.reason}</td>
             </tr>`).join("")}
           </tbody>
         </table>`],
         "当前还没有信号记录。"
+      );
+
+      renderTableRows(
+        document.getElementById("marketStructure"),
+        marketSnapshots.length ? [`<table class="table">
+          <thead>
+            <tr>
+              <th>交易对</th>
+              <th>当前结构</th>
+              <th>1h 主决策</th>
+              <th>15m 入场</th>
+              <th>4h 趋势</th>
+              <th>24根涨跌</th>
+              <th>长周期涨跌</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${marketSnapshots.map(item => `
+              <tr>
+                <td>${item.symbol}<br><span class="mini">最新 ${fmtCurrency(item.last_price, quoteAsset)}</span></td>
+                <td>${structureStateLabel(item.signal_regime)}</td>
+                <td>
+                  ${signalLabel(item.signal_action)}<br>
+                  <span class="mini">
+                    快线 ${fmtNumber(item.ma_fast, 4)} / 慢线 ${fmtNumber(item.ma_slow, 4)}
+                  </span>
+                </td>
+                <td>
+                  ${structureStateLabel((item.entry_interval_summary || {}).state)}<br>
+                  <span class="mini">
+                    快线 ${fmtNumber((item.entry_interval_summary || {}).fast_ma, 4)} /
+                    慢线 ${fmtNumber((item.entry_interval_summary || {}).slow_ma, 4)}
+                  </span>
+                </td>
+                <td>
+                  ${structureStateLabel((item.trend_interval_summary || {}).state)}<br>
+                  <span class="mini">
+                    快线 ${fmtNumber((item.trend_interval_summary || {}).fast_ma, 4)} /
+                    慢线 ${fmtNumber((item.trend_interval_summary || {}).slow_ma, 4)}
+                  </span>
+                </td>
+                <td class="${classForPnl(item.change_24_pct)}">${fmtNumber(item.change_24_pct, 2)}%</td>
+                <td class="${classForPnl(item.change_long_pct)}">${fmtNumber(item.change_long_pct, 2)}%</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>`] : [],
+        "当前还没有多时间框架结构数据。"
       );
 
       renderTableRows(

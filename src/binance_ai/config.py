@@ -61,6 +61,12 @@ class Settings:
     take_profit_pct: float
     trailing_stop_pct: float
     max_hold_bars: int
+    mtf_entry_interval: str = "15m"
+    mtf_entry_fast_window: int = 12
+    mtf_entry_slow_window: int = 26
+    mtf_trend_interval: str = "4h"
+    mtf_trend_fast_window: int = 20
+    mtf_trend_slow_window: int = 50
     decision_price_move_threshold_pct: float = 0.005
 
     @property
@@ -95,6 +101,12 @@ def load_settings() -> Settings:
         kline_limit=int(os.getenv("KLINE_LIMIT", "250")),
         fast_window=int(os.getenv("FAST_WINDOW", "20")),
         slow_window=int(os.getenv("SLOW_WINDOW", "50")),
+        mtf_entry_interval=os.getenv("MTF_ENTRY_INTERVAL", "15m").strip(),
+        mtf_entry_fast_window=int(os.getenv("MTF_ENTRY_FAST_WINDOW", "12")),
+        mtf_entry_slow_window=int(os.getenv("MTF_ENTRY_SLOW_WINDOW", "26")),
+        mtf_trend_interval=os.getenv("MTF_TREND_INTERVAL", "4h").strip(),
+        mtf_trend_fast_window=int(os.getenv("MTF_TREND_FAST_WINDOW", "20")),
+        mtf_trend_slow_window=int(os.getenv("MTF_TREND_SLOW_WINDOW", "50")),
         risk_per_trade=float(os.getenv("RISK_PER_TRADE", "0.10")),
         min_order_notional=float(os.getenv("MIN_ORDER_NOTIONAL", "25")),
         paper_quote_balance=float(os.getenv("PAPER_QUOTE_BALANCE", "1000")),

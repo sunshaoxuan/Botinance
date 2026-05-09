@@ -8,6 +8,7 @@ API-first Binance spot trading skeleton. It fetches market data, evaluates a det
 - Default limit: up to 3 configured trading pairs
 - Historical kline pull via REST
 - Deterministic momentum strategy
+- Multi-timeframe resonance: `15m` entry, `1h` decision, `4h` trend filter
 - Risk-based sizing
 - Dry-run by default
 
@@ -122,6 +123,34 @@ Two-layer monitoring defaults:
 
 You can override the slow layer interval in `.env` with `NEWS_REFRESH_SECONDS=60` or another value.
 You can override the decision threshold with `DECISION_PRICE_MOVE_THRESHOLD_PCT=0.005`.
+
+## Multi-timeframe strategy
+
+`P5` upgrades the old single `1h` crossover into a resonance model:
+
+- `15m`: entry momentum confirmation
+- `1h`: primary buy or sell trigger
+- `4h`: trend direction filter
+
+Default parameters:
+
+```env
+KLINE_INTERVAL=1h
+FAST_WINDOW=20
+SLOW_WINDOW=50
+MTF_ENTRY_INTERVAL=15m
+MTF_ENTRY_FAST_WINDOW=12
+MTF_ENTRY_SLOW_WINDOW=26
+MTF_TREND_INTERVAL=4h
+MTF_TREND_FAST_WINDOW=20
+MTF_TREND_SLOW_WINDOW=50
+```
+
+The dashboard and runtime report now expose:
+
+- per-symbol market structure (`uptrend`, `downtrend`, etc.)
+- `15m / 1h / 4h` interval summaries
+- the full MTF signal reason used by the strategy
 
 Stop the monitor and dashboard cleanly:
 

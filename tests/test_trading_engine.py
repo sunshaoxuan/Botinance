@@ -31,9 +31,12 @@ class _MarketDataStub(MarketDataService):
     def recent_candles(self, symbol: str, interval: str, limit: int):
         return list(self._candles)
 
+    def recent_candles_by_interval(self, symbol: str, intervals, limit: int):
+        return {interval: list(self._candles) for interval in intervals}
+
 
 class _StrategyStub(Strategy):
-    def generate(self, symbol: str, candles, has_position: bool) -> TradeSignal:
+    def generate(self, symbol: str, candles_by_interval, has_position: bool) -> TradeSignal:
         if has_position:
             return TradeSignal(symbol=symbol, action=SignalAction.HOLD, confidence=0.5, reason="position_open")
         return TradeSignal(symbol=symbol, action=SignalAction.BUY, confidence=0.8, reason="entry_ready")
@@ -143,6 +146,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
 
         self.assertEqual(first_report.cycle_mode, "DECISION")
         self.assertEqual(first_report.decisions[0].execution_result["status"], "PAPER_FILLED")
+        self.assertEqual(len(first_report.market_snapshots), 1)
+        self.assertEqual(first_report.market_snapshots[0]["symbol"], "XRPJPY")
         self.assertEqual(second_report.cycle_mode, "REFRESH")
         self.assertEqual(second_report.decisions[0].execution_result["status"], "SKIPPED_REFRESH_ONLY")
         self.assertEqual(second_report.scheduling_diagnostics[0].should_run_decision, False)
