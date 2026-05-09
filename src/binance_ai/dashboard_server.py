@@ -877,7 +877,7 @@ INDEX_HTML = """<!doctype html>
   </div>
 
   <script>
-    const refreshMs = 5000;
+    const refreshMs = 2000;
     let activeTab = "trading";
     let lastPayloadSnapshot = null;
 

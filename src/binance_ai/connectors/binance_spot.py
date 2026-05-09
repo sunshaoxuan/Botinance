@@ -110,13 +110,18 @@ class BinanceSpotClient:
         return float(payload["price"])
 
     def get_account_snapshot(self) -> AccountSnapshot:
+        return AccountSnapshot(balances=self.get_account_balances(include_locked=False))
+
+    def get_account_balances(self, include_locked: bool = False) -> Dict[str, float]:
         payload = self._signed_request("GET", "/api/v3/account")
-        balances = {
-            item["asset"]: float(item["free"])
-            for item in payload.get("balances", [])
-            if float(item["free"]) > 0
-        }
-        return AccountSnapshot(balances=balances)
+        balances: Dict[str, float] = {}
+        for item in payload.get("balances", []):
+            free = float(item.get("free", 0.0))
+            locked = float(item.get("locked", 0.0)) if include_locked else 0.0
+            total = free + locked
+            if total > 0:
+                balances[item["asset"]] = total
+        return balances
 
     def get_symbol_filters(self, symbol: str) -> SymbolFilters:
         payload = self._public_get("/api/v3/exchangeInfo", params={"symbol": symbol})

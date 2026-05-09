@@ -180,12 +180,20 @@ Backtest view consumes P6 output files directly:
 
 Two-layer monitoring defaults:
 
-- fast layer: market scan every `10` seconds
+- fast layer: market scan every `3` seconds
 - slow layer: news and announcement refresh every `120` seconds
 - decision layer: only executes trading decisions on a new closed candle or a configured price-threshold event
 
 You can override the slow layer interval in `.env` with `NEWS_REFRESH_SECONDS=60` or another value.
 You can override the decision threshold with `DECISION_PRICE_MOVE_THRESHOLD_PCT=0.005`.
+
+Seed the paper portfolio from the current Binance account without enabling live trading:
+
+```bash
+PYTHONPATH=src python3 -m binance_ai.tools.sync_paper_from_account --output-dir runtime_visual
+```
+
+This stops the current visual monitor if `runtime_visual/monitor.pid` is active, archives and removes old simulated runtime files from the target runtime directory, then writes a fresh `paper_state.json` using real account balances and current market prices as the paper cost basis.
 
 ## Multi-timeframe strategy
 
