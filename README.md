@@ -111,8 +111,10 @@ Two-layer monitoring defaults:
 
 - fast layer: market scan every `10` seconds
 - slow layer: news and announcement refresh every `120` seconds
+- decision layer: only executes trading decisions on a new closed candle or a configured price-threshold event
 
 You can override the slow layer interval in `.env` with `NEWS_REFRESH_SECONDS=60` or another value.
+You can override the decision threshold with `DECISION_PRICE_MOVE_THRESHOLD_PCT=0.005`.
 
 Stop the monitor and dashboard cleanly:
 
@@ -126,6 +128,14 @@ Initial requirement is enforced by `MAX_ACTIVE_SYMBOLS=3`.
 
 - `3`: up to 3 trading pairs
 - `0`: unlimited
+
+## Decision scheduling
+
+The runtime persists decision cadence state in `decision_state.json` under each output directory.
+
+- `DECISION`: at least one symbol entered a real decision pass
+- `REFRESH`: price and dashboard updated, but no symbol had a new closed candle or threshold event
+- `MIXED`: some symbols entered decision, others remained refresh-only
 
 ## Live order safety
 

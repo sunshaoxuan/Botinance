@@ -9,6 +9,7 @@ from pathlib import Path
 from binance_ai.config import load_settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.data.market_data import MarketDataService
+from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.engine.trading_engine import TradingEngine
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst
@@ -47,6 +48,10 @@ def build_engine(output_dir: Path) -> TradingEngine:
             state_path=output_dir / "paper_state.json",
         )
     executor = OrderExecutor(settings, client, paper_portfolio=paper_portfolio)
+    scheduler = DecisionScheduler(
+        state_path=output_dir / "decision_state.json",
+        price_move_threshold_pct=settings.decision_price_move_threshold_pct,
+    )
     return TradingEngine(
         settings,
         client,
@@ -54,6 +59,7 @@ def build_engine(output_dir: Path) -> TradingEngine:
         strategy,
         risk,
         executor,
+        scheduler,
         paper_portfolio=paper_portfolio,
         market_analyst=market_analyst,
         news_service=news_service,

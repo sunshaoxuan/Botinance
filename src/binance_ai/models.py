@@ -95,6 +95,22 @@ class PositionDiagnostic:
 
 
 @dataclass(frozen=True)
+class SchedulingDiagnostic:
+    symbol: str
+    should_run_decision: bool
+    decision_reason: str
+    latest_closed_candle_close_time: int
+    last_decision_candle_close_time: int
+    current_price: float
+    last_decision_price: float
+    price_move_pct: float
+    new_candle_available: bool
+    threshold_triggered: bool
+    exit_triggered: bool
+    has_position: bool
+
+
+@dataclass(frozen=True)
 class AccountSnapshot:
     balances: Dict[str, float]
 
@@ -108,11 +124,14 @@ class CycleReport:
     decisions: List[CycleDecision]
     buy_diagnostics: List[BuyDecisionDiagnostic]
     position_diagnostics: List[PositionDiagnostic]
+    scheduling_diagnostics: List[SchedulingDiagnostic]
     market_prices: Dict[str, float]
     news_evidence: List["NewsItem"]
     news_refresh_status: str
     news_last_updated_ms: int
     news_next_refresh_ms: int
+    cycle_mode: str
+    cycle_reason: str
     quote_asset_balance: float
     simulation_mode: bool
     total_equity: float

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import time
 from typing import Dict, List
 
 from binance_ai.config import Settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.data.market_data import MarketDataService
+from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, BuyDecisionDiagnostic, CycleDecision, CycleReport, PositionDiagnostic, SignalAction
+from binance_ai.models import AccountSnapshot, BuyDecisionDiagnostic, CycleDecision, CycleReport, PositionDiagnostic, SchedulingDiagnostic, SignalAction
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.risk.engine import RiskEngine
@@ -24,6 +26,7 @@ class TradingEngine:
         strategy: Strategy,
         risk: RiskEngine,
         executor: OrderExecutor,
+        scheduler: DecisionScheduler,
         paper_portfolio: PaperPortfolio | None = None,
         market_analyst: MarketAnalyst | None = None,
         news_service: NewsService | None = None,
@@ -34,6 +37,7 @@ class TradingEngine:
         self.strategy = strategy
         self.risk = risk
         self.executor = executor
+        self.scheduler = scheduler
         self.paper_portfolio = paper_portfolio
         self.market_analyst = market_analyst
         self.news_service = news_service
@@ -51,6 +55,7 @@ class TradingEngine:
         decisions: List[CycleDecision] = []
         buy_diagnostics: List[BuyDecisionDiagnostic] = []
         position_diagnostics: List[PositionDiagnostic] = []
+        scheduling_diagnostics: List[SchedulingDiagnostic] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
 
@@ -96,17 +101,6 @@ class TradingEngine:
             signal = self.strategy.generate(symbol=symbol, candles=candles, has_position=has_position)
             order = None
             execution_result: Dict[str, object] = {"status": "NO_ACTION"}
-            buy_diagnostics.append(
-                self.risk.inspect_buy_decision(
-                    symbol=symbol,
-                    price=price,
-                    account=account,
-                    filters=filters,
-                    signal_action=signal.action.value,
-                    signal_reason=signal.reason,
-                    has_position=has_position,
-                )
-            )
 
             exit_reason = (
                 self.risk.determine_exit_reason(
@@ -118,8 +112,31 @@ class TradingEngine:
                 if has_position and position is not None
                 else None
             )
+            scheduling = self.scheduler.evaluate(
+                symbol=symbol,
+                latest_closed_candle_close_time=latest_closed_candle_close_time,
+                current_price=price,
+                has_position=has_position,
+                exit_reason=exit_reason,
+            )
+            scheduling_diagnostics.append(scheduling)
+            buy_diagnostic = self.risk.inspect_buy_decision(
+                symbol=symbol,
+                price=price,
+                account=account,
+                filters=filters,
+                signal_action=signal.action.value,
+                signal_reason=signal.reason,
+                has_position=has_position,
+            )
 
-            if exit_reason is not None and has_position:
+            if not scheduling.should_run_decision:
+                execution_result = {
+                    "status": "SKIPPED_REFRESH_ONLY",
+                    "reason": scheduling.decision_reason,
+                }
+                buy_diagnostic = self._mark_refresh_only_diagnostic(buy_diagnostic, scheduling.decision_reason)
+            elif exit_reason is not None and has_position:
                 decision = self.risk.build_sell_order(symbol, price, base_balance, filters)
                 if decision.order is not None:
                     order = decision.order
@@ -161,6 +178,16 @@ class TradingEngine:
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason}
 
+            if scheduling.should_run_decision:
+                self.scheduler.record_decision(
+                    symbol=symbol,
+                    latest_closed_candle_close_time=latest_closed_candle_close_time,
+                    current_price=price,
+                    timestamp_ms=cycle_timestamp_ms,
+                )
+
+            buy_diagnostics.append(buy_diagnostic)
+
             decisions.append(
                 CycleDecision(
                     symbol=symbol,
@@ -180,7 +207,9 @@ class TradingEngine:
                 )
             )
 
+        self.scheduler.save()
         summary = self._build_portfolio_summary(account, mark_prices)
+        cycle_mode, cycle_reason = self.scheduler.summarize_cycle(scheduling_diagnostics)
         llm_analysis = None
         if self.market_analyst is not None:
             llm_analysis = self.market_analyst.analyze(
@@ -194,11 +223,14 @@ class TradingEngine:
             decisions=decisions,
             buy_diagnostics=buy_diagnostics,
             position_diagnostics=position_diagnostics,
+            scheduling_diagnostics=scheduling_diagnostics,
             market_prices=mark_prices,
             news_evidence=news_evidence,
             news_refresh_status=news_result.refresh_status if news_result is not None else "DISABLED",
             news_last_updated_ms=news_result.last_updated_ms if news_result is not None else 0,
             news_next_refresh_ms=news_result.next_refresh_ms if news_result is not None else 0,
+            cycle_mode=cycle_mode,
+            cycle_reason=cycle_reason,
             quote_asset_balance=summary["quote_balance"],
             simulation_mode=self.settings.dry_run,
             total_equity=summary["total_equity"],
@@ -242,3 +274,17 @@ class TradingEngine:
             "unrealized_pnl": 0.0,
             "net_pnl": 0.0,
         }
+
+    @staticmethod
+    def _mark_refresh_only_diagnostic(
+        diagnostic: BuyDecisionDiagnostic,
+        refresh_reason: str,
+    ) -> BuyDecisionDiagnostic:
+        blocker_details = list(diagnostic.blocker_details)
+        blocker_details.insert(0, f"当前为刷新轮：{refresh_reason}")
+        return replace(
+            diagnostic,
+            eligible_to_buy=False,
+            blocker="当前为刷新轮，未进入交易决策",
+            blocker_details=blocker_details,
+        )

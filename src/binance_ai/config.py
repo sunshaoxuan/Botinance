@@ -61,6 +61,7 @@ class Settings:
     take_profit_pct: float
     trailing_stop_pct: float
     max_hold_bars: int
+    decision_price_move_threshold_pct: float = 0.005
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -107,4 +108,5 @@ def load_settings() -> Settings:
         take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0.02")),
         trailing_stop_pct=float(os.getenv("TRAILING_STOP_PCT", "0.0075")),
         max_hold_bars=int(os.getenv("MAX_HOLD_BARS", "24")),
+        decision_price_move_threshold_pct=float(os.getenv("DECISION_PRICE_MOVE_THRESHOLD_PCT", "0.005")),
     )

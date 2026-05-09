@@ -409,6 +409,16 @@ INDEX_HTML = """<!doctype html>
       </div>
     </section>
 
+    <section class="grid" style="margin-top:18px">
+      <div class="panel" style="grid-column: 1 / -1;">
+        <div class="kicker">
+          <h2>决策调度状态</h2>
+          <div class="mini">区分刷新轮、决策轮，以及触发原因</div>
+        </div>
+        <div id="scheduling"></div>
+      </div>
+    </section>
+
     <div class="footer-note">
       页面每 5 秒自动刷新一次。保持监控进程运行，新的价格点和交易结果才会持续出现。
     </div>
@@ -453,6 +463,14 @@ INDEX_HTML = """<!doctype html>
       if (key === "BUY") return "买入";
       if (key === "SELL") return "卖出";
       if (key === "HOLD") return "持有";
+      return key || "-";
+    }
+
+    function cycleModeLabel(mode) {
+      const key = String(mode || "").toUpperCase();
+      if (key === "DECISION") return "决策轮";
+      if (key === "REFRESH") return "刷新轮";
+      if (key === "MIXED") return "混合轮";
       return key || "-";
     }
 
@@ -578,6 +596,7 @@ INDEX_HTML = """<!doctype html>
       const fills = payload.recent_fills || [];
       const evidence = latest.news_evidence || [];
       const buyDiagnostics = latest.buy_diagnostics || [];
+      const schedulingDiagnostics = latest.scheduling_diagnostics || [];
       const quoteAsset = state.quote_asset || "JPY";
       const llm = latest.llm_analysis || {};
       const symbols = Object.keys(latest.market_prices || {});
@@ -590,13 +609,13 @@ INDEX_HTML = """<!doctype html>
         }))
         .filter(item => item.value > 0);
 
-      document.getElementById("modePill").textContent = latest.simulation_mode ? "模拟模式" : "实盘模式";
+      document.getElementById("modePill").textContent = `${latest.simulation_mode ? "模拟模式" : "实盘模式"} · ${cycleModeLabel(latest.cycle_mode)}`;
       document.getElementById("lastUpdated").textContent = `最近周期：${fmtTime(latest.timestamp_ms)}`;
       document.getElementById("activeSymbols").textContent = String((latest.decisions || []).length);
       document.getElementById("quoteAssetLabel").textContent = `计价资产：${quoteAsset}`;
 
       const latestDecision = (latest.decisions || [])[0];
-      document.getElementById("latestReason").textContent = latestDecision ? latestDecision.signal.reason : "当前还没有决策。";
+      document.getElementById("latestReason").textContent = latest.cycle_reason || (latestDecision ? latestDecision.signal.reason : "当前还没有决策。");
 
       document.getElementById("marketPrice").textContent = fmtCurrency(currentPrice, quoteAsset);
       document.getElementById("marketPriceLabel").textContent = `${primarySymbol} 当前标记价格`;
@@ -680,6 +699,8 @@ INDEX_HTML = """<!doctype html>
         ["计价资产余额", fmtCurrency(state.quote_balance, quoteAsset)],
         ["初始资金", fmtCurrency(state.initial_quote_balance, quoteAsset)],
         ["已实现收益", fmtCurrency(state.realized_pnl, quoteAsset)],
+        ["周期类型", cycleModeLabel(latest.cycle_mode)],
+        ["周期原因", latest.cycle_reason || "-"],
         ["新闻层状态", latest.news_refresh_status || "-"],
         ["新闻下次刷新", fmtTime(latest.news_next_refresh_ms)],
         ["历史周期数", String(history.length)],
@@ -750,6 +771,35 @@ INDEX_HTML = """<!doctype html>
           </table>
         `),
         "当前还没有买入决策链路数据。"
+      );
+
+      renderTableRows(
+        document.getElementById("scheduling"),
+        schedulingDiagnostics.length ? [`<table class="table">
+          <thead>
+            <tr>
+              <th>交易对</th>
+              <th>轮次类型</th>
+              <th>触发原因</th>
+              <th>最新收盘 K</th>
+              <th>上次决策 K</th>
+              <th>价格偏移</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${schedulingDiagnostics.map(item => `
+              <tr>
+                <td>${item.symbol}</td>
+                <td><span class="badge ${item.should_run_decision ? "signal-buy" : "signal-hold"}">${item.should_run_decision ? "进入决策" : "仅刷新"}</span></td>
+                <td>${item.decision_reason}</td>
+                <td>${fmtTime(item.latest_closed_candle_close_time)}</td>
+                <td>${item.last_decision_candle_close_time ? fmtTime(item.last_decision_candle_close_time) : "无"}</td>
+                <td>${fmtNumber((Number(item.price_move_pct) || 0) * 100, 2)}%</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>`] : [],
+        "当前还没有调度状态数据。"
       );
 
       document.getElementById("priceStats").textContent = priceHistory.length ? `${priceHistory.length} 个点 · 最新 ${fmtCurrency(currentPrice, quoteAsset)}` : "暂无数据点";
