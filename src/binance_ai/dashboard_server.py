@@ -1038,9 +1038,10 @@ INDEX_HTML = """<!doctype html>
     let lastPayloadSnapshot = null;
     let chartHover = { active: false, x: 0, y: 0 };
     let activeDrawerKind = null;
-    let selectedChartInterval = "1m";
+    let selectedChartInterval = window.localStorage.getItem("boti.chartInterval") || "1m";
     let fillPageSize = 50;
     let fillPage = 0;
+    const chartBarsCache = {};
 
     const els = {};
     const ids = [
@@ -1206,11 +1207,19 @@ INDEX_HTML = """<!doctype html>
       const positions = paper.positions || {};
       const position = positions[symbol] || null;
       const quoteAsset = primary.quote_asset || paper.quote_asset || "JPY";
+      const requestedInterval = payload.live_chart_interval || selectedChartInterval || "1m";
+      if (payload.live_chart_bars?.length) {
+        chartBarsCache[requestedInterval] = payload.live_chart_bars;
+      }
       const chartBars = payload.live_chart_bars?.length
         ? payload.live_chart_bars
-        : payload.live_refresh_bars?.length
-          ? payload.live_refresh_bars
-          : payload.live_main_interval_bars || [];
+        : chartBarsCache[requestedInterval]?.length
+          ? chartBarsCache[requestedInterval]
+          : requestedInterval === "1m" && payload.live_refresh_bars?.length
+            ? payload.live_refresh_bars
+            : requestedInterval === payload.live_main_interval && payload.live_main_interval_bars?.length
+              ? payload.live_main_interval_bars
+              : [];
       const currentPrice = asNumber(primary.current_price || primary.mark_price || (latest.market_prices || {})[symbol] || chartBars.slice(-1)[0]?.close, 0);
       const decision = (latest.decisions || [])[0] || {};
       const strategy = decision.strategy_decision || {};
@@ -1247,6 +1256,7 @@ INDEX_HTML = """<!doctype html>
         `).join("");
       }
       selectedChartInterval = payload.live_chart_interval || selectedChartInterval;
+      window.localStorage.setItem("boti.chartInterval", selectedChartInterval);
       els.chartIntervalSelect.value = selectedChartInterval;
     }
 
@@ -2146,6 +2156,7 @@ INDEX_HTML = """<!doctype html>
       });
       els.chartIntervalSelect.addEventListener("change", () => {
         selectedChartInterval = els.chartIntervalSelect.value || "1m";
+        window.localStorage.setItem("boti.chartInterval", selectedChartInterval);
         tick();
       });
       els.fillPageSize.addEventListener("change", () => {
