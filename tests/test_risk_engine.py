@@ -456,6 +456,67 @@ class RiskEngineTests(unittest.TestCase):
         self.assertAlmostEqual(diagnostic.trailing_stop_price, 199.98)
         self.assertEqual(diagnostic.bars_held, 1)
 
+    def test_exit_lines_include_sell_fee_drag(self) -> None:
+        from binance_ai.models import Candle, PositionSnapshot
+
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.001,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.01,
+            max_hold_bars=24,
+        )
+        risk = RiskEngine(settings, _ClientStub())
+        candles = [
+            Candle(open_time=0, open=200.0, high=201.0, low=199.0, close=200.0, volume=1.0, close_time=10),
+            Candle(open_time=10, open=200.0, high=202.0, low=199.0, close=201.0, volume=1.0, close_time=20),
+        ]
+        position = PositionSnapshot(
+            quantity=0.4,
+            average_entry_price=200.0,
+            opened_at_ms=1,
+            entry_candle_close_time=10,
+            highest_price=202.0,
+        )
+        diagnostic = risk.build_position_diagnostic(
+            symbol="XRPJPY",
+            price=201.5,
+            position=position,
+            candles=candles,
+            current_timestamp_ms=20,
+        )
+
+        self.assertAlmostEqual(diagnostic.stop_loss_price, 198.1981981981982)
+        self.assertAlmostEqual(diagnostic.take_profit_price, 204.2042042042042)
+        self.assertAlmostEqual(diagnostic.trailing_stop_price, 200.18018018018017)
+        reason = risk.determine_exit_reason(
+            price=198.1,
+            position=position,
+            candles=candles,
+            current_timestamp_ms=20,
+        )
+        self.assertEqual(reason, "stop_loss")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -284,10 +284,8 @@ class RiskEngine:
         current_timestamp_ms: int,
     ) -> str | None:
         entry_price = position.average_entry_price
-        stop_loss_price = entry_price * (1.0 - self.settings.stop_loss_pct)
-        take_profit_price = entry_price * (1.0 + self.settings.take_profit_pct)
         highest_price = max(position.highest_price or entry_price, price)
-        trailing_stop_price = highest_price * (1.0 - self.settings.trailing_stop_pct)
+        stop_loss_price, take_profit_price, trailing_stop_price = self._fee_adjusted_exit_prices(entry_price, highest_price)
 
         bars_held = 0
         if position.entry_candle_close_time > 0:
@@ -307,6 +305,14 @@ class RiskEngine:
             return "max_hold_exit"
         return None
 
+    def _fee_adjusted_exit_prices(self, entry_price: float, highest_price: float) -> tuple[float, float, float]:
+        trading_fee_rate = getattr(self.settings, "trading_fee_rate", 0.0)
+        sell_net_multiplier = max(0.000001, 1.0 - max(0.0, trading_fee_rate))
+        stop_loss_price = entry_price * (1.0 - self.settings.stop_loss_pct) / sell_net_multiplier
+        take_profit_price = entry_price * (1.0 + self.settings.take_profit_pct) / sell_net_multiplier
+        trailing_stop_price = highest_price * (1.0 - self.settings.trailing_stop_pct) / sell_net_multiplier
+        return stop_loss_price, take_profit_price, trailing_stop_price
+
     def build_position_diagnostic(
         self,
         symbol: str,
@@ -317,9 +323,7 @@ class RiskEngine:
     ) -> PositionDiagnostic:
         entry_price = position.average_entry_price
         highest_price = max(position.highest_price or entry_price, price)
-        stop_loss_price = entry_price * (1.0 - self.settings.stop_loss_pct)
-        take_profit_price = entry_price * (1.0 + self.settings.take_profit_pct)
-        trailing_stop_price = highest_price * (1.0 - self.settings.trailing_stop_pct)
+        stop_loss_price, take_profit_price, trailing_stop_price = self._fee_adjusted_exit_prices(entry_price, highest_price)
         bars_held = 0
         if position.entry_candle_close_time > 0:
             bars_held = sum(

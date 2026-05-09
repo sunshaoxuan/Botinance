@@ -39,6 +39,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("trade-workspace", INDEX_HTML)
         self.assertIn("trade-main-column", INDEX_HTML)
         self.assertIn("trade-fill-panel", INDEX_HTML)
+        self.assertIn("订单与成交记录", INDEX_HTML)
+        self.assertIn("冻结资产", INDEX_HTML)
+        self.assertIn("\"状态\", \"方向\", \"数量\", \"价格\", \"冻结\", \"手续费\", \"已实现\", \"时间\"", INDEX_HTML)
         self.assertIn("fillPageSize", INDEX_HTML)
         self.assertIn("fillPrev", INDEX_HTML)
         self.assertIn("fillNext", INDEX_HTML)
@@ -108,6 +111,7 @@ class DashboardServerTests(unittest.TestCase):
                             "limit_price": 220.0,
                             "time_in_force": "GTC",
                             "status": "OPEN",
+                            "reserved_quote": 220.5,
                             "created_at_ms": 1_000,
                             "updated_at_ms": 1_000,
                             "expires_at_ms": 10_000,
@@ -203,6 +207,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["open_orders"][0]["client_order_id"], "order-1")
         self.assertEqual(len(payload["order_lifecycle_events"]), 1)
         self.assertEqual(payload["order_lifecycle_events"][0]["status"], "OPEN")
+        self.assertGreaterEqual(len(payload["trade_records"]), 1)
+        self.assertEqual(payload["trade_records"][0]["status"], "OPEN")
+        self.assertEqual(payload["trade_records"][0]["reserved_quote"], 220.5)
         self.assertEqual(len(payload["order_markers"]), 1)
         self.assertEqual(payload["order_markers"][0]["status"], "OPEN")
 
@@ -305,6 +312,10 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["history"], [])
         self.assertEqual(len(payload["recent_fills"]), 1)
         self.assertEqual(payload["recent_fills"][0]["status"], "PAPER_FILLED")
+        self.assertEqual(len(payload["trade_records"]), 1)
+        self.assertEqual(payload["trade_records"][0]["status"], "PAPER_FILLED")
+        self.assertGreater(payload["trade_records"][0]["fee"], 0.0)
+        self.assertEqual(payload["trade_records"][0]["reserved_quote"], 0.0)
         self.assertEqual(len(fills), 1)
         self.assertEqual(len(markers), 1)
         self.assertEqual(len(chart_payload["live_trade_markers"]), 1)
@@ -333,6 +344,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["position_activation_state"], {})
         self.assertEqual(payload["open_orders"], [])
         self.assertEqual(payload["order_lifecycle_events"], [])
+        self.assertEqual(payload["trade_records"], [])
         self.assertEqual(payload["order_markers"], [])
 
     def test_build_dashboard_payload_uses_cached_requested_chart_interval(self) -> None:

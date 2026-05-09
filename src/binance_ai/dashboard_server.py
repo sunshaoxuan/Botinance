@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 import re
 import time
 from http import HTTPStatus
@@ -924,8 +925,8 @@ INDEX_HTML = """<!doctype html>
             <article class="panel trade-fill-panel">
               <div class="panel-header">
                 <div>
-                  <div class="panel-title">成交记录</div>
-                  <div class="panel-subtitle">模拟与实盘成交统一展示，按最近时间排序</div>
+                  <div class="panel-title">订单与成交记录</div>
+                  <div class="panel-subtitle">挂单、成交、撤单、冻结资产和手续费统一展示</div>
                 </div>
                 <div class="fill-toolbar">
                   <span id="fillPageInfo">--</span>
@@ -1330,13 +1331,14 @@ INDEX_HTML = """<!doctype html>
       const activationState = (payload.position_activation_state || paper.activation_state || {})[symbol] || {};
       const schedule = (latest.scheduling_diagnostics || [])[0] || {};
       const fills = payload.recent_fills || [];
+      const tradeRecords = payload.trade_records || fills;
       const bars = chartBars;
       const markers = payload.live_trade_markers || [];
       const vetoes = payload.live_ai_veto_markers || [];
       const openOrders = payload.open_orders || latest.open_orders || [];
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, bars, markers, vetoes, openOrders, orderEvents, orderMarkers };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, bars, markers, vetoes, openOrders, orderEvents, orderMarkers };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1449,7 +1451,7 @@ INDEX_HTML = """<!doctype html>
         <div class="card-note">止损 ${riskLines.stopLoss || "--"}，止盈 ${riskLines.takeProfit || "--"}，跟踪 ${riskLines.trailingStop || "--"}</div>
       `;
 
-      renderFills(c.fills, c.quoteAsset);
+      renderFills(c.tradeRecords, c.quoteAsset);
     }
 
     function updateAiTab(payload) {
@@ -1713,32 +1715,51 @@ INDEX_HTML = """<!doctype html>
       ]);
     }
 
-    function renderFills(fills, quoteAsset) {
-      const allFills = fills || [];
-      const total = allFills.length;
+    function renderFills(records, quoteAsset) {
+      const allRecords = records || [];
+      const total = allRecords.length;
       const pageCount = Math.max(1, Math.ceil(total / fillPageSize));
       fillPage = Math.max(0, Math.min(fillPage, pageCount - 1));
       const start = fillPage * fillPageSize;
-      const pageFills = allFills.slice(start, start + fillPageSize);
-      const rows = pageFills.map((f) => {
+      const pageRecords = allRecords.slice(start, start + fillPageSize);
+      const rows = pageRecords.map((f) => {
         const side = String(f.side || f.action || "").toUpperCase();
+        const status = String(f.status || "").toUpperCase();
+        const statusKind = status === "FILLED" || status === "PAPER_FILLED"
+          ? "buy"
+          : status === "CANCELED" || status === "EXPIRED" || status === "REJECTED"
+            ? "block"
+            : "wait";
+        const reservedQuote = asNumber(f.reserved_quote, 0);
+        const reservedBase = asNumber(f.reserved_base, 0);
+        const reservedAsset = f.reserved_asset || (reservedBase > 0 ? (f.base_asset || "BASE") : quoteAsset);
+        const frozenText = reservedQuote > 0
+          ? fmtCurrency(reservedQuote, quoteAsset)
+          : reservedBase > 0
+            ? `${fmtNumber(reservedBase, 8)} ${escapeHtml(reservedAsset)}`
+            : "--";
+        const fee = asNumber(f.fee, 0);
+        const estimatedFee = asNumber(f.estimated_fee, 0);
+        const feeText = fee > 0 ? fmtCurrency(fee, quoteAsset) : estimatedFee > 0 ? `预计 ${fmtCurrency(estimatedFee, quoteAsset)}` : "--";
         return `<tr>
+          <td>${statusChip(signalLabel(status || f.event_type || "--"), statusKind)}</td>
           <td>${statusChip(side || "--", side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
           <td>${fmtNumber(f.quantity, 8)}</td>
-          <td>${fmtCurrency(f.price || f.fill_price, quoteAsset)}</td>
-          <td>${fmtCurrency(f.fee, quoteAsset)}</td>
+          <td>${fmtCurrency(f.price || f.fill_price || f.limit_price, quoteAsset)}</td>
+          <td>${escapeHtml(frozenText)}</td>
+          <td>${escapeHtml(feeText)}</td>
           <td class="${pnlClass(f.realized_pnl)}">${fmtCurrency(f.realized_pnl, quoteAsset)}</td>
           <td class="nowrap">${escapeHtml(fmtTime(f.timestamp || f.timestamp_ms || f.time))}</td>
         </tr>`;
       });
       if (els.fillPageInfo) {
-        const end = Math.min(total, start + pageFills.length);
+        const end = Math.min(total, start + pageRecords.length);
         els.fillPageInfo.textContent = total ? `${start + 1}-${end} / ${total}` : "0 / 0";
       }
       if (els.fillPrev) els.fillPrev.disabled = fillPage <= 0;
       if (els.fillNext) els.fillNext.disabled = fillPage >= pageCount - 1;
       if (els.fillPageSize) els.fillPageSize.value = String(fillPageSize);
-      els.tradeFillsTable.innerHTML = table(["方向", "数量", "价格", "手续费", "已实现", "时间"], rows, "暂无成交记录");
+      els.tradeFillsTable.innerHTML = table(["状态", "方向", "数量", "价格", "冻结", "手续费", "已实现", "时间"], rows, "暂无订单或成交记录");
     }
 
     function activeRiskLines(c) {
@@ -2472,8 +2493,10 @@ def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 300) -> Li
                     {
                         "symbol": event.get("symbol"),
                         "side": event.get("side"),
+                        "status": "FILLED",
                         "quantity": event.get("filled_quantity") or event.get("quantity"),
                         "fill_price": event.get("fill_price") or event.get("limit_price"),
+                        "fee": event.get("fee"),
                         "timestamp_ms": event.get("timestamp_ms"),
                         "trigger": event.get("trigger"),
                         "client_order_id": event.get("client_order_id"),
@@ -2512,6 +2535,173 @@ def _extract_order_lifecycle_events(
             if isinstance(event, dict):
                 events.append(event)
     return events[-limit:][::-1]
+
+
+def _dashboard_fee_rate(default: float = 0.001) -> float:
+    raw = os.environ.get("TRADING_FEE_RATE")
+    if raw is None:
+        env_path = Path(".env")
+        if env_path.exists():
+            for line in env_path.read_text(encoding="utf-8", errors="ignore").splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                if key.strip() == "TRADING_FEE_RATE":
+                    raw = value.strip().strip('"').strip("'")
+                    break
+    fee_rate = _coerce_float(raw, default)
+    return max(0.0, fee_rate)
+
+
+def _base_asset_from_symbol(symbol: str, quote_asset: str) -> str:
+    if symbol and quote_asset and symbol.upper().endswith(quote_asset.upper()):
+        return symbol[: -len(quote_asset)] or "BASE"
+    return "BASE"
+
+
+def _order_record_timestamp(order: Dict[str, Any]) -> int:
+    return _coerce_int(
+        order.get("updated_at_ms"),
+        _coerce_int(order.get("timestamp_ms"), _coerce_int(order.get("created_at_ms"))),
+    )
+
+
+def _build_fill_trade_record(fill: Dict[str, Any], quote_asset: str, fee_rate: float) -> Dict[str, Any]:
+    symbol = str(fill.get("symbol") or "")
+    quantity = _coerce_float(fill.get("quantity"))
+    price = _coerce_float(fill.get("fill_price"))
+    if price <= 0:
+        price = _coerce_float(fill.get("price"), _coerce_float(fill.get("limit_price")))
+    fee = _coerce_float(fill.get("fee"))
+    if fee <= 0 and quantity > 0 and price > 0:
+        fee = quantity * price * fee_rate
+    status = fill.get("status") or "PAPER_FILLED"
+    return {
+        "record_type": "fill",
+        "status": status,
+        "event_type": fill.get("event_type") or "FILLED",
+        "symbol": symbol,
+        "side": fill.get("side") or fill.get("action") or "",
+        "quantity": quantity,
+        "price": price,
+        "fill_price": price,
+        "limit_price": _coerce_float(fill.get("limit_price"), price),
+        "fee": fee,
+        "estimated_fee": 0.0,
+        "realized_pnl": _coerce_float(fill.get("realized_pnl")),
+        "reserved_quote": 0.0,
+        "reserved_base": 0.0,
+        "reserved_asset": "",
+        "base_asset": _base_asset_from_symbol(symbol, quote_asset),
+        "timestamp_ms": _coerce_int(fill.get("timestamp_ms"), _coerce_int(fill.get("timestamp"))),
+        "trigger": fill.get("trigger", ""),
+        "reason": fill.get("reason", ""),
+        "client_order_id": fill.get("client_order_id", ""),
+    }
+
+
+def _build_order_trade_record(order: Dict[str, Any], quote_asset: str, fee_rate: float) -> Dict[str, Any]:
+    symbol = str(order.get("symbol") or "")
+    side = str(order.get("side") or "").upper()
+    status = str(order.get("status") or "OPEN").upper()
+    quantity = _coerce_float(order.get("remaining_quantity"), _coerce_float(order.get("quantity")))
+    filled_quantity = _coerce_float(order.get("filled_quantity"))
+    price = _coerce_float(order.get("fill_price"))
+    if price <= 0:
+        price = _coerce_float(order.get("limit_price"), _coerce_float(order.get("price")))
+    fee = _coerce_float(order.get("fee"))
+    estimated_fee = quantity * price * fee_rate if quantity > 0 and price > 0 else 0.0
+    reserved_quote = _coerce_float(order.get("reserved_quote"))
+    reserved_base = _coerce_float(order.get("reserved_base"))
+    is_open_like = status in {"OPEN", "NEW", "PARTIALLY_FILLED", "UNKNOWN"}
+    if is_open_like and reserved_quote <= 0 and side == "BUY" and quantity > 0 and price > 0:
+        reserved_quote = quantity * price * (1.0 + fee_rate)
+    if is_open_like and reserved_base <= 0 and side == "SELL" and quantity > 0:
+        reserved_base = quantity
+    if status == "FILLED" and fee <= 0:
+        fee_quantity = filled_quantity or quantity
+        if fee_quantity > 0 and price > 0:
+            fee = fee_quantity * price * fee_rate
+    if not is_open_like:
+        reserved_quote = 0.0
+        reserved_base = 0.0
+    base_asset = _base_asset_from_symbol(symbol, quote_asset)
+    return {
+        "record_type": "order",
+        "status": "OPEN" if status == "NEW" else status,
+        "event_type": order.get("event_type") or status,
+        "symbol": symbol,
+        "side": side,
+        "quantity": filled_quantity if status == "FILLED" and filled_quantity > 0 else quantity,
+        "price": price,
+        "fill_price": _coerce_float(order.get("fill_price")),
+        "limit_price": _coerce_float(order.get("limit_price"), price),
+        "fee": fee,
+        "estimated_fee": estimated_fee if fee <= 0 else 0.0,
+        "realized_pnl": _coerce_float(order.get("realized_pnl")),
+        "reserved_quote": reserved_quote,
+        "reserved_base": reserved_base,
+        "reserved_asset": quote_asset if reserved_quote > 0 else base_asset if reserved_base > 0 else "",
+        "base_asset": base_asset,
+        "timestamp_ms": _order_record_timestamp(order),
+        "trigger": order.get("trigger", ""),
+        "reason": order.get("reason", ""),
+        "client_order_id": order.get("client_order_id", ""),
+    }
+
+
+def _build_trade_records(
+    open_orders: List[Dict[str, Any]],
+    recent_fills: List[Dict[str, Any]],
+    order_events: List[Dict[str, Any]],
+    quote_asset: str,
+    fee_rate: float,
+    limit: int = 500,
+) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    current_open_clients = {str(order.get("client_order_id") or "") for order in open_orders if order.get("client_order_id")}
+    events_by_client: Dict[str, Dict[str, Any]] = {}
+    for event in order_events:
+        if isinstance(event, dict) and event.get("client_order_id"):
+            events_by_client[str(event.get("client_order_id"))] = event
+    for order in open_orders:
+        if isinstance(order, dict):
+            client_order_id = str(order.get("client_order_id") or "")
+            matching_event = events_by_client.get(client_order_id, {})
+            merged_order = dict(order)
+            for key in ("symbol", "side", "quantity", "limit_price", "trigger", "created_at_ms", "updated_at_ms", "expires_at_ms"):
+                current = merged_order.get(key)
+                if current in (None, "", 0, 0.0):
+                    merged_order[key] = matching_event.get(key, current)
+            records.append(_build_order_trade_record(merged_order, quote_asset, fee_rate))
+    for event in order_events:
+        if not isinstance(event, dict):
+            continue
+        status = str(event.get("status") or "").upper()
+        client_order_id = str(event.get("client_order_id") or "")
+        if status == "FILLED":
+            continue
+        if status in {"OPEN", "NEW"} and client_order_id and client_order_id in current_open_clients:
+            continue
+        records.append(_build_order_trade_record(event, quote_asset, fee_rate))
+    for fill in recent_fills:
+        if isinstance(fill, dict):
+            records.append(_build_fill_trade_record(fill, quote_asset, fee_rate))
+
+    deduped: Dict[tuple, Dict[str, Any]] = {}
+    for record in records:
+        key = (
+            record.get("record_type"),
+            record.get("client_order_id"),
+            record.get("status"),
+            record.get("timestamp_ms"),
+            record.get("side"),
+            record.get("price"),
+            record.get("quantity"),
+        )
+        deduped[key] = record
+    return sorted(deduped.values(), key=lambda item: _coerce_int(item.get("timestamp_ms")), reverse=True)[:limit]
 
 
 def _extract_live_trade_markers(history: List[Dict[str, Any]], limit: int = 200) -> List[Dict[str, Any]]:
@@ -3076,6 +3266,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     history_path = runtime_dir / "cycle_reports.jsonl"
     history = _read_history(history_path, limit=800 if include_chart else 300)
     backtest_payload = _load_backtest_payload(runtime_dir)
+    quote_asset = paper_state.get("quote_asset", "JPY")
+    fee_rate = _dashboard_fee_rate()
 
     chart_symbol = _dashboard_chart_symbol(latest_report)
     main_interval = _detect_main_interval(latest_report, backtest_payload["backtest_manifest"])
@@ -3107,14 +3299,20 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
             "live_ai_veto_markers": [],
         }
 
+    recent_fills = _extract_recent_fills(history) if include_chart else _extract_recent_fills_from_file(history_path)
+    open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
+    order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report)
+    trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate)
+
     return {
         "latest_report": latest_report,
         "paper_state": paper_state,
         "history": history[-80:] if include_chart else [],
         "history_count": len(history),
-        "recent_fills": _extract_recent_fills(history) if include_chart else _extract_recent_fills_from_file(history_path),
-        "open_orders": list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", []),
-        "order_lifecycle_events": _extract_order_lifecycle_events(history, latest_report),
+        "recent_fills": recent_fills,
+        "open_orders": open_orders,
+        "order_lifecycle_events": order_lifecycle_events,
+        "trade_records": trade_records,
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "decision_ledger": _extract_decision_ledger(history, latest_report),
         "position_activation_state": paper_state.get("activation_state", {}),
