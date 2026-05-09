@@ -28,7 +28,8 @@ def _write_text(path: Path, value: str) -> None:
 class DashboardServerTests(unittest.TestCase):
     def test_index_html_exposes_botinance_shell(self) -> None:
         self.assertIn("app-shell", INDEX_HTML)
-        self.assertIn("side-rail", INDEX_HTML)
+        self.assertNotIn("side-rail", INDEX_HTML)
+        self.assertNotIn("rail-button", INDEX_HTML)
         self.assertIn("top-bar", INDEX_HTML)
         self.assertIn("trade-workspace", INDEX_HTML)
         self.assertIn("实时交易", INDEX_HTML)
@@ -146,6 +147,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["backtest_equity_curve"], [])
         self.assertEqual(payload["backtest_trades"], [])
         self.assertEqual(payload["backtest_manifest"], {})
+        self.assertIn("未找到", payload["backtest_missing_reason"])
         self.assertEqual(payload["decision_ledger"], [])
         self.assertEqual(payload["sell_diagnostics"], [])
         self.assertEqual(payload["position_activation_state"], {})

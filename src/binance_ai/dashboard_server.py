@@ -86,67 +86,8 @@ INDEX_HTML = """<!doctype html>
     }
 
     .app-shell {
-      display: grid;
-      grid-template-columns: 64px minmax(0, 1fr);
+      display: block;
       height: 100vh;
-    }
-
-    .side-rail {
-      border-right: 1px solid var(--line);
-      background: rgba(250, 252, 255, 0.82);
-      backdrop-filter: blur(12px);
-      padding: 12px 9px;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      gap: 10px;
-      box-shadow: none;
-      z-index: 2;
-    }
-
-    .brand-mark {
-      width: 36px;
-      height: 36px;
-      border-radius: 8px;
-      display: grid;
-      place-items: center;
-      color: #fff;
-      font-weight: 800;
-      letter-spacing: 0.08em;
-      background: linear-gradient(150deg, #1f3f6d, #2f5e91);
-      box-shadow: 0 8px 16px rgba(31, 63, 109, 0.18);
-    }
-
-    .rail-divider {
-      width: 28px;
-      height: 1px;
-      background: var(--line);
-      margin: 2px 0;
-    }
-
-    .rail-button {
-      width: 38px;
-      height: 38px;
-      border: 1px solid transparent;
-      border-radius: 8px;
-      background: transparent;
-      color: var(--muted);
-      cursor: pointer;
-      font-weight: 760;
-      font-family: var(--mono);
-      transition: all 160ms ease;
-    }
-
-    .rail-button:hover {
-      color: var(--blue);
-      background: var(--blue-soft);
-    }
-
-    .rail-button.active {
-      color: var(--blue);
-      border-color: rgba(37, 99, 235, 0.18);
-      background: #fff;
-      box-shadow: 0 1px 4px rgba(17, 27, 43, 0.04);
     }
 
     .workspace {
@@ -712,21 +653,7 @@ INDEX_HTML = """<!doctype html>
     @media (max-width: 900px) {
       body { overflow: auto; }
 
-      .app-shell {
-        display: block;
-        height: auto;
-      }
-
-      .side-rail {
-        position: sticky;
-        top: 0;
-        flex-direction: row;
-        justify-content: center;
-        border-right: 0;
-        border-bottom: 1px solid var(--line);
-      }
-
-      .rail-divider { display: none; }
+      .app-shell { height: auto; }
 
       .workspace {
         height: auto;
@@ -753,16 +680,6 @@ INDEX_HTML = """<!doctype html>
 </head>
 <body>
   <div class="app-shell">
-    <aside class="side-rail" aria-label="主导航">
-      <div class="brand-mark">B</div>
-      <div class="rail-divider"></div>
-      <button class="rail-button active" data-rail-tab="trading" title="实时交易">T</button>
-      <button class="rail-button" data-rail-tab="ai" title="AI 决策">A</button>
-      <button class="rail-button" data-rail-tab="backtest" title="回测分析">B</button>
-      <button class="rail-button" data-rail-tab="risk" title="风险控制">R</button>
-      <button class="rail-button" data-rail-tab="system" title="系统日志">L</button>
-    </aside>
-
     <main class="workspace">
       <header class="top-bar">
         <div class="top-title">
@@ -1028,6 +945,17 @@ INDEX_HTML = """<!doctype html>
       return status || "--";
     }
 
+    function executionDetail(status, reason) {
+      const s = String(status || "").toUpperCase();
+      if (reason) return reason;
+      if (s === "SKIPPED_REFRESH_ONLY") return "本轮只刷新行情、持仓和风控线，不触发下单决策。";
+      if (s === "PAPER_FILLED") return "本轮已产生模拟成交，明细见最近模拟成交。";
+      if (s === "BLOCKED") return "本轮动作被规则、预算、最小成交额或 AI 风险闸门阻塞。";
+      if (s === "NO_ACTION" || s === "HOLD") return "本轮未下单，继续等待策略或退出条件。";
+      if (s === "PASS") return "检查通过，但本轮没有需要执行的交易动作。";
+      return "暂无执行说明。";
+    }
+
     function stateBlock(label, raw) {
       return `<div class="card-value">${escapeHtml(label)}</div><div class="card-note code">${escapeHtml(raw || "")}</div>`;
     }
@@ -1112,7 +1040,6 @@ INDEX_HTML = """<!doctype html>
     function activateTab(tabName) {
       activeTab = tabName;
       document.querySelectorAll(".tab-button").forEach((btn) => btn.classList.toggle("active", btn.dataset.tab === tabName));
-      document.querySelectorAll(".rail-button").forEach((btn) => btn.classList.toggle("active", btn.dataset.railTab === tabName));
       document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${tabName}`));
       window.requestAnimationFrame(() => redrawCharts(lastPayloadSnapshot));
     }
@@ -1176,8 +1103,9 @@ INDEX_HTML = """<!doctype html>
       `;
 
       els.executionCard.innerHTML = `
-        <div class="card-label"><span>执行状态</span>${statusChip(signalLabel(c.signal), signalClass(c.signal))}</div>
-        ${stateBlock(executionLabel(executionResult), executionResult)}
+        <div class="card-label"><span>本轮操作</span>${statusChip(signalLabel(c.signal), signalClass(c.signal))}</div>
+        <div class="card-value">${escapeHtml(executionLabel(executionResult))}</div>
+        <div class="card-note">${escapeHtml(executionDetail(executionResult, c.executionReason))}</div>
         <div class="card-note">止损 ${riskLines.stopLoss || "--"}，止盈 ${riskLines.takeProfit || "--"}，跟踪 ${riskLines.trailingStop || "--"}</div>
       `;
 
@@ -1220,6 +1148,7 @@ INDEX_HTML = """<!doctype html>
       const metrics = summary.metrics || summary || {};
       const source = payload.backtest_source || "未找到回测目录";
       const available = payload.backtest_available === true;
+      const missingReason = payload.backtest_missing_reason || "";
 
       els.btTotalReturn.textContent = fmtPercent(metrics.total_return_pct);
       els.btMaxDrawdown.textContent = fmtPercent(metrics.max_drawdown_pct);
@@ -1227,7 +1156,7 @@ INDEX_HTML = """<!doctype html>
       els.btProfitFactor.textContent = fmtNumber(metrics.profit_factor, 3);
       els.btExpectancy.textContent = fmtNumber(metrics.expectancy_per_trade, 4);
       els.btTradeCount.textContent = `${fmtNumber(metrics.trade_count, 0)} / ${fmtNumber(metrics.completed_trade_count, 0)}`;
-      els.btSourceLabel.textContent = available ? `数据源 ${source}` : "缺失 runtime_backtest_walk / runtime_backtest_check";
+      els.btSourceLabel.textContent = available ? `数据源 ${source}` : (missingReason || "缺失 runtime_backtest_walk / runtime_backtest_check");
 
       const segments = payload.backtest_segments || [];
       const segmentRows = segments.map((s) => {
@@ -1242,7 +1171,7 @@ INDEX_HTML = """<!doctype html>
           <td>${boolLabel(s.beats_baseline)}</td>
         </tr>`;
       });
-      els.btSegments.innerHTML = table(["段", "训练窗", "测试窗", "收益", "回撤", "胜率", "优于基线"], segmentRows, "暂无 walk-forward segment 文件");
+      els.btSegments.innerHTML = table(["段", "训练窗", "测试窗", "收益", "回撤", "胜率", "优于基线"], segmentRows, missingReason || "暂无 walk-forward segment 文件");
 
       const trades = (payload.backtest_trades || []).slice(-80).reverse();
       const tradeRows = trades.map((t) => `<tr>
@@ -1254,10 +1183,10 @@ INDEX_HTML = """<!doctype html>
         <td>${fmtPercent(t.mfe_pct)} / ${fmtPercent(t.mae_pct)}</td>
         <td>${escapeHtml(t.exit_reason || "--")}</td>
       </tr>`);
-      els.btTrades.innerHTML = table(["开平仓", "价格", "盈亏", "收益率", "持仓", "MFE/MAE", "退出"], tradeRows, "暂无回测交易明细");
+      els.btTrades.innerHTML = table(["开平仓", "价格", "盈亏", "收益率", "持仓", "MFE/MAE", "退出"], tradeRows, missingReason || "暂无回测交易明细");
 
       const manifest = payload.backtest_manifest || {};
-      els.btManifest.innerHTML = Object.keys(manifest).length ? kvRows(Object.entries(flattenObject(manifest)).slice(0, 20).map(([k, v]) => [k, escapeHtml(String(v))])) : emptyBox("暂无 run_manifest.json");
+      els.btManifest.innerHTML = Object.keys(manifest).length ? kvRows(Object.entries(flattenObject(manifest)).slice(0, 20).map(([k, v]) => [k, escapeHtml(String(v))])) : emptyBox(missingReason || "暂无 run_manifest.json");
     }
 
     function updateRiskTab(payload) {
@@ -2037,6 +1966,7 @@ def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
         repo_root / "runtime_backtest_walk",
         repo_root / "runtime_backtest_check",
     ]
+    existing_dirs = [directory.name for directory in candidates if directory.exists()]
     for directory in candidates:
         summary = _load_json(directory / "summary.json", {})
         if not summary:
@@ -2049,8 +1979,14 @@ def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
             "backtest_equity_curve": _load_csv_rows(directory / "equity_curve.csv"),
             "backtest_trades": _load_csv_rows(directory / "trades.csv"),
             "backtest_manifest": _load_json(directory / "run_manifest.json", {}),
+            "backtest_missing_reason": None,
         }
 
+    missing_reason = (
+        f"{', '.join(existing_dirs)} 只有缓存或结果文件不完整，需要重新运行离线回测。"
+        if existing_dirs
+        else "未找到 runtime_backtest_walk / runtime_backtest_check。"
+    )
     return {
         "backtest_available": False,
         "backtest_source": None,
@@ -2059,6 +1995,7 @@ def _load_backtest_payload(runtime_dir: Path) -> Dict[str, Any]:
         "backtest_equity_curve": [],
         "backtest_trades": [],
         "backtest_manifest": {},
+        "backtest_missing_reason": missing_reason,
     }
 
 
