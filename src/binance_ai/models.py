@@ -37,6 +37,7 @@ class SymbolFilters:
     step_size: float
     min_qty: float
     min_notional: float
+    tick_size: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,52 @@ class OrderRequest:
     side: str
     order_type: str
     quantity: float
+    limit_price: float = 0.0
+    time_in_force: str = "GTC"
+    client_order_id: str = ""
+    trigger: str = ""
+    expires_at_ms: int = 0
+
+
+@dataclass(frozen=True)
+class ManagedOrder:
+    client_order_id: str
+    symbol: str
+    side: str
+    order_type: str
+    quantity: float
+    limit_price: float
+    time_in_force: str
+    status: str
+    created_at_ms: int
+    updated_at_ms: int
+    expires_at_ms: int
+    trigger: str = ""
+    external_order_id: str = ""
+    filled_quantity: float = 0.0
+    remaining_quantity: float = 0.0
+    average_fill_price: float = 0.0
+    reserved_quote: float = 0.0
+    reserved_base: float = 0.0
+    entry_candle_close_time: int = 0
+    last_reason: str = ""
+
+
+@dataclass(frozen=True)
+class OrderLifecycleEvent:
+    timestamp_ms: int
+    symbol: str
+    client_order_id: str
+    event_type: str
+    status: str
+    side: str
+    quantity: float
+    limit_price: float
+    fill_price: float = 0.0
+    filled_quantity: float = 0.0
+    reason: str = ""
+    trigger: str = ""
+    external_order_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -190,6 +237,8 @@ class CycleReport:
     position_diagnostics: List[PositionDiagnostic]
     scheduling_diagnostics: List[SchedulingDiagnostic]
     decision_ledger: List[DecisionLedgerEntry]
+    order_lifecycle_events: List[OrderLifecycleEvent]
+    open_orders: List[ManagedOrder]
     ai_risk_assessments: List[AiRiskAssessment]
     market_prices: Dict[str, float]
     market_snapshots: List[Dict[str, object]]
@@ -239,6 +288,9 @@ class PortfolioSnapshot:
     positions: Dict[str, PositionSnapshot] = field(default_factory=dict)
     realized_pnl: float = 0.0
     activation_state: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    open_orders: Dict[str, ManagedOrder] = field(default_factory=dict)
+    reserved_quote_balance: float = 0.0
+    reserved_base_balances: Dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

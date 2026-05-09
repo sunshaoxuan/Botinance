@@ -109,6 +109,15 @@ class BinanceSpotClient:
         payload = self._public_get("/api/v3/ticker/price", params={"symbol": symbol})
         return float(payload["price"])
 
+    def get_order_book_ticker(self, symbol: str) -> Dict[str, float]:
+        payload = self._public_get("/api/v3/ticker/bookTicker", params={"symbol": symbol})
+        return {
+            "bid_price": float(payload.get("bidPrice", 0.0)),
+            "bid_qty": float(payload.get("bidQty", 0.0)),
+            "ask_price": float(payload.get("askPrice", 0.0)),
+            "ask_qty": float(payload.get("askQty", 0.0)),
+        }
+
     def get_account_snapshot(self) -> AccountSnapshot:
         return AccountSnapshot(balances=self.get_account_balances(include_locked=False))
 
@@ -136,6 +145,10 @@ class BinanceSpotClient:
         symbol_info = payload["symbols"][0]
 
         lot_size = next(item for item in symbol_info["filters"] if item["filterType"] == "LOT_SIZE")
+        price_filter = next(
+            (item for item in symbol_info["filters"] if item["filterType"] == "PRICE_FILTER"),
+            {},
+        )
         min_notional_filter = next(
             item
             for item in symbol_info["filters"]
@@ -146,6 +159,7 @@ class BinanceSpotClient:
             step_size=float(lot_size["stepSize"]),
             min_qty=float(lot_size["minQty"]),
             min_notional=float(min_notional_filter["minNotional"]),
+            tick_size=float(price_filter.get("tickSize", 0.0)),
         )
 
     def place_market_order(self, order: OrderRequest) -> Dict[str, Any]:
@@ -160,6 +174,52 @@ class BinanceSpotClient:
             },
         )
 
+    def place_limit_order(self, order: OrderRequest) -> Dict[str, Any]:
+        params: Dict[str, Any] = {
+            "symbol": order.symbol,
+            "side": order.side,
+            "type": "LIMIT",
+            "timeInForce": order.time_in_force or "GTC",
+            "quantity": self._format_quantity(order.quantity),
+            "price": self._format_price(order.limit_price),
+        }
+        if order.client_order_id:
+            params["newClientOrderId"] = order.client_order_id
+        return self._signed_request("POST", "/api/v3/order", params=params)
+
+    def query_order(
+        self,
+        symbol: str,
+        order_id: str | int | None = None,
+        client_order_id: str | None = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"symbol": symbol}
+        if order_id:
+            params["orderId"] = order_id
+        if client_order_id:
+            params["origClientOrderId"] = client_order_id
+        return self._signed_request("GET", "/api/v3/order", params=params)
+
+    def cancel_order(
+        self,
+        symbol: str,
+        order_id: str | int | None = None,
+        client_order_id: str | None = None,
+    ) -> Dict[str, Any]:
+        params: Dict[str, Any] = {"symbol": symbol}
+        if order_id:
+            params["orderId"] = order_id
+        if client_order_id:
+            params["origClientOrderId"] = client_order_id
+        return self._signed_request("DELETE", "/api/v3/order", params=params)
+
+    def get_open_orders(self, symbol: str | None = None) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = symbol
+        payload = self._signed_request("GET", "/api/v3/openOrders", params=params)
+        return list(payload)
+
     @staticmethod
     def quantize_quantity(quantity: float, step_size: float) -> float:
         if step_size <= 0:
@@ -170,7 +230,22 @@ class BinanceSpotClient:
         return round(quantized, precision)
 
     @staticmethod
+    def quantize_price(price: float, tick_size: float) -> float:
+        if tick_size <= 0:
+            return price
+        precision = max(0, round(-math.log10(tick_size)))
+        steps = math.floor(price / tick_size)
+        quantized = steps * tick_size
+        return round(quantized, precision)
+
+    @staticmethod
     def _format_quantity(quantity: float) -> str:
         text = f"{quantity:.12f}"
+        text = text.rstrip("0").rstrip(".")
+        return text or "0"
+
+    @staticmethod
+    def _format_price(price: float) -> str:
+        text = f"{price:.12f}"
         text = text.rstrip("0").rstrip(".")
         return text or "0"

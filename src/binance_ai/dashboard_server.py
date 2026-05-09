@@ -730,6 +730,7 @@ INDEX_HTML = """<!doctype html>
             <div class="card" id="pnlCard"></div>
             <div class="card" id="sellDecisionCard"></div>
             <div class="card" id="riskGateCard"></div>
+            <div class="card" id="openOrderCard"></div>
             <div class="card" id="executionCard"></div>
           </aside>
         </div>
@@ -863,7 +864,7 @@ INDEX_HTML = """<!doctype html>
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
-      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
+      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -931,6 +932,11 @@ INDEX_HTML = """<!doctype html>
       if (s === "SELL") return "卖出";
       if (s === "HOLD") return "观望";
       if (s === "PAPER_FILLED") return "模拟成交";
+      if (s === "ORDER_OPEN") return "挂单中";
+      if (s === "FILLED") return "已成交";
+      if (s === "CANCELED") return "已撤单";
+      if (s === "EXPIRED") return "已过期";
+      if (s === "UNKNOWN") return "状态待确认";
       if (s === "BLOCKED") return "已阻塞";
       return signal || "--";
     }
@@ -951,6 +957,9 @@ INDEX_HTML = """<!doctype html>
       if (reason) return reason;
       if (s === "SKIPPED_REFRESH_ONLY") return "本轮只刷新行情、持仓和风控线，不触发下单决策。";
       if (s === "PAPER_FILLED") return "本轮已产生模拟成交，明细见最近模拟成交。";
+      if (s === "ORDER_OPEN") return "本轮已提交限价挂单，等待行情触价或撤单规则处理。";
+      if (s === "UNKNOWN") return "订单接口状态不确定，下一轮会先查询订单状态，不直接补单。";
+      if (s === "CANCELED" || s === "EXPIRED") return "挂单已取消或过期，锁定资产已释放。";
       if (s === "BLOCKED") return "本轮动作被规则、预算、最小成交额或 AI 风险闸门阻塞。";
       if (s === "NO_ACTION" || s === "HOLD") return "本轮未下单，继续等待策略或退出条件。";
       if (s === "PASS") return "检查通过，但本轮没有需要执行的交易动作。";
@@ -1036,7 +1045,10 @@ INDEX_HTML = """<!doctype html>
       const bars = chartBars;
       const markers = payload.live_trade_markers || [];
       const vetoes = payload.live_ai_veto_markers || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, bars, markers, vetoes };
+      const openOrders = payload.open_orders || latest.open_orders || [];
+      const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
+      const orderMarkers = payload.order_markers || [];
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, bars, markers, vetoes, openOrders, orderEvents, orderMarkers };
     }
 
     function activateTab(tabName) {
@@ -1048,7 +1060,7 @@ INDEX_HTML = """<!doctype html>
 
     function updateTopBar(payload) {
       const c = context(payload);
-      const availableCash = asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0);
+      const availableCash = Math.max(0, asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0) - asNumber(c.paper.reserved_quote_balance, 0));
       els.topSymbol.textContent = c.symbol;
       els.topMode.textContent = cycleModeLabel(c.latest.cycle_mode);
       els.topUpdated.textContent = fmtTime(c.latest.generated_at || c.latest.timestamp || c.latest.timestamp_ms || payload.generated_at);
@@ -1070,7 +1082,7 @@ INDEX_HTML = """<!doctype html>
       const realTotalEquity = realAvg > 0 && qty > 0 && c.currentPrice > 0
         ? asNumber(c.paper.quote_balance, 0) + qty * c.currentPrice
         : c.paper.total_equity;
-      const availableCash = asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0);
+      const availableCash = Math.max(0, asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0) - asNumber(c.paper.reserved_quote_balance, 0));
       const realized = asNumber(c.paper.realized_pnl, 0);
       const riskLines = activeRiskLines(c);
       const allowEntry = c.aiRisk.allow_entry;
@@ -1102,6 +1114,17 @@ INDEX_HTML = """<!doctype html>
         <div class="card-label"><span>AI 风险闸门</span>${allowEntry === false ? statusChip("否决", "block") : statusChip("允许/未触发", "wait")}</div>
         ${stateBlock(allowEntry === false ? "否决" : "通过", allowEntry === false ? "BLOCK" : "PASS")}
         <div class="card-note">${escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "暂无 AI 风险闸门输出")}</div>
+      `;
+
+      const openOrder = c.openOrders.find((item) => item.symbol === c.symbol) || c.openOrders[0] || null;
+      els.openOrderCard.innerHTML = openOrder ? `
+        <div class="card-label"><span>当前挂单</span>${statusChip(openOrder.side || "--", String(openOrder.side || "").toUpperCase() === "BUY" ? "buy" : "sell")}</div>
+        <div class="card-value">${fmtCurrency(openOrder.limit_price, c.quoteAsset)}</div>
+        <div class="card-note">数量 ${fmtNumber(openOrder.quantity, 8)}，触发 ${escapeHtml(openOrder.trigger || "--")}，状态 ${escapeHtml(openOrder.status || "OPEN")}</div>
+      ` : `
+        <div class="card-label"><span>当前挂单</span>${statusChip("无挂单", "wait")}</div>
+        <div class="card-value">--</div>
+        <div class="card-note">当前没有等待成交的限价单。</div>
       `;
 
       els.executionCard.innerHTML = `
@@ -1381,6 +1404,8 @@ INDEX_HTML = """<!doctype html>
         drawCandlestickChart(document.getElementById("tradeChart"), c.bars, {
           markers: c.markers,
           vetoes: c.vetoes,
+          orderMarkers: c.orderMarkers,
+          openOrders: c.openOrders,
           riskLines: activeRiskLines(c).numeric,
           quoteAsset: c.quoteAsset,
           maxVisibleBars: 80,
@@ -1509,9 +1534,22 @@ INDEX_HTML = """<!doctype html>
       drawRiskLine(ctx, options.riskLines?.stop_loss_price, y, pad.left, width - pad.right, "#b4232a", "止损");
       drawRiskLine(ctx, options.riskLines?.take_profit_price, y, pad.left, width - pad.right, "#15803d", "止盈");
       drawRiskLine(ctx, options.riskLines?.trailing_stop_price, y, pad.left, width - pad.right, "#c96a21", "跟踪");
+      (options.openOrders || []).forEach((order) => {
+        const side = String(order.side || "").toUpperCase();
+        drawRiskLine(
+          ctx,
+          asNumber(order.limit_price, NaN),
+          y,
+          pad.left,
+          width - pad.right,
+          side === "BUY" ? "#1f6fbf" : "#7c3aed",
+          side === "BUY" ? "挂买" : "挂卖"
+        );
+      });
 
       const indexByTime = buildTimeIndex(data);
       (options.markers || []).forEach((m) => drawTradeMarker(ctx, m, indexByTime, data.length, x, y));
+      (options.orderMarkers || []).forEach((m) => drawOrderMarker(ctx, m, indexByTime, data.length, x, y));
       (options.vetoes || []).forEach((m) => drawVetoMarker(ctx, m, indexByTime, data.length, x, y));
 
       ctx.fillStyle = "#66758a";
@@ -1693,6 +1731,34 @@ INDEX_HTML = """<!doctype html>
       ctx.moveTo(cx + 3, cy - 3);
       ctx.lineTo(cx - 3, cy + 3);
       ctx.stroke();
+    }
+
+    function drawOrderMarker(ctx, marker, timeIndex, length, x, y) {
+      const status = String(marker.status || "").toUpperCase();
+      const price = asNumber(marker.price, NaN);
+      if (!Number.isFinite(price)) return;
+      const idx = nearestIndex(timeIndex, marker.time || marker.timestamp || marker.timestamp_ms, length);
+      const cx = x(idx);
+      const cy = y(price);
+      const side = String(marker.side || "").toUpperCase();
+      const color = status === "FILLED"
+        ? (side === "BUY" ? "#15803d" : "#b4232a")
+        : status === "OPEN"
+          ? "#1f6fbf"
+          : "#7c8798";
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.fillStyle = status === "FILLED" ? color : "#fff";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      if (status === "CANCELED" || status === "EXPIRED" || status === "REJECTED") {
+        ctx.rect(cx - 4, cy - 4, 8, 8);
+      } else {
+        ctx.arc(cx, cy, 4.5, 0, Math.PI * 2);
+      }
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
     }
 
     function drawRiskLine(ctx, value, y, x1, x2, color, label) {
@@ -1883,7 +1949,37 @@ def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 12) -> Lis
             execution = decision.get("execution_result", {})
             if execution.get("status") == "PAPER_FILLED":
                 fills.append(execution)
+        for event in cycle.get("order_lifecycle_events", []):
+            if event.get("status") == "FILLED":
+                fills.append(
+                    {
+                        "symbol": event.get("symbol"),
+                        "side": event.get("side"),
+                        "quantity": event.get("filled_quantity") or event.get("quantity"),
+                        "fill_price": event.get("fill_price") or event.get("limit_price"),
+                        "timestamp_ms": event.get("timestamp_ms"),
+                        "trigger": event.get("trigger"),
+                        "client_order_id": event.get("client_order_id"),
+                    }
+                )
     return fills[-limit:][::-1]
+
+
+def _extract_order_lifecycle_events(
+    history: List[Dict[str, Any]],
+    latest_report: Dict[str, Any],
+    limit: int = 200,
+) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for cycle in history:
+        for event in cycle.get("order_lifecycle_events", []):
+            if isinstance(event, dict):
+                events.append(event)
+    if not events:
+        for event in latest_report.get("order_lifecycle_events", []):
+            if isinstance(event, dict):
+                events.append(event)
+    return events[-limit:][::-1]
 
 
 def _extract_live_trade_markers(history: List[Dict[str, Any]], limit: int = 200) -> List[Dict[str, Any]]:
@@ -1905,6 +2001,42 @@ def _extract_live_trade_markers(history: List[Dict[str, Any]], limit: int = 200)
                     "quantity": _coerce_float(execution.get("quantity")),
                     "reason": execution.get("reason", ""),
                     "trigger": execution.get("trigger", ""),
+                }
+            )
+        for event in cycle.get("order_lifecycle_events", []):
+            if event.get("status") != "FILLED":
+                continue
+            markers.append(
+                {
+                    "timestamp_ms": _coerce_int(event.get("timestamp_ms"), cycle_timestamp),
+                    "symbol": event.get("symbol", ""),
+                    "side": event.get("side", ""),
+                    "price": _coerce_float(event.get("fill_price"), _coerce_float(event.get("limit_price"))),
+                    "quantity": _coerce_float(event.get("filled_quantity"), _coerce_float(event.get("quantity"))),
+                    "reason": event.get("reason", ""),
+                    "trigger": event.get("trigger", ""),
+                }
+            )
+    return markers[-limit:]
+
+
+def _extract_order_markers(history: List[Dict[str, Any]], limit: int = 200) -> List[Dict[str, Any]]:
+    markers: List[Dict[str, Any]] = []
+    for cycle in history:
+        for event in cycle.get("order_lifecycle_events", []):
+            if event.get("status") not in {"OPEN", "FILLED", "CANCELED", "EXPIRED", "REJECTED"}:
+                continue
+            markers.append(
+                {
+                    "timestamp_ms": _coerce_int(event.get("timestamp_ms"), _coerce_int(cycle.get("timestamp_ms"))),
+                    "symbol": event.get("symbol", ""),
+                    "side": event.get("side", ""),
+                    "status": event.get("status", ""),
+                    "price": _coerce_float(event.get("fill_price"), _coerce_float(event.get("limit_price"))),
+                    "quantity": _coerce_float(event.get("filled_quantity"), _coerce_float(event.get("quantity"))),
+                    "trigger": event.get("trigger", ""),
+                    "reason": event.get("reason", ""),
+                    "client_order_id": event.get("client_order_id", ""),
                 }
             )
     return markers[-limit:]
@@ -2128,6 +2260,8 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         "paper_state": paper_state,
         "history": history,
         "recent_fills": _extract_recent_fills(history),
+        "open_orders": list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", []),
+        "order_lifecycle_events": _extract_order_lifecycle_events(history, latest_report),
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "decision_ledger": _extract_decision_ledger(history, latest_report),
         "position_activation_state": paper_state.get("activation_state", {}),
@@ -2137,6 +2271,7 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         "live_refresh_interval": "1m",
         "live_refresh_bars": refresh_bars,
         "live_trade_markers": _extract_live_trade_markers(history),
+        "order_markers": _extract_order_markers(history),
         "position_activation_markers": _extract_position_activation_markers(history),
         "live_ai_veto_markers": _extract_live_ai_veto_markers(history),
         **backtest_payload,

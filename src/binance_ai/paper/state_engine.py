@@ -4,7 +4,7 @@ import time
 from dataclasses import replace
 from typing import Dict, Tuple
 
-from binance_ai.models import AccountSnapshot, OrderRequest, PortfolioSnapshot, PositionSnapshot
+from binance_ai.models import AccountSnapshot, ManagedOrder, OrderLifecycleEvent, OrderRequest, PortfolioSnapshot, PositionSnapshot
 
 
 class PortfolioStateEngine:
@@ -13,11 +13,182 @@ class PortfolioStateEngine:
         self.fee_rate = max(0.0, fee_rate)
 
     def account_snapshot(self, snapshot: PortfolioSnapshot) -> AccountSnapshot:
-        balances = {self.quote_asset: snapshot.quote_balance}
+        balances = {self.quote_asset: max(0.0, snapshot.quote_balance - snapshot.reserved_quote_balance)}
         for symbol, position in snapshot.positions.items():
             base_asset = symbol[: -len(self.quote_asset)] if symbol.endswith(self.quote_asset) else symbol
-            balances[base_asset] = position.quantity
+            reserved_base = snapshot.reserved_base_balances.get(symbol, 0.0)
+            balances[base_asset] = max(0.0, position.quantity - reserved_base)
         return AccountSnapshot(balances=balances)
+
+    def submit_limit_order(
+        self,
+        snapshot: PortfolioSnapshot,
+        order: OrderRequest,
+        min_notional: float | None,
+        min_qty: float | None,
+        timestamp_ms: int,
+        entry_candle_close_time_ms: int,
+    ) -> Tuple[PortfolioSnapshot, Dict[str, object], OrderLifecycleEvent]:
+        limit_price = float(order.limit_price)
+        notional = order.quantity * limit_price
+        fee = notional * self.fee_rate
+        if min_qty is not None and (order.quantity < min_qty or order.quantity <= 0):
+            event = self._event(timestamp_ms, order, "REJECTED", "REJECTED", "paper_limit_order_below_min_qty")
+            return snapshot, {"status": "REJECTED", "reason": event.reason}, event
+        if min_notional is not None and notional < min_notional:
+            event = self._event(timestamp_ms, order, "REJECTED", "REJECTED", "paper_limit_order_below_min_notional")
+            return snapshot, {"status": "REJECTED", "reason": event.reason}, event
+        if limit_price <= 0:
+            event = self._event(timestamp_ms, order, "REJECTED", "REJECTED", "paper_limit_price_invalid")
+            return snapshot, {"status": "REJECTED", "reason": event.reason}, event
+
+        open_orders = dict(snapshot.open_orders)
+        if order.client_order_id in open_orders:
+            event = self._event(timestamp_ms, order, "REJECTED", "REJECTED", "paper_duplicate_client_order_id")
+            return snapshot, {"status": "REJECTED", "reason": event.reason}, event
+
+        reserved_quote = 0.0
+        reserved_base = 0.0
+        if order.side == "BUY":
+            reserved_quote = notional + fee
+            available_quote = snapshot.quote_balance - snapshot.reserved_quote_balance
+            if reserved_quote > available_quote:
+                event = self._event(timestamp_ms, order, "REJECTED", "REJECTED", f"paper_insufficient_{self.quote_asset.lower()}")
+                return snapshot, {"status": "REJECTED", "reason": event.reason, "required_quote": reserved_quote}, event
+        else:
+            position = snapshot.positions.get(order.symbol)
+            available_base = (position.quantity if position else 0.0) - snapshot.reserved_base_balances.get(order.symbol, 0.0)
+            reserved_base = order.quantity
+            if reserved_base > available_base:
+                event = self._event(timestamp_ms, order, "REJECTED", "REJECTED", "paper_position_not_available_for_limit_order")
+                return snapshot, {"status": "REJECTED", "reason": event.reason}, event
+
+        managed = ManagedOrder(
+            client_order_id=order.client_order_id,
+            symbol=order.symbol,
+            side=order.side,
+            order_type="LIMIT",
+            quantity=order.quantity,
+            limit_price=limit_price,
+            time_in_force=order.time_in_force,
+            status="OPEN",
+            created_at_ms=timestamp_ms,
+            updated_at_ms=timestamp_ms,
+            expires_at_ms=order.expires_at_ms,
+            trigger=order.trigger,
+            remaining_quantity=order.quantity,
+            reserved_quote=reserved_quote,
+            reserved_base=reserved_base,
+            entry_candle_close_time=entry_candle_close_time_ms,
+        )
+        open_orders[managed.client_order_id] = managed
+        reserved_base_balances = dict(snapshot.reserved_base_balances)
+        if reserved_base > 0:
+            reserved_base_balances[order.symbol] = reserved_base_balances.get(order.symbol, 0.0) + reserved_base
+        updated = replace(
+            snapshot,
+            open_orders=open_orders,
+            reserved_quote_balance=snapshot.reserved_quote_balance + reserved_quote,
+            reserved_base_balances=reserved_base_balances,
+        )
+        event = self._event(timestamp_ms, order, "SUBMITTED", "OPEN", "paper_limit_order_open")
+        return updated, {
+            "status": "ORDER_OPEN",
+            "symbol": order.symbol,
+            "side": order.side,
+            "quantity": order.quantity,
+            "limit_price": limit_price,
+            "client_order_id": order.client_order_id,
+            "trigger": order.trigger,
+            "expires_at_ms": order.expires_at_ms,
+        }, event
+
+    def cancel_open_order(
+        self,
+        snapshot: PortfolioSnapshot,
+        client_order_id: str,
+        reason: str,
+        timestamp_ms: int,
+        status: str = "CANCELED",
+    ) -> Tuple[PortfolioSnapshot, OrderLifecycleEvent | None]:
+        order = snapshot.open_orders.get(client_order_id)
+        if order is None:
+            return snapshot, None
+        open_orders = dict(snapshot.open_orders)
+        open_orders.pop(client_order_id, None)
+        reserved_base_balances = dict(snapshot.reserved_base_balances)
+        if order.reserved_base > 0:
+            remaining = max(0.0, reserved_base_balances.get(order.symbol, 0.0) - order.reserved_base)
+            if remaining > 0:
+                reserved_base_balances[order.symbol] = remaining
+            else:
+                reserved_base_balances.pop(order.symbol, None)
+        updated = replace(
+            snapshot,
+            open_orders=open_orders,
+            reserved_quote_balance=max(0.0, snapshot.reserved_quote_balance - order.reserved_quote),
+            reserved_base_balances=reserved_base_balances,
+        )
+        event = OrderLifecycleEvent(
+            timestamp_ms=timestamp_ms,
+            symbol=order.symbol,
+            client_order_id=order.client_order_id,
+            event_type=status,
+            status=status,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            reason=reason,
+            trigger=order.trigger,
+            external_order_id=order.external_order_id,
+        )
+        return updated, event
+
+    def fill_open_order(
+        self,
+        snapshot: PortfolioSnapshot,
+        client_order_id: str,
+        fill_price: float,
+        timestamp_ms: int,
+        entry_candle_close_time_ms: int | None = None,
+    ) -> Tuple[PortfolioSnapshot, Dict[str, object], OrderLifecycleEvent | None]:
+        managed = snapshot.open_orders.get(client_order_id)
+        if managed is None:
+            return snapshot, {"status": "BLOCKED", "reason": "paper_open_order_not_found"}, None
+        released, _ = self.cancel_open_order(snapshot, client_order_id, "paper_limit_order_filled_release_reservation", timestamp_ms, status="FILLED")
+        order = OrderRequest(
+            symbol=managed.symbol,
+            side=managed.side,
+            order_type="MARKET",
+            quantity=managed.quantity,
+            trigger=managed.trigger,
+        )
+        updated, result = self.apply_order(
+            released,
+            order,
+            fill_price,
+            timestamp_ms=timestamp_ms,
+            entry_candle_close_time_ms=entry_candle_close_time_ms or managed.entry_candle_close_time,
+        )
+        event = OrderLifecycleEvent(
+            timestamp_ms=timestamp_ms,
+            symbol=managed.symbol,
+            client_order_id=managed.client_order_id,
+            event_type="FILLED",
+            status="FILLED",
+            side=managed.side,
+            quantity=managed.quantity,
+            limit_price=managed.limit_price,
+            fill_price=fill_price,
+            filled_quantity=managed.quantity,
+            reason="paper_limit_order_filled",
+            trigger=managed.trigger,
+            external_order_id=managed.external_order_id,
+        )
+        result["client_order_id"] = managed.client_order_id
+        result["limit_price"] = managed.limit_price
+        result["trigger"] = managed.trigger
+        return updated, result, event
 
     def mark_to_market(
         self,
@@ -156,9 +327,32 @@ class PortfolioStateEngine:
         total_equity = snapshot.quote_balance + market_value
         return {
             "quote_balance": snapshot.quote_balance,
+            "available_quote_balance": max(0.0, snapshot.quote_balance - snapshot.reserved_quote_balance),
+            "reserved_quote_balance": snapshot.reserved_quote_balance,
             "market_value": market_value,
             "total_equity": total_equity,
             "realized_pnl": snapshot.realized_pnl,
             "unrealized_pnl": unrealized_pnl,
             "net_pnl": total_equity - snapshot.initial_quote_balance,
         }
+
+    @staticmethod
+    def _event(
+        timestamp_ms: int,
+        order: OrderRequest,
+        event_type: str,
+        status: str,
+        reason: str,
+    ) -> OrderLifecycleEvent:
+        return OrderLifecycleEvent(
+            timestamp_ms=timestamp_ms,
+            symbol=order.symbol,
+            client_order_id=order.client_order_id,
+            event_type=event_type,
+            status=status,
+            side=order.side,
+            quantity=order.quantity,
+            limit_price=order.limit_price,
+            reason=reason,
+            trigger=order.trigger,
+        )

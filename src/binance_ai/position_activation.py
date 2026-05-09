@@ -133,6 +133,9 @@ class PositionActivationEngine:
             positions=snapshot.positions,
             realized_pnl=snapshot.realized_pnl,
             activation_state=activation_state,
+            open_orders=snapshot.open_orders,
+            reserved_quote_balance=snapshot.reserved_quote_balance,
+            reserved_base_balances=snapshot.reserved_base_balances,
         )
 
     def apply_state_update(
@@ -155,6 +158,9 @@ class PositionActivationEngine:
             positions=snapshot.positions,
             realized_pnl=snapshot.realized_pnl,
             activation_state=activation_state,
+            open_orders=snapshot.open_orders,
+            reserved_quote_balance=snapshot.reserved_quote_balance,
+            reserved_base_balances=snapshot.reserved_base_balances,
         )
 
     def _build_grid_sell(

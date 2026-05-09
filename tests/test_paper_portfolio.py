@@ -77,6 +77,80 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertEqual(result["status"], "BLOCKED")
             self.assertEqual(result["reason"], "paper_order_below_min_notional")
 
+    def test_limit_buy_lifecycle_locks_cash_then_fills(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=1000.0,
+                state_path=Path(tmpdir) / "paper_state.json",
+                fee_rate=0.001,
+            )
+            order = OrderRequest(
+                symbol="XRPJPY",
+                side="BUY",
+                order_type="LIMIT",
+                quantity=1.0,
+                limit_price=200.0,
+                client_order_id="buy-1",
+                trigger="strategy_buy",
+                expires_at_ms=10_000,
+            )
+
+            result, event = portfolio.submit_limit_order(order, timestamp_ms=1_000)
+            snapshot = portfolio.load_snapshot()
+
+            self.assertEqual(result["status"], "ORDER_OPEN")
+            self.assertEqual(event.status, "OPEN")
+            self.assertAlmostEqual(snapshot.reserved_quote_balance, 200.2)
+            self.assertAlmostEqual(portfolio.account_snapshot().balance_of("JPY"), 799.8)
+
+            fill_result, fill_event = portfolio.fill_open_order("buy-1", fill_price=200.0, timestamp_ms=2_000)
+            snapshot = portfolio.load_snapshot()
+
+            self.assertEqual(fill_result["status"], "PAPER_FILLED")
+            self.assertEqual(fill_event.status, "FILLED")
+            self.assertEqual(snapshot.open_orders, {})
+            self.assertAlmostEqual(snapshot.reserved_quote_balance, 0.0)
+            self.assertAlmostEqual(snapshot.quote_balance, 799.8)
+            self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 1.0)
+
+    def test_limit_sell_lifecycle_locks_base_then_cancels(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=1000.0,
+                state_path=Path(tmpdir) / "paper_state.json",
+            )
+            portfolio.apply_order(
+                OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=2.0),
+                fill_price=200.0,
+            )
+            order = OrderRequest(
+                symbol="XRPJPY",
+                side="SELL",
+                order_type="LIMIT",
+                quantity=1.0,
+                limit_price=220.0,
+                client_order_id="sell-1",
+                trigger="grid_profit_sell",
+                expires_at_ms=10_000,
+            )
+
+            result, _ = portfolio.submit_limit_order(order, timestamp_ms=1_000)
+            snapshot = portfolio.load_snapshot()
+
+            self.assertEqual(result["status"], "ORDER_OPEN")
+            self.assertAlmostEqual(snapshot.reserved_base_balances["XRPJPY"], 1.0)
+            self.assertAlmostEqual(portfolio.account_snapshot().balance_of("XRP"), 1.0)
+
+            event = portfolio.cancel_open_order("sell-1", "test_cancel", timestamp_ms=2_000)
+            snapshot = portfolio.load_snapshot()
+
+            self.assertEqual(event.status, "CANCELED")
+            self.assertEqual(snapshot.open_orders, {})
+            self.assertEqual(snapshot.reserved_base_balances, {})
+            self.assertAlmostEqual(portfolio.account_snapshot().balance_of("XRP"), 2.0)
+
     def test_load_snapshot_backfills_position_metadata_from_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_path = Path(tmpdir) / "paper_state.json"

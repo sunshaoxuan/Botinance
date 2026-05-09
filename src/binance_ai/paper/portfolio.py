@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Dict
 
-from binance_ai.models import AccountSnapshot, OrderRequest, PortfolioSnapshot, PositionSnapshot
+from binance_ai.models import AccountSnapshot, ManagedOrder, OrderLifecycleEvent, OrderRequest, PortfolioSnapshot, PositionSnapshot
 from binance_ai.paper.state_engine import PortfolioStateEngine
 
 
@@ -38,6 +39,32 @@ class PaperPortfolio:
             )
             for symbol, item in payload.get("positions", {}).items()
         }
+        open_orders = {
+            client_order_id: ManagedOrder(
+                client_order_id=str(item.get("client_order_id", client_order_id)),
+                symbol=str(item.get("symbol", "")),
+                side=str(item.get("side", "")),
+                order_type=str(item.get("order_type", "LIMIT")),
+                quantity=float(item.get("quantity", 0.0)),
+                limit_price=float(item.get("limit_price", 0.0)),
+                time_in_force=str(item.get("time_in_force", "GTC")),
+                status=str(item.get("status", "OPEN")),
+                created_at_ms=int(item.get("created_at_ms", 0)),
+                updated_at_ms=int(item.get("updated_at_ms", 0)),
+                expires_at_ms=int(item.get("expires_at_ms", 0)),
+                trigger=str(item.get("trigger", "")),
+                external_order_id=str(item.get("external_order_id", "")),
+                filled_quantity=float(item.get("filled_quantity", 0.0)),
+                remaining_quantity=float(item.get("remaining_quantity", item.get("quantity", 0.0))),
+                average_fill_price=float(item.get("average_fill_price", 0.0)),
+                reserved_quote=float(item.get("reserved_quote", 0.0)),
+                reserved_base=float(item.get("reserved_base", 0.0)),
+                entry_candle_close_time=int(item.get("entry_candle_close_time", 0)),
+                last_reason=str(item.get("last_reason", "")),
+            )
+            for client_order_id, item in payload.get("open_orders", {}).items()
+            if isinstance(item, dict)
+        }
         snapshot = PortfolioSnapshot(
             quote_asset=payload["quote_asset"],
             quote_balance=float(payload["quote_balance"]),
@@ -45,6 +72,12 @@ class PaperPortfolio:
             positions=positions,
             realized_pnl=float(payload.get("realized_pnl", 0.0)),
             activation_state=payload.get("activation_state", {}),
+            open_orders=open_orders,
+            reserved_quote_balance=float(payload.get("reserved_quote_balance", 0.0)),
+            reserved_base_balances={
+                symbol: float(quantity)
+                for symbol, quantity in payload.get("reserved_base_balances", {}).items()
+            },
         )
         migrated = self._backfill_position_metadata(snapshot)
         if migrated != snapshot:
@@ -105,6 +138,76 @@ class PaperPortfolio:
             self.save_snapshot(updated)
         return result
 
+    def submit_limit_order(
+        self,
+        order: OrderRequest,
+        min_notional: float | None = None,
+        min_qty: float | None = None,
+        timestamp_ms: int | None = None,
+        entry_candle_close_time_ms: int | None = None,
+    ) -> tuple[Dict[str, object], OrderLifecycleEvent]:
+        applied_timestamp_ms = timestamp_ms or int(time.time() * 1000)
+        snapshot = self.load_snapshot()
+        updated, result, event = self.engine.submit_limit_order(
+            snapshot,
+            order,
+            min_notional=min_notional,
+            min_qty=min_qty,
+            timestamp_ms=applied_timestamp_ms,
+            entry_candle_close_time_ms=entry_candle_close_time_ms or applied_timestamp_ms,
+        )
+        if updated != snapshot:
+            self.save_snapshot(updated)
+        return result, event
+
+    def cancel_open_order(
+        self,
+        client_order_id: str,
+        reason: str,
+        timestamp_ms: int,
+        status: str = "CANCELED",
+    ) -> OrderLifecycleEvent | None:
+        snapshot = self.load_snapshot()
+        updated, event = self.engine.cancel_open_order(
+            snapshot,
+            client_order_id=client_order_id,
+            reason=reason,
+            timestamp_ms=timestamp_ms,
+            status=status,
+        )
+        if updated != snapshot:
+            self.save_snapshot(updated)
+        return event
+
+    def fill_open_order(
+        self,
+        client_order_id: str,
+        fill_price: float,
+        timestamp_ms: int,
+        entry_candle_close_time_ms: int | None = None,
+    ) -> tuple[Dict[str, object], OrderLifecycleEvent | None]:
+        snapshot = self.load_snapshot()
+        updated, result, event = self.engine.fill_open_order(
+            snapshot,
+            client_order_id=client_order_id,
+            fill_price=fill_price,
+            timestamp_ms=timestamp_ms,
+            entry_candle_close_time_ms=entry_candle_close_time_ms,
+        )
+        if updated != snapshot:
+            self.save_snapshot(updated)
+        return result, event
+
+    def open_orders(self, symbol: str | None = None) -> Dict[str, ManagedOrder]:
+        orders = self.load_snapshot().open_orders
+        if symbol is None:
+            return orders
+        return {
+            client_order_id: order
+            for client_order_id, order in orders.items()
+            if order.symbol == symbol and order.status == "OPEN"
+        }
+
     def equity_summary(self, mark_prices: Dict[str, float]) -> Dict[str, float]:
         return self.engine.equity_summary(self.load_snapshot(), mark_prices)
 
@@ -163,4 +266,7 @@ class PaperPortfolio:
             positions=positions,
             realized_pnl=snapshot.realized_pnl,
             activation_state=snapshot.activation_state,
+            open_orders=snapshot.open_orders,
+            reserved_quote_balance=snapshot.reserved_quote_balance,
+            reserved_base_balances=snapshot.reserved_base_balances,
         )

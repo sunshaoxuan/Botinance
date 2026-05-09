@@ -64,7 +64,28 @@ class DashboardServerTests(unittest.TestCase):
                     "market_prices": {"XRPJPY": 223.4},
                 },
             )
-            _write_json(runtime_dir / "paper_state.json", {"quote_asset": "JPY", "quote_balance": 1000.0})
+            _write_json(
+                runtime_dir / "paper_state.json",
+                {
+                    "quote_asset": "JPY",
+                    "quote_balance": 1000.0,
+                    "open_orders": {
+                        "order-1": {
+                            "client_order_id": "order-1",
+                            "symbol": "XRPJPY",
+                            "side": "BUY",
+                            "order_type": "LIMIT",
+                            "quantity": 1.0,
+                            "limit_price": 220.0,
+                            "time_in_force": "GTC",
+                            "status": "OPEN",
+                            "created_at_ms": 1_000,
+                            "updated_at_ms": 1_000,
+                            "expires_at_ms": 10_000,
+                        }
+                    },
+                },
+            )
             _write_text(
                 runtime_dir / "cycle_reports.jsonl",
                 "\n".join(
@@ -81,6 +102,19 @@ class DashboardServerTests(unittest.TestCase):
                                         "price": 221.0,
                                         "sell_blocker": "继续持有",
                                         "final_action": "REFRESH_ONLY",
+                                    }
+                                ],
+                                "order_lifecycle_events": [
+                                    {
+                                        "timestamp_ms": 1_000,
+                                        "symbol": "XRPJPY",
+                                        "client_order_id": "order-1",
+                                        "event_type": "SUBMITTED",
+                                        "status": "OPEN",
+                                        "side": "BUY",
+                                        "quantity": 1.0,
+                                        "limit_price": 220.0,
+                                        "trigger": "strategy_buy",
                                     }
                                 ],
                                 "market_prices": {"XRPJPY": 221.0},
@@ -132,6 +166,12 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["live_refresh_bars"][0]["sample_count"], 3)
         self.assertEqual(len(payload["decision_ledger"]), 1)
         self.assertEqual(payload["decision_ledger"][0]["sell_blocker"], "继续持有")
+        self.assertEqual(len(payload["open_orders"]), 1)
+        self.assertEqual(payload["open_orders"][0]["client_order_id"], "order-1")
+        self.assertEqual(len(payload["order_lifecycle_events"]), 1)
+        self.assertEqual(payload["order_lifecycle_events"][0]["status"], "OPEN")
+        self.assertEqual(len(payload["order_markers"]), 1)
+        self.assertEqual(payload["order_markers"][0]["status"], "OPEN")
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -154,6 +194,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["decision_ledger"], [])
         self.assertEqual(payload["sell_diagnostics"], [])
         self.assertEqual(payload["position_activation_state"], {})
+        self.assertEqual(payload["open_orders"], [])
+        self.assertEqual(payload["order_lifecycle_events"], [])
+        self.assertEqual(payload["order_markers"], [])
 
     def test_extract_live_trade_veto_markers_and_bars(self) -> None:
         history = [

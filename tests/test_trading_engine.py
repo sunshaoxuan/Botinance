@@ -164,7 +164,9 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             second_report = engine.run_cycle()
 
         self.assertEqual(first_report.cycle_mode, "DECISION")
-        self.assertEqual(first_report.decisions[0].execution_result["status"], "PAPER_FILLED")
+        self.assertEqual(first_report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(first_report.order_lifecycle_events[0].event_type, "SUBMITTED")
+        self.assertEqual(first_report.open_orders[0].status, "OPEN")
         self.assertEqual(len(first_report.market_snapshots), 1)
         self.assertEqual(first_report.market_snapshots[0]["symbol"], "XRPJPY")
         self.assertEqual(second_report.cycle_mode, "REFRESH")
@@ -319,10 +321,11 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             report = engine.run_cycle()
             snapshot = portfolio.load_snapshot()
 
-        self.assertEqual(report.decisions[0].execution_result["status"], "PAPER_FILLED")
+        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_OPEN")
         self.assertEqual(report.decisions[0].execution_result["trigger"], "grid_profit_sell")
         self.assertEqual(report.sell_diagnostics[0].activation_trigger, "grid_profit_sell")
-        self.assertAlmostEqual(snapshot.activation_state["XRPJPY"]["pending_buyback_quantity"], 25.0)
+        self.assertAlmostEqual(snapshot.activation_state["XRPJPY"].get("pending_buyback_quantity", 0.0), 0.0)
+        self.assertEqual(len(snapshot.open_orders), 1)
 
 
 if __name__ == "__main__":

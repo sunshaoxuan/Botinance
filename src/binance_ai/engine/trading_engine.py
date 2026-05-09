@@ -10,7 +10,7 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderRequest, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
@@ -59,6 +59,7 @@ class TradingEngine:
         sell_diagnostics: List[SellDecisionDiagnostic] = []
         position_diagnostics: List[PositionDiagnostic] = []
         scheduling_diagnostics: List[SchedulingDiagnostic] = []
+        order_lifecycle_events: List[OrderLifecycleEvent] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
         symbol_contexts: List[Dict[str, object]] = []
@@ -70,12 +71,37 @@ class TradingEngine:
                     self.settings.kline_interval,
                     self.settings.mtf_entry_interval,
                     self.settings.mtf_trend_interval,
+                    "1m",
                 ],
                 limit=self.settings.kline_limit,
             )
             candles = candles_by_interval[self.settings.kline_interval]
+            execution_candles = candles_by_interval.get("1m", candles)
             price = candles[-1].close
             mark_prices[symbol] = price
+            lifecycle_results, lifecycle_events = self.executor.process_open_orders(
+                symbol=symbol,
+                candles=execution_candles,
+                current_price=price,
+                timestamp_ms=cycle_timestamp_ms,
+            )
+            order_lifecycle_events.extend(lifecycle_events)
+            for result in lifecycle_results:
+                trigger = str(result.get("trigger", ""))
+                if result.get("status") == "PAPER_FILLED" and trigger.startswith("grid_"):
+                    self._record_position_activation_success(
+                        symbol=symbol,
+                        decision=PositionActivationDecision(
+                            action=str(result.get("side", "")),
+                            trigger=trigger,
+                            reason="订单成交后更新仓位激活状态",
+                            quantity=float(result.get("quantity", 0.0)),
+                        ),
+                        fill_price=float(result.get("fill_price", price)),
+                        timestamp_ms=cycle_timestamp_ms,
+                    )
+            if lifecycle_results:
+                account = self._load_account_snapshot()
             latest_closed_candle_close_time = self._latest_closed_candle_close_time(
                 candles=candles,
                 current_timestamp_ms=cycle_timestamp_ms,
@@ -167,6 +193,7 @@ class TradingEngine:
                     "activation_decision": activation_decision,
                     "scheduling": scheduling,
                     "latest_closed_candle_close_time": latest_closed_candle_close_time,
+                    "open_orders": self.executor.open_orders_for_symbol(symbol),
                 }
             )
 
@@ -228,6 +255,7 @@ class TradingEngine:
                 veto_reason="",
             )
             applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY and not has_position else None
+            open_orders = list(context.get("open_orders", []))
 
             order = None
             execution_result: Dict[str, object] = {"status": "NO_ACTION"}
@@ -258,18 +286,45 @@ class TradingEngine:
                     "reason": scheduling.decision_reason,
                 }
                 buy_diagnostic = self._mark_refresh_only_diagnostic(buy_diagnostic, scheduling.decision_reason)
+            elif open_orders:
+                cancel_reason = self._open_order_cancel_reason(open_orders[0], signal, ai_assessment)
+                if cancel_reason:
+                    events = self.executor.cancel_open_orders_for_symbol(
+                        symbol=symbol,
+                        reason=cancel_reason,
+                        timestamp_ms=cycle_timestamp_ms,
+                    )
+                    order_lifecycle_events.extend(events)
+                    execution_result = {"status": "CANCELED", "reason": cancel_reason}
+                else:
+                    execution_result = {
+                        "status": "ORDER_OPEN",
+                        "reason": "existing_open_order",
+                        "client_order_id": open_orders[0].client_order_id,
+                        "limit_price": open_orders[0].limit_price,
+                        "side": open_orders[0].side,
+                        "trigger": open_orders[0].trigger,
+                    }
             elif exit_reason is not None and has_position:
                 decision = self.risk.build_sell_order(symbol, price, base_balance, filters)
                 if decision.order is not None:
-                    order = decision.order
-                    execution_result = self.executor.execute(
+                    order = self._as_limit_order(
+                        decision.order,
+                        price=price,
+                        filters=filters,
+                        timestamp_ms=cycle_timestamp_ms,
+                        trigger=exit_reason,
+                        urgent=True,
+                    )
+                    execution_result, event = self.executor.submit_limit_order(
                         order,
-                        fill_price=price,
+                        current_price=price,
                         filters=filters,
                         timestamp_ms=cycle_timestamp_ms,
                         entry_candle_close_time_ms=latest_closed_candle_close_time,
                     )
-                    execution_result["trigger"] = exit_reason
+                    if event is not None:
+                        order_lifecycle_events.append(event)
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason, "trigger": exit_reason}
             elif signal.action == SignalAction.BUY and not has_position:
@@ -288,53 +343,70 @@ class TradingEngine:
                         position_multiplier=ai_assessment.position_multiplier,
                     )
                     if decision.order is not None:
-                        order = decision.order
-                        execution_result = self.executor.execute(
+                        order = self._as_limit_order(
+                            decision.order,
+                            price=price,
+                            filters=filters,
+                            timestamp_ms=cycle_timestamp_ms,
+                            trigger="strategy_buy",
+                            urgent=False,
+                        )
+                        execution_result, event = self.executor.submit_limit_order(
                             order,
-                            fill_price=price,
+                            current_price=price,
                             filters=filters,
                             timestamp_ms=cycle_timestamp_ms,
                             entry_candle_close_time_ms=latest_closed_candle_close_time,
                         )
+                        if event is not None:
+                            order_lifecycle_events.append(event)
                     else:
                         execution_result = {"status": "BLOCKED", "reason": decision.reason}
             elif signal.action == SignalAction.SELL and has_position:
                 decision = self.risk.build_sell_order(symbol, price, base_balance, filters)
                 if decision.order is not None:
-                    order = decision.order
-                    execution_result = self.executor.execute(
+                    order = self._as_limit_order(
+                        decision.order,
+                        price=price,
+                        filters=filters,
+                        timestamp_ms=cycle_timestamp_ms,
+                        trigger="strategy_sell",
+                        urgent=False,
+                    )
+                    execution_result, event = self.executor.submit_limit_order(
                         order,
-                        fill_price=price,
+                        current_price=price,
                         filters=filters,
                         timestamp_ms=cycle_timestamp_ms,
                         entry_candle_close_time_ms=latest_closed_candle_close_time,
                     )
-                    execution_result["trigger"] = "strategy_sell"
+                    if event is not None:
+                        order_lifecycle_events.append(event)
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason}
             elif activation_decision.order is not None:
-                order = activation_decision.order
-                execution_result = self.executor.execute(
+                order = self._as_limit_order(
+                    activation_decision.order,
+                    price=price,
+                    filters=filters,
+                    timestamp_ms=cycle_timestamp_ms,
+                    trigger=activation_decision.trigger,
+                    urgent=False,
+                )
+                execution_result, event = self.executor.submit_limit_order(
                     order,
-                    fill_price=price,
+                    current_price=price,
                     filters=filters,
                     timestamp_ms=cycle_timestamp_ms,
                     entry_candle_close_time_ms=latest_closed_candle_close_time,
                 )
-                execution_result["trigger"] = activation_decision.trigger
-                if execution_result.get("status") == "PAPER_FILLED":
-                    self._record_position_activation_success(
-                        symbol=symbol,
-                        decision=activation_decision,
-                        fill_price=price,
-                        timestamp_ms=cycle_timestamp_ms,
-                    )
-                else:
-                    self._record_position_activation_state(
-                        symbol=symbol,
-                        decision=activation_decision,
-                        timestamp_ms=cycle_timestamp_ms,
-                    )
+                if event is not None:
+                    order_lifecycle_events.append(event)
+                self._record_position_activation_state(
+                    symbol=symbol,
+                    decision=activation_decision,
+                    timestamp_ms=cycle_timestamp_ms,
+                )
             else:
                 self._record_position_activation_state(
                     symbol=symbol,
@@ -382,6 +454,8 @@ class TradingEngine:
             position_diagnostics=position_diagnostics,
             scheduling_diagnostics=scheduling_diagnostics,
             decision_ledger=decision_ledger,
+            order_lifecycle_events=order_lifecycle_events,
+            open_orders=self.executor.all_open_orders(),
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
             market_prices=mark_prices,
             market_snapshots=market_snapshots,
@@ -399,6 +473,65 @@ class TradingEngine:
             net_pnl=summary["net_pnl"],
             llm_analysis=llm_analysis,
         )
+
+    def _as_limit_order(
+        self,
+        order: OrderRequest,
+        *,
+        price: float,
+        filters,
+        timestamp_ms: int,
+        trigger: str,
+        urgent: bool,
+    ) -> OrderRequest:
+        if self.settings.order_execution_mode != "limit_lifecycle":
+            return order
+        side = order.side.upper()
+        bid = price
+        ask = price
+        try:
+            ticker = self.client.get_order_book_ticker(order.symbol)
+            bid = float(ticker.get("bid_price") or price)
+            ask = float(ticker.get("ask_price") or price)
+        except Exception:  # noqa: BLE001 - price fallback keeps paper mode and tests deterministic.
+            pass
+
+        if side == "BUY":
+            raw_limit = bid * (1.0 - self.settings.order_passive_offset_pct)
+        elif urgent:
+            raw_limit = bid * (1.0 - self.settings.order_urgent_cross_pct)
+        else:
+            raw_limit = ask * (1.0 + self.settings.order_passive_offset_pct)
+
+        quantize_price = getattr(self.client, "quantize_price", None)
+        limit_price = (
+            quantize_price(raw_limit, getattr(filters, "tick_size", 0.0))
+            if callable(quantize_price)
+            else raw_limit
+        )
+        client_order_id = f"boti_{order.symbol}_{side.lower()}_{timestamp_ms}"
+        return OrderRequest(
+            symbol=order.symbol,
+            side=order.side,
+            order_type="LIMIT",
+            quantity=order.quantity,
+            limit_price=limit_price,
+            time_in_force=self.settings.order_time_in_force,
+            client_order_id=client_order_id,
+            trigger=trigger,
+            expires_at_ms=timestamp_ms + self.settings.order_ttl_seconds * 1000,
+        )
+
+    @staticmethod
+    def _open_order_cancel_reason(open_order, signal, ai_assessment: AiRiskAssessment) -> str:
+        side = str(open_order.side).upper()
+        if side == "BUY" and not ai_assessment.allow_entry:
+            return "ai_risk_worsened_cancel_open_buy"
+        if side == "BUY" and signal.action == SignalAction.SELL:
+            return "signal_reversed_cancel_open_buy"
+        if side == "SELL" and signal.action == SignalAction.BUY:
+            return "signal_reversed_cancel_open_sell"
+        return ""
 
     def _evaluate_position_activation(
         self,
@@ -483,6 +616,14 @@ class TradingEngine:
             final_action = "HOLD"
             if execution_status == "PAPER_FILLED":
                 final_action = str(execution.get("side", decision.order.side if decision.order else ""))
+            elif execution_status == "ORDER_OPEN":
+                final_action = f"OPEN_{execution.get('side', decision.order.side if decision.order else '')}"
+            elif execution_status == "REJECTED":
+                final_action = "REJECTED"
+            elif execution_status == "UNKNOWN":
+                final_action = "UNKNOWN"
+            elif execution_status == "CANCELED":
+                final_action = "CANCELED"
             elif execution_status == "BLOCKED":
                 final_action = "BLOCKED"
             elif execution_status == "SKIPPED_REFRESH_ONLY":

@@ -84,6 +84,14 @@ class Settings:
     llm_fallback_model: str = "qwen3:14b"
     llm_fallback_timeout_seconds: int = 30
     llm_fallback_num_predict: int = 512
+    order_execution_mode: str = "limit_lifecycle"
+    order_time_in_force: str = "GTC"
+    order_ttl_seconds: int = 180
+    order_cancel_deviation_pct: float = 0.003
+    order_passive_offset_pct: float = 0.0002
+    order_urgent_cross_pct: float = 0.001
+    order_max_open_per_symbol: int = 1
+    live_order_execution_enabled: bool = False
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -155,4 +163,12 @@ def load_settings() -> Settings:
         grid_max_daily_trades=int(os.getenv("GRID_MAX_DAILY_TRADES", "8")),
         grid_allow_loss_recovery_sell=_parse_bool(os.getenv("GRID_ALLOW_LOSS_RECOVERY_SELL"), True),
         grid_loss_recovery_sell_step_pct=float(os.getenv("GRID_LOSS_RECOVERY_SELL_STEP_PCT", "0.003")),
+        order_execution_mode=os.getenv("ORDER_EXECUTION_MODE", "limit_lifecycle").strip(),
+        order_time_in_force=os.getenv("ORDER_TIME_IN_FORCE", "GTC").strip().upper(),
+        order_ttl_seconds=int(os.getenv("ORDER_TTL_SECONDS", "180")),
+        order_cancel_deviation_pct=float(os.getenv("ORDER_CANCEL_DEVIATION_PCT", "0.003")),
+        order_passive_offset_pct=float(os.getenv("ORDER_PASSIVE_OFFSET_PCT", "0.0002")),
+        order_urgent_cross_pct=float(os.getenv("ORDER_URGENT_CROSS_PCT", "0.001")),
+        order_max_open_per_symbol=int(os.getenv("ORDER_MAX_OPEN_PER_SYMBOL", "1")),
+        live_order_execution_enabled=_parse_bool(os.getenv("LIVE_ORDER_EXECUTION_ENABLED"), False),
     )
