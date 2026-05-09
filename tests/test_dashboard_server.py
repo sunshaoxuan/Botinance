@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from binance_ai.dashboard_server import (
+    INDEX_HTML,
     _build_live_main_interval_bars,
     _extract_live_ai_veto_markers,
     _extract_live_trade_markers,
@@ -24,6 +25,19 @@ def _write_text(path: Path, value: str) -> None:
 
 
 class DashboardServerTests(unittest.TestCase):
+    def test_index_html_exposes_advanced_workstation_shell(self) -> None:
+        self.assertIn("app-shell", INDEX_HTML)
+        self.assertIn("side-rail", INDEX_HTML)
+        self.assertIn("top-bar", INDEX_HTML)
+        self.assertIn("trade-workspace", INDEX_HTML)
+        self.assertIn("实时交易", INDEX_HTML)
+        self.assertIn("AI 决策", INDEX_HTML)
+        self.assertIn("回测分析", INDEX_HTML)
+        self.assertIn("风险控制", INDEX_HTML)
+        self.assertIn("系统日志", INDEX_HTML)
+        self.assertIn("drawCandlestickChart", INDEX_HTML)
+        self.assertIn("volumeHeight", INDEX_HTML)
+
     def test_build_dashboard_payload_prefers_walk_forward_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

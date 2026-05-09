@@ -156,10 +156,13 @@ This script starts:
 - a background paper monitor loop writing to `runtime_visual/`
 - a local dashboard server reading from the same directory
 
-The dashboard now has two views:
+The dashboard is a five-tab local trading workstation:
 
-- `实时监控`: main-interval candlesticks, paper fills, exit lines, AI veto markers, live position state
+- `实时交易`: main-interval candlesticks, volume bars, paper fills, exit lines, AI veto markers, live position state
+- `AI 决策`: GPT-5.5 assessment, rule signal, AI verdict, risk-gate explanation, evidence sources
 - `回测分析`: `runtime_backtest_walk` first, then fallback to `runtime_backtest_check`
+- `风险控制`: buy-decision chain, minimum notional checks, budget, rounded quantity, exit-risk lines, current blockers
+- `系统日志`: refresh/decision cycle state, news refresh state, runtime cycle summaries, data-source health
 
 Real-time view overlays:
 
