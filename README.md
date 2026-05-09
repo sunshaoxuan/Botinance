@@ -156,6 +156,25 @@ This script starts:
 - a background paper monitor loop writing to `runtime_visual/`
 - a local dashboard server reading from the same directory
 
+The dashboard now has two views:
+
+- `实时监控`: main-interval candlesticks, paper fills, exit lines, AI veto markers, live position state
+- `回测分析`: `runtime_backtest_walk` first, then fallback to `runtime_backtest_check`
+
+Real-time view overlays:
+
+- `BUY / SELL` markers only for actual `PAPER_FILLED` events
+- `止损 / 止盈 / 跟踪止损` lines when a position exists
+- `AI 否决` markers when the strategy wanted `BUY` but the AI risk gate blocked entry
+
+Backtest view consumes P6 output files directly:
+
+- `summary.json`
+- `segments.json`
+- `equity_curve.csv`
+- `trades.csv`
+- `run_manifest.json`
+
 Two-layer monitoring defaults:
 
 - fast layer: market scan every `10` seconds
@@ -192,6 +211,17 @@ The dashboard and runtime report now expose:
 - per-symbol market structure (`uptrend`, `downtrend`, etc.)
 - `15m / 1h / 4h` interval summaries
 - the full MTF signal reason used by the strategy
+
+Dashboard API additions:
+
+- `live_main_interval_bars`
+- `live_trade_markers`
+- `live_ai_veto_markers`
+- `backtest_summary`
+- `backtest_segments`
+- `backtest_equity_curve`
+- `backtest_trades`
+- `backtest_manifest`
 
 Stop the monitor and dashboard cleanly:
 
