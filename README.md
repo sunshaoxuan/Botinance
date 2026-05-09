@@ -29,6 +29,7 @@ Current AI integration is limited to:
 - entry veto or position-size reduction before a buy order is built
 
 It cannot force an entry that the rules engine does not already allow.
+If the primary ChatGPT-compatible endpoint is unavailable, Botinance can fall back to an Ollama endpoint configured with `LLM_FALLBACK_*`; the default fallback is `qwen3:14b` at `http://ccnode.briconbric.com:22545`.
 
 ## Setup
 

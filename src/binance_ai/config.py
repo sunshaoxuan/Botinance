@@ -78,6 +78,12 @@ class Settings:
     grid_max_daily_trades: int = 8
     grid_allow_loss_recovery_sell: bool = True
     grid_loss_recovery_sell_step_pct: float = 0.003
+    llm_fallback_enabled: bool = True
+    llm_fallback_provider: str = "ollama"
+    llm_fallback_base_url: str = ""
+    llm_fallback_model: str = "qwen3:14b"
+    llm_fallback_timeout_seconds: int = 30
+    llm_fallback_num_predict: int = 512
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -87,7 +93,9 @@ class Settings:
 
     @property
     def llm_enabled(self) -> bool:
-        return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
+        primary_enabled = bool(self.llm_base_url and self.llm_api_key and self.llm_model)
+        fallback_enabled = bool(self.llm_fallback_enabled and self.llm_fallback_base_url and self.llm_fallback_model)
+        return primary_enabled or fallback_enabled
 
 
 def load_settings() -> Settings:
@@ -126,6 +134,12 @@ def load_settings() -> Settings:
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
         llm_model=os.getenv("LLM_MODEL", "gpt-5.5").strip(),
         llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "20")),
+        llm_fallback_enabled=_parse_bool(os.getenv("LLM_FALLBACK_ENABLED"), True),
+        llm_fallback_provider=os.getenv("LLM_FALLBACK_PROVIDER", "ollama").strip().lower(),
+        llm_fallback_base_url=_normalize_base_url(os.getenv("LLM_FALLBACK_BASE_URL", "http://ccnode.briconbric.com:22545").strip()),
+        llm_fallback_model=os.getenv("LLM_FALLBACK_MODEL", "qwen3:14b").strip(),
+        llm_fallback_timeout_seconds=int(os.getenv("LLM_FALLBACK_TIMEOUT_SECONDS", "30")),
+        llm_fallback_num_predict=int(os.getenv("LLM_FALLBACK_NUM_PREDICT", "512")),
         news_refresh_seconds=int(os.getenv("NEWS_REFRESH_SECONDS", "120")),
         stop_loss_pct=float(os.getenv("STOP_LOSS_PCT", "0.01")),
         take_profit_pct=float(os.getenv("TAKE_PROFIT_PCT", "0.02")),

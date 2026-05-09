@@ -4,14 +4,19 @@ import json
 from statistics import mean
 from typing import Dict, List, Sequence
 
-from binance_ai.llm.openai_compat import OpenAICompatibleChatClient
 from binance_ai.models import AiRiskAssessment, Candle, LlmAnalysis, NewsItem, TradeSignal
 
 
 class MarketAnalyst:
-    def __init__(self, client: OpenAICompatibleChatClient, model: str) -> None:
+    def __init__(self, client: object, model: str) -> None:
         self.client = client
         self.model = model
+
+    def _provider(self) -> str:
+        return str(getattr(self.client, "last_provider", "") or "openai_compat")
+
+    def _model(self) -> str:
+        return str(getattr(self.client, "last_model", "") or self.model)
 
     def analyze(
         self,
@@ -23,8 +28,8 @@ class MarketAnalyst:
         if not market_snapshots:
             return LlmAnalysis(
                 status="DISABLED",
-                provider="openai_compat",
-                model=self.model,
+                provider=self._provider(),
+                model=self._model(),
                 regime_cn="无数据",
                 summary_cn="当前没有可分析的市场快照。",
                 action_bias_cn="观望",
@@ -60,8 +65,8 @@ class MarketAnalyst:
             payload = self._parse_json(raw_text)
             return LlmAnalysis(
                 status="READY",
-                provider="openai_compat",
-                model=self.model,
+                provider=self._provider(),
+                model=self._model(),
                 regime_cn=str(payload.get("regime_cn", "震荡")),
                 summary_cn=str(payload.get("summary_cn", "模型未返回摘要。")),
                 action_bias_cn=str(payload.get("action_bias_cn", "观望")),
@@ -72,8 +77,8 @@ class MarketAnalyst:
         except Exception as exc:
             return LlmAnalysis(
                 status="ERROR",
-                provider="openai_compat",
-                model=self.model,
+                provider=self._provider(),
+                model=self._model(),
                 regime_cn="分析失败",
                 summary_cn="大模型分析本轮未成功返回。",
                 action_bias_cn="观望",

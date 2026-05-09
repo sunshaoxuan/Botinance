@@ -9,9 +9,14 @@ from binance_ai.config import Settings
 
 
 class OpenAICompatibleChatClient:
+    provider = "openai_compat"
+
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.model = settings.llm_model
         self.endpoint = self._build_chat_endpoint(settings.llm_base_url)
+        self.last_provider = self.provider
+        self.last_model = self.model
 
     @staticmethod
     def _build_chat_endpoint(base_url: str) -> str:
@@ -60,4 +65,3 @@ class OpenAICompatibleChatClient:
             texts = [item.get("text", "") for item in content if isinstance(item, dict)]
             return "\n".join(text for text in texts if text)
         raise RuntimeError(f"Unsupported LLM response format: {decoded}")
-

@@ -1,7 +1,9 @@
 import unittest
 
+from binance_ai.config import Settings
 from binance_ai.llm.market_analyst import build_market_snapshot
 from binance_ai.llm.market_analyst import MarketAnalyst
+from binance_ai.llm.ollama import FallbackChatClient, OllamaChatClient
 from binance_ai.llm.openai_compat import OpenAICompatibleChatClient
 from binance_ai.models import Candle, SignalAction, TradeSignal
 
@@ -14,6 +16,69 @@ class OpenAICompatibleChatClientTests(unittest.TestCase):
     def test_build_chat_endpoint_without_v1_suffix(self) -> None:
         endpoint = OpenAICompatibleChatClient._build_chat_endpoint("http://example.com:1234")
         self.assertEqual(endpoint, "http://example.com:1234/v1/chat/completions")
+
+
+class OllamaChatClientTests(unittest.TestCase):
+    def test_build_ollama_chat_endpoint(self) -> None:
+        endpoint = OllamaChatClient._build_chat_endpoint("http://example.com:22545")
+        self.assertEqual(endpoint, "http://example.com:22545/api/chat")
+
+    def test_fallback_client_uses_ollama_when_primary_fails(self) -> None:
+        class _Primary:
+            provider = "openai_compat"
+            model = "gpt-5.5"
+
+            def chat(self, messages):
+                raise RuntimeError("primary unavailable")
+
+        class _Fallback:
+            provider = "ollama"
+            model = "qwen3:14b"
+
+            def chat(self, messages):
+                return '{"ok":true}'
+
+        client = FallbackChatClient(_Primary(), _Fallback())
+        self.assertEqual(client.chat([{"role": "user", "content": "x"}]), '{"ok":true}')
+        self.assertEqual(client.last_provider, "ollama")
+        self.assertEqual(client.last_model, "qwen3:14b")
+        self.assertIn("primary unavailable", client.last_error)
+
+    def test_settings_llm_enabled_with_fallback_only(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.001,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            llm_fallback_enabled=True,
+            llm_fallback_provider="ollama",
+            llm_fallback_base_url="http://ccnode.briconbric.com:22545",
+            llm_fallback_model="qwen3:14b",
+            llm_fallback_timeout_seconds=30,
+            llm_fallback_num_predict=512,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+        )
+        self.assertTrue(settings.llm_enabled)
 
 
 class MarketAnalystTests(unittest.TestCase):

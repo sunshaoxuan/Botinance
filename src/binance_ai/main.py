@@ -13,6 +13,7 @@ from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.engine.trading_engine import TradingEngine
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst
+from binance_ai.llm.ollama import FallbackChatClient, OllamaChatClient
 from binance_ai.llm.openai_compat import OpenAICompatibleChatClient
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
@@ -43,9 +44,22 @@ def build_engine(output_dir: Path) -> TradingEngine:
     )
     market_analyst = None
     if settings.llm_enabled:
+        primary_client = (
+            OpenAICompatibleChatClient(settings)
+            if settings.llm_base_url and settings.llm_api_key and settings.llm_model
+            else None
+        )
+        fallback_client = (
+            OllamaChatClient(settings)
+            if settings.llm_fallback_enabled
+            and settings.llm_fallback_provider == "ollama"
+            and settings.llm_fallback_base_url
+            and settings.llm_fallback_model
+            else None
+        )
         market_analyst = MarketAnalyst(
-            client=OpenAICompatibleChatClient(settings),
-            model=settings.llm_model,
+            client=FallbackChatClient(primary_client, fallback_client),
+            model=settings.llm_model or settings.llm_fallback_model,
         )
     paper_portfolio = None
     if settings.dry_run:
