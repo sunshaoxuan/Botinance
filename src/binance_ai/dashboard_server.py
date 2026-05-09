@@ -886,7 +886,7 @@ INDEX_HTML = """<!doctype html>
           <div class="top-metric"><span>最新刷新</span><strong id="topUpdated">--</strong></div>
           <div class="top-metric"><span>当前价格</span><strong id="topPrice">--</strong></div>
           <div class="top-metric"><span>可用现金</span><strong id="topCash">--</strong></div>
-          <div class="top-metric"><span>原始成本总盈亏</span><strong id="topEquity">--</strong></div>
+          <div class="top-metric"><span>交割成本总盈亏</span><strong id="topEquity">--</strong></div>
         </div>
       </header>
 
@@ -1401,6 +1401,8 @@ INDEX_HTML = """<!doctype html>
       const realUnrealized = asNumber(c.realCostBasis.unrealized_pnl, qty > 0 && realAvg > 0 && c.currentPrice > 0 ? qty * (c.currentPrice - realAvg) : botiUnrealized);
       const originalTotalPnl = asNumber(c.realCostBasis.total_pnl, realUnrealized);
       const realizedOriginalPnl = asNumber(c.realCostBasis.realized_pnl, 0);
+      const botiNetPnl = asNumber(c.realCostBasis.boti_net_pnl, asNumber(c.paper.net_pnl, realized + botiUnrealized));
+      const botiInitialEquity = asNumber(c.realCostBasis.boti_initial_equity, NaN);
       const realTotalEquity = asNumber(c.realCostBasis.current_total_equity, realAvg > 0 && qty > 0 && c.currentPrice > 0
         ? asNumber(c.paper.quote_balance, 0) + qty * c.currentPrice
         : c.paper.total_equity);
@@ -1422,10 +1424,11 @@ INDEX_HTML = """<!doctype html>
       `;
 
       els.pnlCard.innerHTML = `
-        <div class="card-label"><span>原始成本总盈亏</span><span class="${pnlClass(originalTotalPnl)}">总计</span></div>
+        <div class="card-label"><span>交割成本总盈亏</span><span class="${pnlClass(originalTotalPnl)}">原始成本</span></div>
         <div class="card-value ${pnlClass(originalTotalPnl)}">${fmtCurrency(originalTotalPnl, c.quoteAsset)}</div>
-        <div class="card-note">原始已实现 ${fmtCurrency(realizedOriginalPnl, c.quoteAsset)}，原始未实现 ${fmtCurrency(realUnrealized, c.quoteAsset)}，Boti接管后 ${fmtCurrency(asNumber(c.paper.net_pnl, realized + botiUnrealized), c.quoteAsset)}</div>
-        <div class="card-note">当前权益 ${fmtCurrency(realTotalEquity, c.quoteAsset)}，原始基线 ${fmtCurrency(c.realCostBasis.original_initial_equity, c.quoteAsset)}</div>
+        <div class="card-note">交割成本 ${fmtCurrency(c.realCostBasis.original_initial_equity, c.quoteAsset)}，当前权益 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
+        <div class="card-note">原始已实现 ${fmtCurrency(realizedOriginalPnl, c.quoteAsset)}，原始未实现 ${fmtCurrency(realUnrealized, c.quoteAsset)}</div>
+        <div class="card-note">Boti接手后操作盈亏 ${fmtCurrency(botiNetPnl, c.quoteAsset)}${Number.isFinite(botiInitialEquity) ? `，接手基线 ${fmtCurrency(botiInitialEquity, c.quoteAsset)}` : ""}</div>
       `;
 
       els.sellDecisionCard.innerHTML = `
@@ -2783,6 +2786,12 @@ def _build_real_cost_basis_summary(
     original_initial_equity = original_quote_balance + original_cost_basis
     current_total_equity = current_quote_balance + current_market_value
     total_pnl = current_total_equity - original_initial_equity
+    boti_initial_equity = _coerce_float(paper_state.get("initial_total_equity"))
+    if boti_initial_equity <= 0:
+        boti_initial_equity = _coerce_float(paper_state.get("initial_quote_balance")) + _coerce_float(
+            paper_state.get("initial_market_value")
+        )
+    boti_net_pnl = _coerce_float(paper_state.get("net_pnl"), current_total_equity - boti_initial_equity)
     if len(symbols) == 1:
         only_symbol = next(iter(symbols))
         symbols[only_symbol]["realized_pnl"] = realized_pnl
@@ -2797,6 +2806,8 @@ def _build_real_cost_basis_summary(
         "realized_pnl": realized_pnl,
         "unrealized_pnl": unrealized_pnl,
         "total_pnl": total_pnl,
+        "boti_initial_equity": boti_initial_equity,
+        "boti_net_pnl": boti_net_pnl,
         "symbols": symbols,
     }
 

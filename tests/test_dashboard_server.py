@@ -42,7 +42,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("trade-fill-panel", INDEX_HTML)
         self.assertIn("订单与成交记录", INDEX_HTML)
         self.assertIn("冻结资产", INDEX_HTML)
-        self.assertIn("原始成本总盈亏", INDEX_HTML)
+        self.assertIn("交割成本总盈亏", INDEX_HTML)
+        self.assertIn("Boti接手后操作盈亏", INDEX_HTML)
         self.assertIn("real_cost_basis_summary", INDEX_HTML)
         self.assertIn("\"状态\", \"方向\", \"数量\", \"价格\", \"冻结\", \"手续费\", \"已实现\", \"时间\"", INDEX_HTML)
         self.assertIn("fillPageSize", INDEX_HTML)
@@ -106,6 +107,8 @@ class DashboardServerTests(unittest.TestCase):
                 {
                     "quote_asset": "JPY",
                     "quote_balance": 1000.0,
+                    "initial_total_equity": 1320.0,
+                    "net_pnl": 126.8,
                     "positions": {
                         "XRPJPY": {
                             "quantity": 2.0,
@@ -243,6 +246,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["realized_pnl"], -700.0)
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["unrealized_pnl"], 46.8)
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["total_pnl"], -653.2)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["boti_initial_equity"], 1320.0)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["boti_net_pnl"], 126.8)
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["symbols"]["XRPJPY"]["sold_quantity"], 8.0)
 
     def test_dashboard_payload_can_defer_chart_data(self) -> None:
