@@ -8,6 +8,7 @@ from pathlib import Path
 from binance_ai.dashboard_server import (
     INDEX_HTML,
     _build_live_main_interval_bars,
+    _extract_position_activation_markers,
     _extract_live_ai_veto_markers,
     _extract_live_trade_markers,
     build_dashboard_payload,
@@ -71,6 +72,16 @@ class DashboardServerTests(unittest.TestCase):
                             {
                                 "timestamp_ms": 1_000,
                                 "decisions": [],
+                                "decision_ledger": [
+                                    {
+                                        "timestamp_ms": 1_000,
+                                        "cycle_mode": "REFRESH",
+                                        "symbol": "XRPJPY",
+                                        "price": 221.0,
+                                        "sell_blocker": "继续持有",
+                                        "final_action": "REFRESH_ONLY",
+                                    }
+                                ],
                                 "market_prices": {"XRPJPY": 221.0},
                             }
                         ),
@@ -115,6 +126,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["live_chart_symbol"], "XRPJPY")
         self.assertEqual(payload["live_main_interval"], "1h")
         self.assertEqual(len(payload["live_main_interval_bars"]), 1)
+        self.assertEqual(len(payload["decision_ledger"]), 1)
+        self.assertEqual(payload["decision_ledger"][0]["sell_blocker"], "继续持有")
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -133,6 +146,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["backtest_equity_curve"], [])
         self.assertEqual(payload["backtest_trades"], [])
         self.assertEqual(payload["backtest_manifest"], {})
+        self.assertEqual(payload["decision_ledger"], [])
+        self.assertEqual(payload["sell_diagnostics"], [])
+        self.assertEqual(payload["position_activation_state"], {})
 
     def test_extract_live_trade_veto_markers_and_bars(self) -> None:
         history = [
@@ -150,6 +166,7 @@ class DashboardServerTests(unittest.TestCase):
                             "side": "BUY",
                             "fill_price": 220.0,
                             "quantity": 0.4,
+                            "trigger": "grid_profit_sell",
                         },
                     }
                 ],
@@ -189,12 +206,14 @@ class DashboardServerTests(unittest.TestCase):
         ]
 
         trade_markers = _extract_live_trade_markers(history)
+        activation_markers = _extract_position_activation_markers(history)
         veto_markers = _extract_live_ai_veto_markers(history)
         bars = _build_live_main_interval_bars(history, symbol="XRPJPY", interval="1m")
 
         self.assertEqual(len(trade_markers), 1)
         self.assertEqual(trade_markers[0]["side"], "BUY")
         self.assertEqual(trade_markers[0]["price"], 220.0)
+        self.assertEqual(activation_markers[0]["trigger"], "grid_profit_sell")
 
         self.assertEqual(len(veto_markers), 1)
         self.assertEqual(veto_markers[0]["reason"], "新闻风险过高")

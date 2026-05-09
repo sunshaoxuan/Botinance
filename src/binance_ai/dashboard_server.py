@@ -746,6 +746,7 @@ INDEX_HTML = """<!doctype html>
           <aside class="right-command-stack">
             <div class="card" id="positionCard"></div>
             <div class="card" id="pnlCard"></div>
+            <div class="card" id="sellDecisionCard"></div>
             <div class="card" id="riskGateCard"></div>
             <div class="card" id="executionCard"></div>
           </aside>
@@ -842,7 +843,7 @@ INDEX_HTML = """<!doctype html>
             <div class="panel-body" id="exitRiskCard"></div>
           </article>
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">当前阻塞原因</div><div class="panel-subtitle">规则风控与 AI 风险裁决</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">仓位激活</div><div class="panel-subtitle">主动网格、待回补和当日次数</div></div></div>
             <div class="panel-body" id="riskParametersCard"></div>
           </article>
         </div>
@@ -879,7 +880,7 @@ INDEX_HTML = """<!doctype html>
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
-      "positionCard", "pnlCard", "riskGateCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
+      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1017,13 +1018,15 @@ INDEX_HTML = """<!doctype html>
       const llm = (latest.llm_assessments || [])[0] || latest.llm_analysis || {};
       const aiRisk = (latest.ai_risk_assessments || [])[0] || {};
       const buyDiag = (latest.buy_diagnostics || [])[0] || {};
+      const sellDiag = (latest.sell_diagnostics || payload.sell_diagnostics || [])[0] || {};
       const positionDiag = (latest.position_diagnostics || [])[0] || {};
+      const activationState = (payload.position_activation_state || paper.activation_state || {})[symbol] || {};
       const schedule = (latest.scheduling_diagnostics || [])[0] || {};
       const fills = payload.recent_fills || [];
       const bars = payload.live_main_interval_bars || [];
       const markers = payload.live_trade_markers || [];
       const vetoes = payload.live_ai_veto_markers || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, positionDiag, schedule, fills, bars, markers, vetoes };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, bars, markers, vetoes };
     }
 
     function activateTab(tabName) {
@@ -1070,6 +1073,12 @@ INDEX_HTML = """<!doctype html>
         <div class="card-label"><span>模拟盈亏</span><span class="${pnlClass(unrealized)}">未实现</span></div>
         <div class="card-value ${pnlClass(unrealized)}">${fmtCurrency(unrealized, c.quoteAsset)}</div>
         <div class="card-note">已实现 ${fmtCurrency(realized, c.quoteAsset)}，总权益 ${fmtCurrency(c.paper.total_equity, c.quoteAsset)}</div>
+      `;
+
+      els.sellDecisionCard.innerHTML = `
+        <div class="card-label"><span>卖出判断</span>${c.sellDiag.eligible_to_sell ? statusChip("可卖", "sell") : statusChip("持有", "wait")}</div>
+        <div class="card-value">${c.sellDiag.eligible_to_sell ? fmtNumber(c.sellDiag.recommended_sell_quantity, 8) : "HOLD"}</div>
+        <div class="card-note">${escapeHtml(c.sellDiag.blocker || "暂无卖出诊断")}；网格 ${escapeHtml(c.sellDiag.activation_trigger || c.activationState.last_trigger || "--")}</div>
       `;
 
       els.riskGateCard.innerHTML = `
@@ -1166,12 +1175,9 @@ INDEX_HTML = """<!doctype html>
     function updateRiskTab(payload) {
       const c = context(payload);
       const buy = c.buyDiag || {};
+      const sell = c.sellDiag || {};
+      const activation = c.activationState || {};
       const risk = activeRiskLines(c);
-      const blockers = [];
-      if (buy.block_reason || buy.blocker) blockers.push(buy.block_reason || buy.blocker);
-      (buy.blocker_details || []).forEach((item) => blockers.push(item));
-      if (c.aiRisk.allow_entry === false) blockers.push(c.aiRisk.reason || c.aiRisk.veto_reason || "AI 风险闸门否决");
-      if (!blockers.length && String(c.signal).toUpperCase() !== "BUY") blockers.push("当前规则信号不是 BUY");
 
       els.buyDecisionFull.innerHTML = kvRows([
         ["规则信号", statusChip(signalLabel(c.signal), signalClass(c.signal))],
@@ -1183,31 +1189,29 @@ INDEX_HTML = """<!doctype html>
       ]);
 
       els.exitRiskCard.innerHTML = kvRows([
+        ["是否适合卖出", sell.eligible_to_sell ? statusChip("可卖", "sell") : statusChip("持有", "wait")],
+        ["建议卖出数量", escapeHtml(fmtNumber(sell.recommended_sell_quantity, 8))],
+        ["卖出原因", escapeHtml(sell.blocker || "--")],
         ["止损线", risk.stopLoss || "--"],
         ["止盈线", risk.takeProfit || "--"],
         ["跟踪止损", risk.trailingStop || "--"],
-        ["持仓最高价", escapeHtml(fmtCurrency((c.position || {}).highest_price, c.quoteAsset))],
-        ["持仓 K 线数", escapeHtml(fmtNumber((c.position || {}).hold_bars, 0))],
+        ["持仓 K 线数", escapeHtml(fmtNumber(sell.bars_held ?? (c.position || {}).hold_bars, 0))],
         ["触发状态", escapeHtml(c.positionDiag.exit_trigger || c.positionDiag.exit_reason || "未触发")]
       ]);
 
-      els.riskParametersCard.innerHTML = `
-        ${kvRows([
-          ["AI 允许入场", escapeHtml(boolLabel(c.aiRisk.allow_entry))],
-          ["AI 建议仓位", escapeHtml(c.aiRisk.position_scale_pct !== undefined ? fmtPercent(c.aiRisk.position_scale_pct) : fmtNumber(c.aiRisk.position_multiplier, 3))],
-          ["执行结果", escapeHtml(c.executionStatus || "--")],
-          ["阻塞数量", escapeHtml(String(blockers.length))]
-        ])}
-        <div class="timeline" style="margin-top:12px;">
-          ${blockers.map((item) => `<div class="timeline-item"><div class="timeline-title">${escapeHtml(item)}</div></div>`).join("")}
-        </div>
-      `;
+      els.riskParametersCard.innerHTML = kvRows([
+        ["最近触发", escapeHtml(activation.last_trigger || sell.activation_trigger || "--")],
+        ["待回补数量", escapeHtml(fmtNumber(activation.pending_buyback_quantity, 8))],
+        ["最近网格卖价", escapeHtml(fmtCurrency(activation.last_grid_sell_price, c.quoteAsset))],
+        ["当日次数", escapeHtml(`${activation.daily_trade_count ?? 0} / 8`)],
+        ["最近原因", escapeHtml(activation.last_reason || "--")]
+      ]);
     }
 
     function updateSystemTab(payload) {
       const c = context(payload);
       const history = payload.history || [];
-      const reports = history.slice(-12).reverse();
+      const ledger = payload.decision_ledger || [];
       const schedule = c.schedule || {};
 
       els.systemStateCard.innerHTML = kvRows([
@@ -1234,14 +1238,17 @@ INDEX_HTML = """<!doctype html>
         ["成交标记", escapeHtml(String(c.markers.length))]
       ]);
 
-      const rows = reports.map((r) => `<tr>
-        <td>${escapeHtml(fmtTime(r.generated_at || r.timestamp))}</td>
+      const rows = ledger.slice(0, 80).map((r) => `<tr>
+        <td>${escapeHtml(fmtTime(r.timestamp_ms))}</td>
         <td>${escapeHtml(cycleModeLabel(r.cycle_mode))}</td>
-        <td>${escapeHtml(((r.symbols || [])[0] || {}).symbol || "--")}</td>
-        <td>${escapeHtml(signalLabel((((r.decisions || [])[0] || {}).strategy_decision || {}).signal || ((r.decisions || [])[0] || {}).signal || "--"))}</td>
-        <td>${escapeHtml(((r.scheduling_diagnostics || [])[0] || {}).news_refresh_status || "--")}</td>
+        <td>${escapeHtml(r.symbol || "--")}</td>
+        <td>${escapeHtml(fmtCurrency(r.price, c.quoteAsset))}</td>
+        <td>${escapeHtml(r.position_quantity ? fmtNumber(r.position_quantity, 8) : "0")}</td>
+        <td>${escapeHtml(r.buy_blocker || "--")}</td>
+        <td>${escapeHtml(r.sell_blocker || "--")}</td>
+        <td>${escapeHtml(r.final_action || "--")} / ${escapeHtml(r.execution_status || "--")}</td>
       </tr>`);
-      els.cycleLedger.innerHTML = table(["时间", "模式", "交易对", "信号", "新闻"], rows, "暂无 runtime 周期记录");
+      els.cycleLedger.innerHTML = table(["时间", "模式", "交易对", "价格", "持仓", "买入判断", "卖出判断", "最终动作"], rows, "暂无历史决策账本");
     }
 
     function renderEvidence(latest, limit) {
@@ -1522,13 +1529,14 @@ INDEX_HTML = """<!doctype html>
 
     function drawTradeMarker(ctx, marker, timeIndex, length, x, y) {
       const side = String(marker.side || marker.action || "").toUpperCase();
+      const trigger = String(marker.trigger || "");
       const price = asNumber(marker.price, NaN);
       if (!Number.isFinite(price)) return;
       const idx = nearestIndex(timeIndex, marker.time || marker.timestamp || marker.timestamp_ms, length);
       const cx = x(idx);
       const cy = y(price);
       const isBuy = side === "BUY";
-      ctx.fillStyle = isBuy ? "#16a34a" : "#dc2626";
+      ctx.fillStyle = trigger.startsWith("grid_") ? "#f97316" : isBuy ? "#16a34a" : "#dc2626";
       ctx.beginPath();
       if (isBuy) {
         ctx.moveTo(cx, cy - 12);
@@ -1541,6 +1549,12 @@ INDEX_HTML = """<!doctype html>
       }
       ctx.closePath();
       ctx.fill();
+      if (trigger.startsWith("grid_")) {
+        ctx.fillStyle = "#f97316";
+        ctx.font = "800 10px Avenir Next, PingFang SC, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText(trigger === "grid_buyback" ? "回补" : "网格", cx, cy + (isBuy ? 18 : -14));
+      }
     }
 
     function drawVetoMarker(ctx, marker, timeIndex, length, x, y) {
@@ -1753,8 +1767,19 @@ def _extract_live_trade_markers(history: List[Dict[str, Any]], limit: int = 200)
                     "price": _coerce_float(execution.get("fill_price"), _coerce_float(market_prices.get(symbol))),
                     "quantity": _coerce_float(execution.get("quantity")),
                     "reason": execution.get("reason", ""),
+                    "trigger": execution.get("trigger", ""),
                 }
             )
+    return markers[-limit:]
+
+
+def _extract_position_activation_markers(history: List[Dict[str, Any]], limit: int = 200) -> List[Dict[str, Any]]:
+    activation_triggers = {"grid_profit_sell", "grid_loss_recovery_sell", "grid_buyback"}
+    markers = [
+        marker
+        for marker in _extract_live_trade_markers(history, limit=limit * 2)
+        if marker.get("trigger") in activation_triggers
+    ]
     return markers[-limit:]
 
 
@@ -1788,6 +1813,19 @@ def _extract_live_ai_veto_markers(history: List[Dict[str, Any]], limit: int = 20
                 }
             )
     return markers[-limit:]
+
+
+def _extract_decision_ledger(history: List[Dict[str, Any]], latest_report: Dict[str, Any], limit: int = 200) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for cycle in history:
+        ledger = cycle.get("decision_ledger", [])
+        if isinstance(ledger, list):
+            entries.extend(item for item in ledger if isinstance(item, dict))
+    if not entries:
+        ledger = latest_report.get("decision_ledger", [])
+        if isinstance(ledger, list):
+            entries.extend(item for item in ledger if isinstance(item, dict))
+    return entries[-limit:][::-1]
 
 
 def _detect_main_interval(latest_report: Dict[str, Any], backtest_manifest: Dict[str, Any]) -> str:
@@ -1897,10 +1935,14 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         "paper_state": paper_state,
         "history": history,
         "recent_fills": _extract_recent_fills(history),
+        "sell_diagnostics": latest_report.get("sell_diagnostics", []),
+        "decision_ledger": _extract_decision_ledger(history, latest_report),
+        "position_activation_state": paper_state.get("activation_state", {}),
         "live_chart_symbol": chart_symbol,
         "live_main_interval": main_interval,
         "live_main_interval_bars": bars,
         "live_trade_markers": _extract_live_trade_markers(history),
+        "position_activation_markers": _extract_position_activation_markers(history),
         "live_ai_veto_markers": _extract_live_ai_veto_markers(history),
         **backtest_payload,
     }

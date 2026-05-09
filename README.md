@@ -220,11 +220,38 @@ Dashboard API additions:
 - `live_main_interval_bars`
 - `live_trade_markers`
 - `live_ai_veto_markers`
+- `sell_diagnostics`
+- `decision_ledger`
+- `position_activation_state`
+- `position_activation_markers`
 - `backtest_summary`
 - `backtest_segments`
 - `backtest_equity_curve`
 - `backtest_trades`
 - `backtest_manifest`
+
+## Position activation
+
+`P8` adds a paper-only active grid layer for held positions. It does not replace stop loss, take profit, trailing stop, or strategy `SELL`; it runs after those checks.
+
+Default paper settings:
+
+```env
+POSITION_ACTIVATION_ENABLED=true
+POSITION_ACTIVATION_MODE=active_grid
+GRID_SELL_STEP_PCT=0.003
+GRID_BUYBACK_STEP_PCT=0.0025
+GRID_SELL_FRACTION=0.25
+GRID_MIN_CORE_POSITION_FRACTION=0.25
+GRID_MAX_DAILY_TRADES=8
+GRID_ALLOW_LOSS_RECOVERY_SELL=true
+```
+
+Every cycle now records:
+
+- `sell_diagnostics`: whether Boti should sell, why it should not sell, or how much it would sell
+- `decision_ledger`: per-cycle decision snapshots for historical review
+- `activation_state`: pending buyback quantity, last grid sell price, daily grid count, and last activation reason
 
 Stop the monitor and dashboard cleanly:
 

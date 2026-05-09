@@ -10,9 +10,10 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, PositionDiagnostic, SchedulingDiagnostic, SignalAction
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
+from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
 from binance_ai.risk.engine import RiskEngine
 from binance_ai.strategy.base import Strategy
 
@@ -41,6 +42,7 @@ class TradingEngine:
         self.paper_portfolio = paper_portfolio
         self.market_analyst = market_analyst
         self.news_service = news_service
+        self.position_activation = PositionActivationEngine(settings, client)
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -54,6 +56,7 @@ class TradingEngine:
         news_evidence = news_result.items if news_result is not None else []
         decisions: List[CycleDecision] = []
         buy_diagnostics: List[BuyDecisionDiagnostic] = []
+        sell_diagnostics: List[SellDecisionDiagnostic] = []
         position_diagnostics: List[PositionDiagnostic] = []
         scheduling_diagnostics: List[SchedulingDiagnostic] = []
         mark_prices: Dict[str, float] = {}
@@ -115,12 +118,22 @@ class TradingEngine:
                 if has_position and position is not None
                 else None
             )
+            activation_decision = self._evaluate_position_activation(
+                symbol=symbol,
+                price=price,
+                account=account,
+                filters=filters,
+                timestamp_ms=cycle_timestamp_ms,
+            )
+            scheduler_exit_reason = exit_reason or (
+                activation_decision.trigger if activation_decision.order is not None else None
+            )
             scheduling = self.scheduler.evaluate(
                 symbol=symbol,
                 latest_closed_candle_close_time=latest_closed_candle_close_time,
                 current_price=price,
                 has_position=has_position,
-                exit_reason=exit_reason,
+                exit_reason=scheduler_exit_reason,
             )
             scheduling_diagnostics.append(scheduling)
             market_snapshot = build_market_snapshot(
@@ -151,6 +164,7 @@ class TradingEngine:
                     "position": position,
                     "signal": signal,
                     "exit_reason": exit_reason,
+                    "activation_decision": activation_decision,
                     "scheduling": scheduling,
                     "latest_closed_candle_close_time": latest_closed_candle_close_time,
                 }
@@ -190,6 +204,7 @@ class TradingEngine:
             has_position = bool(context["has_position"])
             signal = context["signal"]
             exit_reason = context["exit_reason"]
+            activation_decision = context["activation_decision"]
             scheduling = context["scheduling"]
             latest_closed_candle_close_time = int(context["latest_closed_candle_close_time"])
             ai_assessment = ai_risk_map.get(symbol.upper()) or AiRiskAssessment(
@@ -213,6 +228,16 @@ class TradingEngine:
                 signal_reason=signal.reason,
                 has_position=has_position,
                 ai_assessment=applied_ai_assessment,
+            )
+            sell_diagnostic = self.risk.inspect_sell_decision(
+                symbol=symbol,
+                price=price,
+                position=context["position"],
+                candles=context["candles"],
+                current_timestamp_ms=cycle_timestamp_ms,
+                signal=signal,
+                exit_reason=exit_reason,
+                activation_decision=activation_decision,
             )
 
             if not scheduling.should_run_decision:
@@ -275,6 +300,35 @@ class TradingEngine:
                     execution_result["trigger"] = "strategy_sell"
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason}
+            elif activation_decision.order is not None:
+                order = activation_decision.order
+                execution_result = self.executor.execute(
+                    order,
+                    fill_price=price,
+                    filters=filters,
+                    timestamp_ms=cycle_timestamp_ms,
+                    entry_candle_close_time_ms=latest_closed_candle_close_time,
+                )
+                execution_result["trigger"] = activation_decision.trigger
+                if execution_result.get("status") == "PAPER_FILLED":
+                    self._record_position_activation_success(
+                        symbol=symbol,
+                        decision=activation_decision,
+                        fill_price=price,
+                        timestamp_ms=cycle_timestamp_ms,
+                    )
+                else:
+                    self._record_position_activation_state(
+                        symbol=symbol,
+                        decision=activation_decision,
+                        timestamp_ms=cycle_timestamp_ms,
+                    )
+            else:
+                self._record_position_activation_state(
+                    symbol=symbol,
+                    decision=activation_decision,
+                    timestamp_ms=cycle_timestamp_ms,
+                )
 
             if scheduling.should_run_decision:
                 self.scheduler.record_decision(
@@ -285,6 +339,7 @@ class TradingEngine:
                 )
 
             buy_diagnostics.append(buy_diagnostic)
+            sell_diagnostics.append(sell_diagnostic)
             decisions.append(
                 CycleDecision(
                     symbol=symbol,
@@ -297,12 +352,24 @@ class TradingEngine:
         self.scheduler.save()
         summary = self._build_portfolio_summary(account, mark_prices)
         cycle_mode, cycle_reason = self.scheduler.summarize_cycle(scheduling_diagnostics)
+        decision_ledger = self._build_decision_ledger(
+            timestamp_ms=cycle_timestamp_ms,
+            cycle_mode=cycle_mode,
+            decisions=decisions,
+            buy_diagnostics=buy_diagnostics,
+            sell_diagnostics=sell_diagnostics,
+            ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
+            total_equity=summary["total_equity"],
+            news_refresh_status=news_result.refresh_status if news_result is not None else "DISABLED",
+        )
         return CycleReport(
             timestamp_ms=cycle_timestamp_ms,
             decisions=decisions,
             buy_diagnostics=buy_diagnostics,
+            sell_diagnostics=sell_diagnostics,
             position_diagnostics=position_diagnostics,
             scheduling_diagnostics=scheduling_diagnostics,
+            decision_ledger=decision_ledger,
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
             market_prices=mark_prices,
             market_snapshots=market_snapshots,
@@ -320,6 +387,118 @@ class TradingEngine:
             net_pnl=summary["net_pnl"],
             llm_analysis=llm_analysis,
         )
+
+    def _evaluate_position_activation(
+        self,
+        *,
+        symbol: str,
+        price: float,
+        account: AccountSnapshot,
+        filters,
+        timestamp_ms: int,
+    ) -> PositionActivationDecision:
+        if not self.settings.dry_run or self.paper_portfolio is None:
+            return PositionActivationDecision("HOLD", "", "position_activation_requires_paper_mode")
+        snapshot = self.paper_portfolio.load_snapshot()
+        return self.position_activation.evaluate(
+            symbol=symbol,
+            price=price,
+            account=account,
+            filters=filters,
+            snapshot=snapshot,
+            timestamp_ms=timestamp_ms,
+        )
+
+    def _record_position_activation_success(
+        self,
+        *,
+        symbol: str,
+        decision: PositionActivationDecision,
+        fill_price: float,
+        timestamp_ms: int,
+    ) -> None:
+        if self.paper_portfolio is None:
+            return
+        snapshot = self.paper_portfolio.load_snapshot()
+        updated = self.position_activation.apply_success(
+            snapshot=snapshot,
+            symbol=symbol,
+            decision=decision,
+            fill_price=fill_price,
+            timestamp_ms=timestamp_ms,
+        )
+        self.paper_portfolio.save_snapshot(updated)
+
+    def _record_position_activation_state(
+        self,
+        *,
+        symbol: str,
+        decision: PositionActivationDecision,
+        timestamp_ms: int,
+    ) -> None:
+        if self.paper_portfolio is None:
+            return
+        snapshot = self.paper_portfolio.load_snapshot()
+        updated = self.position_activation.apply_state_update(
+            snapshot=snapshot,
+            symbol=symbol,
+            decision=decision,
+            timestamp_ms=timestamp_ms,
+        )
+        if updated != snapshot:
+            self.paper_portfolio.save_snapshot(updated)
+
+    @staticmethod
+    def _build_decision_ledger(
+        *,
+        timestamp_ms: int,
+        cycle_mode: str,
+        decisions: List[CycleDecision],
+        buy_diagnostics: List[BuyDecisionDiagnostic],
+        sell_diagnostics: List[SellDecisionDiagnostic],
+        ai_risk_assessments: List[AiRiskAssessment],
+        total_equity: float,
+        news_refresh_status: str,
+    ) -> List[DecisionLedgerEntry]:
+        ledger: List[DecisionLedgerEntry] = []
+        for index, decision in enumerate(decisions):
+            buy = buy_diagnostics[index]
+            sell = sell_diagnostics[index]
+            ai = ai_risk_assessments[index]
+            execution = decision.execution_result
+            execution_status = str(execution.get("status", ""))
+            execution_reason = str(execution.get("reason") or execution.get("trigger") or "")
+            final_action = "HOLD"
+            if execution_status == "PAPER_FILLED":
+                final_action = str(execution.get("side", decision.order.side if decision.order else ""))
+            elif execution_status == "BLOCKED":
+                final_action = "BLOCKED"
+            elif execution_status == "SKIPPED_REFRESH_ONLY":
+                final_action = "REFRESH_ONLY"
+            ledger.append(
+                DecisionLedgerEntry(
+                    timestamp_ms=timestamp_ms,
+                    cycle_mode=cycle_mode,
+                    symbol=decision.symbol,
+                    price=sell.mark_price or buy.price,
+                    has_position=sell.has_position,
+                    position_quantity=sell.quantity,
+                    average_entry_price=sell.average_entry_price,
+                    unrealized_pnl=sell.unrealized_pnl,
+                    total_equity=total_equity,
+                    buy_signal=buy.signal_action,
+                    buy_blocker=buy.blocker,
+                    sell_signal=sell.strategy_signal,
+                    sell_blocker=sell.blocker,
+                    ai_allow_entry=ai.allow_entry,
+                    ai_risk_score=ai.risk_score,
+                    final_action=final_action,
+                    execution_status=execution_status,
+                    execution_reason=execution_reason,
+                    news_refresh_status=news_refresh_status,
+                )
+            )
+        return ledger
 
     @staticmethod
     def _latest_closed_candle_close_time(candles, current_timestamp_ms: int) -> int:

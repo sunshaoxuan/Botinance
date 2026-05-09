@@ -44,6 +44,7 @@ class PaperPortfolio:
             initial_quote_balance=float(payload["initial_quote_balance"]),
             positions=positions,
             realized_pnl=float(payload.get("realized_pnl", 0.0)),
+            activation_state=payload.get("activation_state", {}),
         )
         migrated = self._backfill_position_metadata(snapshot)
         if migrated != snapshot:
@@ -161,4 +162,5 @@ class PaperPortfolio:
             initial_quote_balance=snapshot.initial_quote_balance,
             positions=positions,
             realized_pnl=snapshot.realized_pnl,
+            activation_state=snapshot.activation_state,
         )

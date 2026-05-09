@@ -68,6 +68,14 @@ class Settings:
     mtf_trend_fast_window: int = 20
     mtf_trend_slow_window: int = 50
     decision_price_move_threshold_pct: float = 0.005
+    position_activation_enabled: bool = True
+    position_activation_mode: str = "active_grid"
+    grid_sell_step_pct: float = 0.003
+    grid_buyback_step_pct: float = 0.0025
+    grid_sell_fraction: float = 0.25
+    grid_min_core_position_fraction: float = 0.25
+    grid_max_daily_trades: int = 8
+    grid_allow_loss_recovery_sell: bool = True
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -121,4 +129,12 @@ def load_settings() -> Settings:
         trailing_stop_pct=float(os.getenv("TRAILING_STOP_PCT", "0.0075")),
         max_hold_bars=int(os.getenv("MAX_HOLD_BARS", "24")),
         decision_price_move_threshold_pct=float(os.getenv("DECISION_PRICE_MOVE_THRESHOLD_PCT", "0.005")),
+        position_activation_enabled=_parse_bool(os.getenv("POSITION_ACTIVATION_ENABLED"), True),
+        position_activation_mode=os.getenv("POSITION_ACTIVATION_MODE", "active_grid").strip(),
+        grid_sell_step_pct=float(os.getenv("GRID_SELL_STEP_PCT", "0.003")),
+        grid_buyback_step_pct=float(os.getenv("GRID_BUYBACK_STEP_PCT", "0.0025")),
+        grid_sell_fraction=float(os.getenv("GRID_SELL_FRACTION", "0.25")),
+        grid_min_core_position_fraction=float(os.getenv("GRID_MIN_CORE_POSITION_FRACTION", "0.25")),
+        grid_max_daily_trades=int(os.getenv("GRID_MAX_DAILY_TRADES", "8")),
+        grid_allow_loss_recovery_sell=_parse_bool(os.getenv("GRID_ALLOW_LOSS_RECOVERY_SELL"), True),
     )

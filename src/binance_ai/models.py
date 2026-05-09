@@ -83,6 +83,30 @@ class BuyDecisionDiagnostic:
 
 
 @dataclass(frozen=True)
+class SellDecisionDiagnostic:
+    symbol: str
+    has_position: bool
+    quantity: float
+    average_entry_price: float
+    mark_price: float
+    unrealized_pnl: float
+    unrealized_pnl_pct: float
+    strategy_signal: str
+    strategy_reason: str
+    exit_reason: str
+    stop_loss_price: float
+    take_profit_price: float
+    trailing_stop_price: float
+    max_hold_bars: int
+    bars_held: int
+    activation_trigger: str
+    eligible_to_sell: bool
+    recommended_sell_quantity: float
+    blocker: str
+    blocker_details: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class PositionDiagnostic:
     symbol: str
     quantity: float
@@ -127,6 +151,29 @@ class SchedulingDiagnostic:
 
 
 @dataclass(frozen=True)
+class DecisionLedgerEntry:
+    timestamp_ms: int
+    cycle_mode: str
+    symbol: str
+    price: float
+    has_position: bool
+    position_quantity: float
+    average_entry_price: float
+    unrealized_pnl: float
+    total_equity: float
+    buy_signal: str
+    buy_blocker: str
+    sell_signal: str
+    sell_blocker: str
+    ai_allow_entry: bool
+    ai_risk_score: float
+    final_action: str
+    execution_status: str
+    execution_reason: str
+    news_refresh_status: str
+
+
+@dataclass(frozen=True)
 class AccountSnapshot:
     balances: Dict[str, float]
 
@@ -139,8 +186,10 @@ class CycleReport:
     timestamp_ms: int
     decisions: List[CycleDecision]
     buy_diagnostics: List[BuyDecisionDiagnostic]
+    sell_diagnostics: List[SellDecisionDiagnostic]
     position_diagnostics: List[PositionDiagnostic]
     scheduling_diagnostics: List[SchedulingDiagnostic]
+    decision_ledger: List[DecisionLedgerEntry]
     ai_risk_assessments: List[AiRiskAssessment]
     market_prices: Dict[str, float]
     market_snapshots: List[Dict[str, object]]
@@ -189,6 +238,7 @@ class PortfolioSnapshot:
     initial_quote_balance: float
     positions: Dict[str, PositionSnapshot] = field(default_factory=dict)
     realized_pnl: float = 0.0
+    activation_state: Dict[str, Dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

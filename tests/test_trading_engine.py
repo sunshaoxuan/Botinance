@@ -7,7 +7,7 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.engine.trading_engine import TradingEngine
 from binance_ai.execution.executor import OrderExecutor
-from binance_ai.models import AiRiskAssessment, Candle, LlmAnalysis, NewsItem, SignalAction, SymbolFilters, TradeSignal
+from binance_ai.models import AiRiskAssessment, Candle, LlmAnalysis, NewsItem, OrderRequest, SignalAction, SymbolFilters, TradeSignal
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.risk.engine import RiskEngine
 from binance_ai.strategy.base import Strategy
@@ -22,6 +22,14 @@ class _ClientStub:
 
     def close(self) -> None:
         return None
+
+
+class _QuantizingClientStub(_ClientStub):
+    def get_symbol_filters(self, symbol: str) -> SymbolFilters:
+        return SymbolFilters(symbol=symbol, step_size=0.1, min_qty=0.1, min_notional=10.0)
+
+    def quantize_quantity(self, quantity: float, step_size: float) -> float:
+        return int(quantity / step_size) * step_size
 
 
 class _MarketDataStub(MarketDataService):
@@ -40,6 +48,11 @@ class _StrategyStub(Strategy):
         if has_position:
             return TradeSignal(symbol=symbol, action=SignalAction.HOLD, confidence=0.5, reason="position_open")
         return TradeSignal(symbol=symbol, action=SignalAction.BUY, confidence=0.8, reason="entry_ready")
+
+
+class _HoldStrategyStub(Strategy):
+    def generate(self, symbol: str, candles_by_interval, has_position: bool) -> TradeSignal:
+        return TradeSignal(symbol=symbol, action=SignalAction.HOLD, confidence=0.5, reason="hold")
 
 
 class _MarketAnalystStub:
@@ -151,6 +164,9 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(second_report.cycle_mode, "REFRESH")
         self.assertEqual(second_report.decisions[0].execution_result["status"], "SKIPPED_REFRESH_ONLY")
         self.assertEqual(second_report.scheduling_diagnostics[0].should_run_decision, False)
+        self.assertEqual(len(second_report.sell_diagnostics), 1)
+        self.assertEqual(len(second_report.decision_ledger), 1)
+        self.assertEqual(second_report.decision_ledger[0].final_action, "REFRESH_ONLY")
 
     def test_ai_veto_blocks_buy_order(self) -> None:
         settings = Settings(
@@ -167,7 +183,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             slow_window=50,
             risk_per_trade=0.10,
             min_order_notional=50.0,
-            paper_quote_balance=1000.0,
+            paper_quote_balance=20000.0,
             dry_run=True,
             llm_base_url="http://localhost:49530/v1",
             llm_api_key="demo",
@@ -224,6 +240,78 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(report.decisions[0].execution_result["reason"], "ai_entry_veto")
         self.assertFalse(report.ai_risk_assessments[0].allow_entry)
         self.assertEqual(report.buy_diagnostics[0].ai_veto_reason, "新闻风险过高")
+        self.assertEqual(len(report.sell_diagnostics), 1)
+        self.assertEqual(report.decision_ledger[0].execution_status, "BLOCKED")
+
+    def test_position_activation_grid_sell_executes_in_paper_mode(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=10.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.20,
+            trailing_stop_pct=0.50,
+            max_hold_bars=0,
+            decision_price_move_threshold_pct=0.01,
+        )
+        candles = [
+            Candle(
+                open_time=index * 1000,
+                open=100.31,
+                high=100.31,
+                low=100.31,
+                close=100.31,
+                volume=1.0,
+                close_time=index * 1000 + 999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 20000.0, runtime_dir / "paper_state.json")
+            portfolio.apply_order(
+                order=OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=100.0),
+                fill_price=100.0,
+            )
+            client = _QuantizingClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_HoldStrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertEqual(report.decisions[0].execution_result["status"], "PAPER_FILLED")
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "grid_profit_sell")
+        self.assertEqual(report.sell_diagnostics[0].activation_trigger, "grid_profit_sell")
+        self.assertAlmostEqual(snapshot.activation_state["XRPJPY"]["pending_buyback_quantity"], 25.0)
 
 
 if __name__ == "__main__":

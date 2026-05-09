@@ -5,7 +5,8 @@ from typing import Optional, Sequence
 
 from binance_ai.config import Settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, Candle, OrderRequest, PositionDiagnostic, PositionSnapshot, SymbolFilters
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, Candle, OrderRequest, PositionDiagnostic, PositionSnapshot, SellDecisionDiagnostic, SymbolFilters, TradeSignal
+from binance_ai.position_activation import PositionActivationDecision
 
 
 @dataclass(frozen=True)
@@ -153,6 +154,97 @@ class RiskEngine:
             approved=True,
             reason="sell_order_approved",
             order=OrderRequest(symbol=symbol, side="SELL", order_type="MARKET", quantity=quantity),
+        )
+
+    def inspect_sell_decision(
+        self,
+        *,
+        symbol: str,
+        price: float,
+        position: PositionSnapshot | None,
+        candles: Sequence[Candle],
+        current_timestamp_ms: int,
+        signal: TradeSignal,
+        exit_reason: str | None,
+        activation_decision: PositionActivationDecision | None = None,
+    ) -> SellDecisionDiagnostic:
+        if position is None or position.quantity <= 0:
+            return SellDecisionDiagnostic(
+                symbol=symbol,
+                has_position=False,
+                quantity=0.0,
+                average_entry_price=0.0,
+                mark_price=price,
+                unrealized_pnl=0.0,
+                unrealized_pnl_pct=0.0,
+                strategy_signal=signal.action.value,
+                strategy_reason=signal.reason,
+                exit_reason="",
+                stop_loss_price=0.0,
+                take_profit_price=0.0,
+                trailing_stop_price=0.0,
+                max_hold_bars=self.settings.max_hold_bars,
+                bars_held=0,
+                activation_trigger=activation_decision.trigger if activation_decision else "",
+                eligible_to_sell=False,
+                recommended_sell_quantity=0.0,
+                blocker="无持仓，不需要卖出",
+                blocker_details=["无持仓，不需要卖出"],
+            )
+
+        position_diagnostic = self.build_position_diagnostic(
+            symbol=symbol,
+            price=price,
+            position=position,
+            candles=candles,
+            current_timestamp_ms=current_timestamp_ms,
+        )
+        unrealized_pnl_pct = (
+            (price - position.average_entry_price) / position.average_entry_price
+            if position.average_entry_price > 0
+            else 0.0
+        )
+        activation_trigger = activation_decision.trigger if activation_decision else ""
+        activation_qty = activation_decision.quantity if activation_decision and activation_decision.action == "SELL" else 0.0
+        eligible_to_sell = bool(exit_reason or signal.action.value == "SELL" or activation_qty > 0)
+        recommended_sell_quantity = position.quantity if exit_reason or signal.action.value == "SELL" else activation_qty
+        blocker_details = []
+        if exit_reason:
+            blocker = f"规则退出触发：{exit_reason}"
+            blocker_details.append(blocker)
+        elif signal.action.value == "SELL":
+            blocker = "策略 SELL 触发"
+            blocker_details.append(signal.reason)
+        elif activation_qty > 0:
+            blocker = f"仓位激活触发：{activation_trigger}"
+            blocker_details.append(activation_decision.reason if activation_decision else blocker)
+        else:
+            blocker = "继续持有"
+            blocker_details.append(position_diagnostic.exit_watch_reason)
+            if activation_decision and activation_decision.reason:
+                blocker_details.append(activation_decision.reason)
+
+        return SellDecisionDiagnostic(
+            symbol=symbol,
+            has_position=True,
+            quantity=position.quantity,
+            average_entry_price=position.average_entry_price,
+            mark_price=price,
+            unrealized_pnl=position.quantity * (price - position.average_entry_price),
+            unrealized_pnl_pct=unrealized_pnl_pct,
+            strategy_signal=signal.action.value,
+            strategy_reason=signal.reason,
+            exit_reason=exit_reason or "",
+            stop_loss_price=position_diagnostic.stop_loss_price,
+            take_profit_price=position_diagnostic.take_profit_price,
+            trailing_stop_price=position_diagnostic.trailing_stop_price,
+            max_hold_bars=self.settings.max_hold_bars,
+            bars_held=position_diagnostic.bars_held,
+            activation_trigger=activation_trigger,
+            eligible_to_sell=eligible_to_sell,
+            recommended_sell_quantity=recommended_sell_quantity,
+            blocker=blocker,
+            blocker_details=blocker_details,
         )
 
     def determine_exit_reason(
