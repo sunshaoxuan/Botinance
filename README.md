@@ -22,6 +22,13 @@ The trading core should stay deterministic. LLM or AI modules can be added later
 
 They should not directly bypass risk checks and submit raw orders.
 
+Current AI integration is limited to:
+
+- Chinese market summary and risk notes
+- entry veto or position-size reduction before a buy order is built
+
+It cannot force an entry that the rules engine does not already allow.
+
 ## Setup
 
 1. Create a virtual environment.

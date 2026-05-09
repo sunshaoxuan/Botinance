@@ -1,7 +1,7 @@
 import unittest
 
 from binance_ai.config import Settings
-from binance_ai.models import AccountSnapshot, SymbolFilters
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, SymbolFilters
 from binance_ai.risk.engine import RiskEngine
 
 
@@ -90,6 +90,44 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertIn("final_notional_below_min_notional", decision.reason)
 
+    def test_build_buy_order_applies_ai_position_multiplier(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=50.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+        )
+        risk = RiskEngine(settings, _ClientStub())
+        decision = risk.build_buy_order(
+            symbol="XRPJPY",
+            price=100.0,
+            account=AccountSnapshot(balances={"JPY": 1000.0}),
+            filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+            position_multiplier=0.5,
+        )
+        self.assertTrue(decision.approved)
+        self.assertAlmostEqual(decision.order.quantity, 0.5)
+
     def test_inspect_buy_decision_reports_final_notional_failure(self) -> None:
         settings = Settings(
             api_key="",
@@ -130,6 +168,56 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(diagnostic.min_notional_passed)
         self.assertAlmostEqual(diagnostic.final_notional, 89.064)
         self.assertIn("按步进取整后的最终成交额低于最小成交额", diagnostic.blocker_details)
+
+    def test_inspect_buy_decision_reports_ai_veto(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=50.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+        )
+        risk = RiskEngine(settings, _ClientStub())
+        diagnostic = risk.inspect_buy_decision(
+            symbol="XRPJPY",
+            price=100.0,
+            account=AccountSnapshot(balances={"JPY": 1000.0}),
+            filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+            signal_action="BUY",
+            signal_reason="bullish_cross",
+            has_position=False,
+            ai_assessment=AiRiskAssessment(
+                symbol="XRPJPY",
+                status="READY",
+                allow_entry=False,
+                risk_score=0.9,
+                position_multiplier=0.0,
+                veto_reason="新闻风险过高",
+            ),
+        )
+        self.assertFalse(diagnostic.eligible_to_buy)
+        self.assertFalse(diagnostic.ai_allow_entry)
+        self.assertEqual(diagnostic.ai_veto_reason, "新闻风险过高")
+        self.assertIn("AI 风险闸门否决入场", diagnostic.blocker_details[0] if diagnostic.blocker_details else "")
 
     def test_determine_exit_reason_take_profit(self) -> None:
         settings = Settings(

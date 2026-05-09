@@ -402,6 +402,16 @@ INDEX_HTML = """<!doctype html>
     <section class="grid" style="margin-top:18px">
       <div class="panel" style="grid-column: 1 / -1;">
         <div class="kicker">
+          <h2>AI 风险闸门</h2>
+          <div class="mini">AI 只能否决或缩仓，不能强制开仓</div>
+        </div>
+        <div id="aiRiskGate"></div>
+      </div>
+    </section>
+
+    <section class="grid" style="margin-top:18px">
+      <div class="panel" style="grid-column: 1 / -1;">
+        <div class="kicker">
           <h2>买入决策链路</h2>
           <div class="mini">逐步展示当前为什么可以买或不能买</div>
         </div>
@@ -596,6 +606,7 @@ INDEX_HTML = """<!doctype html>
       const fills = payload.recent_fills || [];
       const evidence = latest.news_evidence || [];
       const buyDiagnostics = latest.buy_diagnostics || [];
+      const aiRiskAssessments = latest.ai_risk_assessments || [];
       const schedulingDiagnostics = latest.scheduling_diagnostics || [];
       const quoteAsset = state.quote_asset || "JPY";
       const llm = latest.llm_analysis || {};
@@ -737,6 +748,35 @@ INDEX_HTML = """<!doctype html>
       document.getElementById("aiStatus").textContent = llm.status === "READY" ? "已完成本轮分析" : (llm.status === "ERROR" ? "分析失败，已回退规则策略" : "等待分析结果");
 
       renderTableRows(
+        document.getElementById("aiRiskGate"),
+        aiRiskAssessments.length ? [`<table class="table">
+          <thead>
+            <tr>
+              <th>交易对</th>
+              <th>状态</th>
+              <th>允许入场</th>
+              <th>风险分</th>
+              <th>仓位系数</th>
+              <th>否决原因</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${aiRiskAssessments.map(item => `
+              <tr>
+                <td>${item.symbol}</td>
+                <td>${item.status}</td>
+                <td><span class="badge ${item.allow_entry ? "signal-buy" : "signal-sell"}">${item.allow_entry ? "允许" : "否决"}</span></td>
+                <td>${fmtNumber((Number(item.risk_score) || 0) * 100, 1)}%</td>
+                <td>${fmtNumber(item.position_multiplier, 2)}</td>
+                <td>${item.veto_reason || "无"}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>`] : [],
+        "当前还没有 AI 风险闸门数据。"
+      );
+
+      renderTableRows(
         document.getElementById("buyDecision"),
         buyDiagnostics.map(item => `
           <table class="table">
@@ -749,6 +789,7 @@ INDEX_HTML = """<!doctype html>
                 <th>最小成交额</th>
                 <th>估算数量</th>
                 <th>最小数量</th>
+                <th>AI 风险闸门</th>
                 <th>最终结论</th>
               </tr>
             </thead>
@@ -761,11 +802,12 @@ INDEX_HTML = """<!doctype html>
                 <td>${fmtCurrency(item.min_notional_required, quoteAsset)}<br><span class="mini ${item.min_notional_passed ? "good" : "bad"}">最终 ${fmtCurrency(item.final_notional, quoteAsset)}</span></td>
                 <td>${fmtNumber(item.adjusted_quantity, 4)}<br><span class="mini">原始 ${fmtNumber(item.raw_quantity, 4)}</span></td>
                 <td>${fmtNumber(item.min_qty, 4)}</td>
+                <td>${item.ai_allow_entry ? "允许" : "否决"}<br><span class="mini">风险分 ${fmtNumber((Number(item.ai_risk_score) || 0) * 100, 1)}% / 系数 ${fmtNumber(item.ai_position_multiplier, 2)}</span>${item.ai_veto_reason ? `<br><span class="mini bad">${item.ai_veto_reason}</span>` : ""}</td>
                 <td class="${item.eligible_to_buy ? "good" : "bad"}">${item.eligible_to_buy ? "允许模拟买入" : item.blocker}</td>
               </tr>
               <tr>
                 <th>阻塞详情</th>
-                <td colspan="7">${(item.blocker_details || []).length ? item.blocker_details.join("；") : "当前没有阻塞条件。只要下一轮信号为买入，就会执行模拟买入。"}</td>
+                <td colspan="8">${(item.blocker_details || []).length ? item.blocker_details.join("；") : "当前没有阻塞条件。只要下一轮信号为买入，就会执行模拟买入。"}</td>
               </tr>
             </tbody>
           </table>

@@ -72,6 +72,10 @@ class BuyDecisionDiagnostic:
     min_qty: float
     eligible_signal: bool
     eligible_risk: bool
+    ai_allow_entry: bool
+    ai_risk_score: float
+    ai_position_multiplier: float
+    ai_veto_reason: str
     eligible_to_buy: bool
     blocker: str
     blocker_details: List[str] = field(default_factory=list)
@@ -92,6 +96,17 @@ class PositionDiagnostic:
     opened_at_ms: int
     entry_candle_close_time: int
     exit_watch_reason: str
+
+
+@dataclass(frozen=True)
+class AiRiskAssessment:
+    symbol: str
+    status: str
+    allow_entry: bool
+    risk_score: float
+    position_multiplier: float
+    veto_reason: str
+    raw_payload: str = ""
 
 
 @dataclass(frozen=True)
@@ -125,6 +140,7 @@ class CycleReport:
     buy_diagnostics: List[BuyDecisionDiagnostic]
     position_diagnostics: List[PositionDiagnostic]
     scheduling_diagnostics: List[SchedulingDiagnostic]
+    ai_risk_assessments: List[AiRiskAssessment]
     market_prices: Dict[str, float]
     news_evidence: List["NewsItem"]
     news_refresh_status: str

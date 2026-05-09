@@ -10,7 +10,7 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, BuyDecisionDiagnostic, CycleDecision, CycleReport, PositionDiagnostic, SchedulingDiagnostic, SignalAction
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, PositionDiagnostic, SchedulingDiagnostic, SignalAction
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.risk.engine import RiskEngine
@@ -58,6 +58,7 @@ class TradingEngine:
         scheduling_diagnostics: List[SchedulingDiagnostic] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
+        symbol_contexts: List[Dict[str, object]] = []
 
         for symbol in self.settings.trading_symbols:
             candles = self.market_data.recent_candles(
@@ -99,9 +100,6 @@ class TradingEngine:
                 )
 
             signal = self.strategy.generate(symbol=symbol, candles=candles, has_position=has_position)
-            order = None
-            execution_result: Dict[str, object] = {"status": "NO_ACTION"}
-
             exit_reason = (
                 self.risk.determine_exit_reason(
                     price=price,
@@ -120,6 +118,79 @@ class TradingEngine:
                 exit_reason=exit_reason,
             )
             scheduling_diagnostics.append(scheduling)
+            market_snapshot = build_market_snapshot(
+                symbol=symbol,
+                candles=candles,
+                signal=signal,
+                has_position=has_position,
+                fast_window=self.settings.fast_window,
+                slow_window=self.settings.slow_window,
+            )
+            market_snapshots.append(market_snapshot)
+            symbol_contexts.append(
+                {
+                    "symbol": symbol,
+                    "candles": candles,
+                    "price": price,
+                    "filters": filters,
+                    "base_balance": base_balance,
+                    "has_position": has_position,
+                    "position": position,
+                    "signal": signal,
+                    "exit_reason": exit_reason,
+                    "scheduling": scheduling,
+                    "latest_closed_candle_close_time": latest_closed_candle_close_time,
+                }
+            )
+
+        llm_analysis = None
+        ai_risk_map = {
+            str(snapshot["symbol"]).upper(): AiRiskAssessment(
+                symbol=str(snapshot["symbol"]).upper(),
+                status="DISABLED",
+                allow_entry=True,
+                risk_score=0.0,
+                position_multiplier=1.0,
+                veto_reason="",
+            )
+            for snapshot in market_snapshots
+        }
+        if self.market_analyst is not None:
+            ai_risk_map = self.market_analyst.assess_entry_risk(
+                quote_asset=self.settings.quote_asset,
+                kline_interval=self.settings.kline_interval,
+                market_snapshots=market_snapshots,
+                news_evidence=news_evidence,
+            )
+            llm_analysis = self.market_analyst.analyze(
+                quote_asset=self.settings.quote_asset,
+                kline_interval=self.settings.kline_interval,
+                market_snapshots=market_snapshots,
+                news_evidence=news_evidence,
+            )
+
+        for context in symbol_contexts:
+            symbol = str(context["symbol"])
+            price = float(context["price"])
+            filters = context["filters"]
+            base_balance = float(context["base_balance"])
+            has_position = bool(context["has_position"])
+            signal = context["signal"]
+            exit_reason = context["exit_reason"]
+            scheduling = context["scheduling"]
+            latest_closed_candle_close_time = int(context["latest_closed_candle_close_time"])
+            ai_assessment = ai_risk_map.get(symbol.upper()) or AiRiskAssessment(
+                symbol=symbol.upper(),
+                status="FALLBACK",
+                allow_entry=True,
+                risk_score=0.0,
+                position_multiplier=1.0,
+                veto_reason="",
+            )
+            applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY and not has_position else None
+
+            order = None
+            execution_result: Dict[str, object] = {"status": "NO_ACTION"}
             buy_diagnostic = self.risk.inspect_buy_decision(
                 symbol=symbol,
                 price=price,
@@ -128,6 +199,7 @@ class TradingEngine:
                 signal_action=signal.action.value,
                 signal_reason=signal.reason,
                 has_position=has_position,
+                ai_assessment=applied_ai_assessment,
             )
 
             if not scheduling.should_run_decision:
@@ -151,18 +223,31 @@ class TradingEngine:
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason, "trigger": exit_reason}
             elif signal.action == SignalAction.BUY and not has_position:
-                decision = self.risk.build_buy_order(symbol, price, account, filters)
-                if decision.order is not None:
-                    order = decision.order
-                    execution_result = self.executor.execute(
-                        order,
-                        fill_price=price,
-                        filters=filters,
-                        timestamp_ms=cycle_timestamp_ms,
-                        entry_candle_close_time_ms=latest_closed_candle_close_time,
-                    )
+                if not ai_assessment.allow_entry:
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": "ai_entry_veto",
+                        "ai_veto_reason": ai_assessment.veto_reason,
+                    }
                 else:
-                    execution_result = {"status": "BLOCKED", "reason": decision.reason}
+                    decision = self.risk.build_buy_order(
+                        symbol,
+                        price,
+                        account,
+                        filters,
+                        position_multiplier=ai_assessment.position_multiplier,
+                    )
+                    if decision.order is not None:
+                        order = decision.order
+                        execution_result = self.executor.execute(
+                            order,
+                            fill_price=price,
+                            filters=filters,
+                            timestamp_ms=cycle_timestamp_ms,
+                            entry_candle_close_time_ms=latest_closed_candle_close_time,
+                        )
+                    else:
+                        execution_result = {"status": "BLOCKED", "reason": decision.reason}
             elif signal.action == SignalAction.SELL and has_position:
                 decision = self.risk.build_sell_order(symbol, price, base_balance, filters)
                 if decision.order is not None:
@@ -187,7 +272,6 @@ class TradingEngine:
                 )
 
             buy_diagnostics.append(buy_diagnostic)
-
             decisions.append(
                 CycleDecision(
                     symbol=symbol,
@@ -196,34 +280,17 @@ class TradingEngine:
                     execution_result=execution_result,
                 )
             )
-            market_snapshots.append(
-                build_market_snapshot(
-                    symbol=symbol,
-                    candles=candles,
-                    signal=signal,
-                    has_position=has_position,
-                    fast_window=self.settings.fast_window,
-                    slow_window=self.settings.slow_window,
-                )
-            )
 
         self.scheduler.save()
         summary = self._build_portfolio_summary(account, mark_prices)
         cycle_mode, cycle_reason = self.scheduler.summarize_cycle(scheduling_diagnostics)
-        llm_analysis = None
-        if self.market_analyst is not None:
-            llm_analysis = self.market_analyst.analyze(
-                quote_asset=self.settings.quote_asset,
-                kline_interval=self.settings.kline_interval,
-                market_snapshots=market_snapshots,
-                news_evidence=news_evidence,
-            )
         return CycleReport(
             timestamp_ms=cycle_timestamp_ms,
             decisions=decisions,
             buy_diagnostics=buy_diagnostics,
             position_diagnostics=position_diagnostics,
             scheduling_diagnostics=scheduling_diagnostics,
+            ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
             market_prices=mark_prices,
             news_evidence=news_evidence,
             news_refresh_status=news_result.refresh_status if news_result is not None else "DISABLED",

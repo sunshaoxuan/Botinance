@@ -5,7 +5,7 @@ from typing import Optional, Sequence
 
 from binance_ai.config import Settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
-from binance_ai.models import AccountSnapshot, BuyDecisionDiagnostic, Candle, OrderRequest, PositionDiagnostic, PositionSnapshot, SymbolFilters
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, Candle, OrderRequest, PositionDiagnostic, PositionSnapshot, SymbolFilters
 
 
 @dataclass(frozen=True)
@@ -33,15 +33,19 @@ class RiskEngine:
         price: float,
         account: AccountSnapshot,
         filters: SymbolFilters,
+        position_multiplier: float = 1.0,
     ) -> RiskDecision:
         quote_balance = account.balance_of(self.settings.quote_asset)
-        quote_budget = quote_balance * self.settings.risk_per_trade
+        normalized_multiplier = min(1.0, max(0.0, position_multiplier))
+        quote_budget = quote_balance * self.settings.risk_per_trade * normalized_multiplier
         notional = min(quote_budget, quote_balance)
         min_notional = max(filters.min_notional, self.settings.min_order_notional)
         raw_quantity = notional / price if price > 0 else 0.0
         quantity = self.client.quantize_quantity(raw_quantity, filters.step_size)
         final_notional = quantity * price
 
+        if normalized_multiplier <= 0:
+            return RiskDecision(False, "ai_position_multiplier_zero")
         if quantity < filters.min_qty or quantity <= 0:
             return RiskDecision(False, f"quantity_below_min_qty:{quantity}")
         if final_notional < min_notional:
@@ -62,9 +66,15 @@ class RiskEngine:
         signal_action: str,
         signal_reason: str,
         has_position: bool,
+        ai_assessment: AiRiskAssessment | None = None,
     ) -> BuyDecisionDiagnostic:
         quote_balance = account.balance_of(self.settings.quote_asset)
-        quote_budget = quote_balance * self.settings.risk_per_trade
+        ai_allow_entry = ai_assessment.allow_entry if ai_assessment is not None else True
+        ai_risk_score = ai_assessment.risk_score if ai_assessment is not None else 0.0
+        ai_position_multiplier = ai_assessment.position_multiplier if ai_assessment is not None else 1.0
+        ai_veto_reason = ai_assessment.veto_reason if ai_assessment is not None else ""
+
+        quote_budget = quote_balance * self.settings.risk_per_trade * min(1.0, max(0.0, ai_position_multiplier))
         notional = min(quote_budget, quote_balance)
         min_notional = max(filters.min_notional, self.settings.min_order_notional)
         raw_quantity = notional / price if price > 0 else 0.0
@@ -77,6 +87,10 @@ class RiskEngine:
             blocker_details.append("当前策略信号不是买入")
         if has_position:
             blocker_details.append("当前已经有持仓，不重复买入")
+        if not ai_allow_entry:
+            blocker_details.append(f"AI 风险闸门否决入场：{ai_veto_reason or '未提供否决原因'}")
+        elif ai_position_multiplier < 1.0:
+            blocker_details.append(f"AI 风险闸门将仓位系数收缩到 {ai_position_multiplier:.2f}")
 
         eligible_risk = True
         min_notional_passed = final_notional >= min_notional
@@ -89,6 +103,8 @@ class RiskEngine:
         if quantity > 0 and final_notional < min_notional:
             eligible_risk = False
             blocker_details.append("按步进取整后的最终成交额低于最小成交额")
+        if not ai_allow_entry:
+            eligible_risk = False
 
         eligible_to_buy = eligible_signal and eligible_risk
         blocker = "可以买入" if eligible_to_buy else (blocker_details[0] if blocker_details else "条件未满足")
@@ -110,6 +126,10 @@ class RiskEngine:
             min_qty=filters.min_qty,
             eligible_signal=eligible_signal,
             eligible_risk=eligible_risk,
+            ai_allow_entry=ai_allow_entry,
+            ai_risk_score=ai_risk_score,
+            ai_position_multiplier=ai_position_multiplier,
+            ai_veto_reason=ai_veto_reason,
             eligible_to_buy=eligible_to_buy,
             blocker=blocker,
             blocker_details=blocker_details,

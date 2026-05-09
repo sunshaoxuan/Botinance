@@ -5,7 +5,7 @@ from statistics import mean
 from typing import Dict, List, Sequence
 
 from binance_ai.llm.openai_compat import OpenAICompatibleChatClient
-from binance_ai.models import Candle, LlmAnalysis, NewsItem, TradeSignal
+from binance_ai.models import AiRiskAssessment, Candle, LlmAnalysis, NewsItem, TradeSignal
 
 
 class MarketAnalyst:
@@ -81,6 +81,93 @@ class MarketAnalyst:
                 risk_note_cn="暂时退回规则策略，不影响原有交易逻辑。",
                 error=str(exc),
             )
+
+    def assess_entry_risk(
+        self,
+        quote_asset: str,
+        kline_interval: str,
+        market_snapshots: List[Dict[str, object]],
+        news_evidence: List[NewsItem],
+    ) -> Dict[str, AiRiskAssessment]:
+        if not market_snapshots:
+            return {}
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是一个量化交易风险闸门，只能做否决或缩仓，不能强制开仓。"
+                    "你只能基于给定的市场快照和新闻证据判断是否允许入场。"
+                    "请输出严格 JSON，格式必须是"
+                    ' {"decisions":[{"symbol":"...","allow_entry":true,"risk_score":0.0,"position_multiplier":1.0,"veto_reason":"..."}]}.'
+                    "allow_entry 只能是 true 或 false。"
+                    "risk_score 是 0 到 1 之间的小数，越高代表风险越大。"
+                    "position_multiplier 只能在 0 到 1 之间。"
+                    "veto_reason 用中文，控制在 40 个汉字以内；若 allow_entry 为 true，可以留空字符串。"
+                    "你不能让 position_multiplier 大于 1。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": self._build_prompt(
+                    quote_asset=quote_asset,
+                    kline_interval=kline_interval,
+                    market_snapshots=market_snapshots,
+                    news_evidence=news_evidence,
+                ),
+            },
+        ]
+        try:
+            raw_text = self.client.chat(messages)
+            payload = self._parse_json(raw_text)
+            decisions = payload.get("decisions", [])
+            assessments: Dict[str, AiRiskAssessment] = {}
+            for item in decisions:
+                if not isinstance(item, dict):
+                    continue
+                symbol = str(item.get("symbol", "")).strip().upper()
+                if not symbol:
+                    continue
+                allow_entry = bool(item.get("allow_entry", True))
+                risk_score = max(0.0, min(1.0, float(item.get("risk_score", 0.0))))
+                position_multiplier = max(0.0, min(1.0, float(item.get("position_multiplier", 1.0))))
+                veto_reason = str(item.get("veto_reason", "")).strip()
+                assessments[symbol] = AiRiskAssessment(
+                    symbol=symbol,
+                    status="READY",
+                    allow_entry=allow_entry,
+                    risk_score=risk_score,
+                    position_multiplier=position_multiplier,
+                    veto_reason=veto_reason,
+                    raw_payload=raw_text,
+                )
+            for snapshot in market_snapshots:
+                symbol = str(snapshot["symbol"]).upper()
+                assessments.setdefault(
+                    symbol,
+                    AiRiskAssessment(
+                        symbol=symbol,
+                        status="FALLBACK",
+                        allow_entry=True,
+                        risk_score=0.0,
+                        position_multiplier=1.0,
+                        veto_reason="",
+                        raw_payload=raw_text,
+                    ),
+                )
+            return assessments
+        except Exception as exc:
+            return {
+                str(snapshot["symbol"]).upper(): AiRiskAssessment(
+                    symbol=str(snapshot["symbol"]).upper(),
+                    status="ERROR",
+                    allow_entry=True,
+                    risk_score=0.0,
+                    position_multiplier=1.0,
+                    veto_reason=f"AI 风险闸门异常，回退规则风控：{exc}",
+                )
+                for snapshot in market_snapshots
+            }
 
     def _build_prompt(
         self,

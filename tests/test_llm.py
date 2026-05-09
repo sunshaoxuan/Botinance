@@ -51,6 +51,41 @@ class MarketAnalystTests(unittest.TestCase):
         self.assertEqual(snapshot["long_window_closes"][0], 11.0)
         self.assertEqual(snapshot["long_window_closes"][-1], 60.0)
 
+    def test_assess_entry_risk_parses_decision_payload(self) -> None:
+        class _ClientStub:
+            def chat(self, messages):
+                return """{"decisions":[{"symbol":"XRPJPY","allow_entry":false,"risk_score":0.82,"position_multiplier":0.25,"veto_reason":"新闻风险过高"}]}"""
+
+        analyst = MarketAnalyst(client=_ClientStub(), model="gpt-5.5")
+        assessment = analyst.assess_entry_risk(
+            quote_asset="JPY",
+            kline_interval="1h",
+            market_snapshots=[
+                {
+                    "symbol": "XRPJPY",
+                    "last_price": 224.0,
+                    "signal_action": "BUY",
+                    "signal_reason": "bullish_cross",
+                    "signal_confidence": 0.8,
+                    "has_position": False,
+                    "recent_closes": [220.0, 221.0],
+                    "long_window_size": 2,
+                    "long_window_closes": [220.0, 221.0],
+                    "ma_fast": 220.5,
+                    "ma_slow": 220.0,
+                    "ma_gap_pct": 0.2,
+                    "change_24_pct": 1.0,
+                    "change_long_pct": 1.0,
+                    "high_long": 221.0,
+                    "low_long": 220.0,
+                }
+            ],
+            news_evidence=[],
+        )
+        self.assertFalse(assessment["XRPJPY"].allow_entry)
+        self.assertAlmostEqual(assessment["XRPJPY"].position_multiplier, 0.25)
+        self.assertEqual(assessment["XRPJPY"].veto_reason, "新闻风险过高")
+
 
 if __name__ == "__main__":
     unittest.main()
