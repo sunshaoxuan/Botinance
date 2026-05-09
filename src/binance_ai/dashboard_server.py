@@ -35,31 +35,31 @@ INDEX_HTML = """<!doctype html>
   <title>Botinance</title>
   <style>
     :root {
-      --bg: #f5f8fc;
-      --bg-grid: rgba(37, 99, 235, 0.08);
+      --bg: #f7f9fc;
+      --bg-grid: rgba(36, 53, 76, 0.035);
       --surface: #ffffff;
-      --surface-soft: #f8fbff;
-      --surface-glass: rgba(255, 255, 255, 0.82);
-      --line: #dce7f2;
-      --line-strong: #c7d6e6;
-      --ink: #102033;
-      --ink-soft: #34495f;
-      --muted: #6c7f94;
-      --muted-2: #95a4b5;
-      --blue: #2563eb;
-      --blue-2: #38bdf8;
-      --blue-soft: rgba(37, 99, 235, 0.1);
-      --green: #16a34a;
-      --green-soft: rgba(22, 163, 74, 0.12);
-      --red: #dc2626;
-      --red-soft: rgba(220, 38, 38, 0.1);
-      --coral: #f97316;
-      --coral-soft: rgba(249, 115, 22, 0.12);
-      --shadow: 0 18px 48px rgba(15, 34, 58, 0.08);
-      --shadow-soft: 0 10px 28px rgba(15, 34, 58, 0.06);
-      --radius: 10px;
-      --radius-sm: 8px;
-      --font: "Avenir Next", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+      --surface-soft: #f6f8fb;
+      --surface-glass: rgba(255, 255, 255, 0.88);
+      --line: #d7e0ea;
+      --line-strong: #b7c4d2;
+      --ink: #111b2b;
+      --ink-soft: #334155;
+      --muted: #66758a;
+      --muted-2: #9aa8b8;
+      --blue: #1f3f6d;
+      --blue-2: #426b9f;
+      --blue-soft: rgba(31, 63, 109, 0.08);
+      --green: #15803d;
+      --green-soft: rgba(21, 128, 61, 0.10);
+      --red: #b4232a;
+      --red-soft: rgba(180, 35, 42, 0.08);
+      --coral: #c96a21;
+      --coral-soft: rgba(201, 106, 33, 0.09);
+      --shadow: 0 12px 28px rgba(17, 27, 43, 0.045);
+      --shadow-soft: 0 4px 14px rgba(17, 27, 43, 0.035);
+      --radius: 7px;
+      --radius-sm: 5px;
+      --font: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Avenir Next", "PingFang SC", sans-serif;
       --mono: "SFMono-Regular", "Menlo", "Consolas", monospace;
     }
 
@@ -71,12 +71,12 @@ INDEX_HTML = """<!doctype html>
       color: var(--ink);
       font-family: var(--font);
       background:
-        linear-gradient(120deg, rgba(37, 99, 235, 0.06), transparent 32%),
-        radial-gradient(circle at 92% 8%, rgba(56, 189, 248, 0.18), transparent 26%),
+        linear-gradient(120deg, rgba(31, 63, 109, 0.035), transparent 34%),
+        radial-gradient(circle at 92% 8%, rgba(66, 107, 159, 0.09), transparent 28%),
         linear-gradient(var(--bg-grid) 1px, transparent 1px),
         linear-gradient(90deg, var(--bg-grid) 1px, transparent 1px),
         var(--bg);
-      background-size: auto, auto, 36px 36px, 36px 36px, auto;
+      background-size: auto, auto, 28px 28px, 28px 28px, auto;
       overflow: hidden;
     }
 
@@ -87,36 +87,34 @@ INDEX_HTML = """<!doctype html>
 
     .app-shell {
       display: grid;
-      grid-template-columns: 72px minmax(0, 1fr);
+      grid-template-columns: 64px minmax(0, 1fr);
       height: 100vh;
     }
 
     .side-rail {
       border-right: 1px solid var(--line);
-      background: rgba(255, 255, 255, 0.7);
-      backdrop-filter: blur(18px);
-      padding: 14px 10px;
+      background: rgba(250, 252, 255, 0.82);
+      backdrop-filter: blur(12px);
+      padding: 12px 9px;
       display: flex;
       flex-direction: column;
       align-items: center;
-      gap: 12px;
-      box-shadow: 8px 0 28px rgba(15, 34, 58, 0.04);
+      gap: 10px;
+      box-shadow: none;
       z-index: 2;
     }
 
     .brand-mark {
-      width: 42px;
-      height: 42px;
-      border-radius: 10px;
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
       display: grid;
       place-items: center;
       color: #fff;
       font-weight: 800;
       letter-spacing: 0.08em;
-      background:
-        linear-gradient(150deg, var(--blue), var(--blue-2)),
-        var(--blue);
-      box-shadow: 0 12px 24px rgba(37, 99, 235, 0.22);
+      background: linear-gradient(150deg, #1f3f6d, #2f5e91);
+      box-shadow: 0 8px 16px rgba(31, 63, 109, 0.18);
     }
 
     .rail-divider {
@@ -127,14 +125,15 @@ INDEX_HTML = """<!doctype html>
     }
 
     .rail-button {
-      width: 42px;
-      height: 42px;
+      width: 38px;
+      height: 38px;
       border: 1px solid transparent;
-      border-radius: 10px;
+      border-radius: 8px;
       background: transparent;
       color: var(--muted);
       cursor: pointer;
-      font-weight: 800;
+      font-weight: 760;
+      font-family: var(--mono);
       transition: all 160ms ease;
     }
 
@@ -147,30 +146,30 @@ INDEX_HTML = """<!doctype html>
       color: var(--blue);
       border-color: rgba(37, 99, 235, 0.18);
       background: #fff;
-      box-shadow: var(--shadow-soft);
+      box-shadow: 0 1px 4px rgba(17, 27, 43, 0.04);
     }
 
     .workspace {
       min-width: 0;
       height: 100vh;
       overflow: auto;
-      padding: 16px 18px 22px;
+      padding: 14px 16px 20px;
     }
 
     .top-bar {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 16px;
-      min-height: 64px;
-      padding: 12px 14px;
+      gap: 14px;
+      min-height: 58px;
+      padding: 9px 12px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: var(--surface-glass);
-      backdrop-filter: blur(16px);
+      backdrop-filter: blur(12px);
       box-shadow: var(--shadow-soft);
       position: sticky;
-      top: 16px;
+      top: 14px;
       z-index: 3;
     }
 
@@ -182,17 +181,17 @@ INDEX_HTML = """<!doctype html>
     }
 
     .top-kicker {
-      font-size: 11px;
+      font-size: 10px;
       color: var(--muted);
       letter-spacing: 0.16em;
       text-transform: uppercase;
-      font-weight: 800;
+      font-weight: 720;
     }
 
     .top-name {
       margin-top: 2px;
-      font-size: 20px;
-      font-weight: 800;
+      font-size: 19px;
+      font-weight: 760;
       letter-spacing: 0.02em;
     }
 
@@ -200,12 +199,13 @@ INDEX_HTML = """<!doctype html>
       display: inline-flex;
       align-items: center;
       gap: 8px;
-      padding: 8px 10px;
+      padding: 6px 9px;
       border-radius: 999px;
       border: 1px solid var(--line);
       background: #fff;
       color: var(--ink-soft);
-      font-weight: 800;
+      font-weight: 740;
+      font-family: var(--mono);
       box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
     }
 
@@ -220,13 +220,13 @@ INDEX_HTML = """<!doctype html>
     .top-metrics {
       display: grid;
       grid-template-columns: repeat(4, minmax(110px, 1fr));
-      gap: 8px;
+      gap: 7px;
       flex: 1;
       max-width: 720px;
     }
 
     .top-metric {
-      padding: 7px 10px;
+      padding: 6px 9px;
       border: 1px solid var(--line);
       border-radius: var(--radius-sm);
       background: rgba(255, 255, 255, 0.72);
@@ -234,56 +234,59 @@ INDEX_HTML = """<!doctype html>
 
     .top-metric span {
       display: block;
-      font-size: 11px;
+      font-size: 10px;
       color: var(--muted);
-      font-weight: 700;
+      font-weight: 680;
     }
 
     .top-metric strong {
       display: block;
       margin-top: 2px;
       font-size: 13px;
-      font-weight: 850;
+      font-weight: 760;
+      font-family: var(--mono);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
 
     .tab-bar {
-      margin: 14px 0;
+      margin: 10px 0 14px;
       display: flex;
-      gap: 8px;
-      padding: 6px;
+      gap: 4px;
+      padding: 0 8px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      background: rgba(255, 255, 255, 0.66);
-      backdrop-filter: blur(14px);
-      box-shadow: var(--shadow-soft);
+      background: rgba(255, 255, 255, 0.72);
+      backdrop-filter: blur(10px);
+      box-shadow: none;
       overflow-x: auto;
     }
 
     .tab-button {
       border: 0;
-      border-radius: var(--radius-sm);
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
       background: transparent;
       color: var(--muted);
       cursor: pointer;
-      padding: 10px 16px;
-      font-size: 14px;
-      font-weight: 850;
+      padding: 11px 16px 10px;
+      font-size: 13px;
+      font-weight: 720;
       white-space: nowrap;
       transition: all 150ms ease;
     }
 
     .tab-button:hover {
       color: var(--blue);
-      background: var(--blue-soft);
+      background: transparent;
     }
 
     .tab-button.active {
-      color: #fff;
-      background: linear-gradient(135deg, var(--blue), #1d4ed8);
-      box-shadow: 0 10px 20px rgba(37, 99, 235, 0.22);
+      color: var(--blue);
+      background: linear-gradient(180deg, transparent, rgba(31, 63, 109, 0.045));
+      border-bottom-color: var(--blue);
+      box-shadow: none;
     }
 
     .tab-panel { display: none; }
@@ -291,22 +294,22 @@ INDEX_HTML = """<!doctype html>
 
     .trade-workspace {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 340px;
-      gap: 14px;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 12px;
       align-items: start;
     }
 
     .right-command-stack,
     .stack {
       display: grid;
-      gap: 12px;
+      gap: 10px;
     }
 
     .panel,
     .card {
       border: 1px solid var(--line);
       border-radius: var(--radius);
-      background: rgba(255, 255, 255, 0.88);
+      background: rgba(255, 255, 255, 0.92);
       box-shadow: var(--shadow-soft);
     }
 
@@ -315,37 +318,35 @@ INDEX_HTML = """<!doctype html>
       justify-content: space-between;
       align-items: flex-start;
       gap: 12px;
-      padding: 14px 14px 10px;
+      padding: 11px 13px 9px;
       border-bottom: 1px solid var(--line);
     }
 
     .panel-title {
-      font-size: 15px;
-      font-weight: 900;
+      font-size: 14px;
+      font-weight: 760;
       letter-spacing: 0.02em;
     }
 
     .panel-subtitle {
       margin-top: 3px;
-      font-size: 12px;
+      font-size: 11px;
       color: var(--muted);
     }
 
     .panel-body {
-      padding: 14px;
+      padding: 12px;
     }
 
     .chart-card {
-      min-height: 580px;
+      min-height: 560px;
       overflow: hidden;
     }
 
     .chart-frame {
-      height: 520px;
-      padding: 12px;
-      background:
-        linear-gradient(180deg, rgba(248, 251, 255, 0.94), rgba(255, 255, 255, 0.94)),
-        #fff;
+      height: 506px;
+      padding: 10px;
+      background: #fff;
     }
 
     canvas {
@@ -370,9 +371,10 @@ INDEX_HTML = """<!doctype html>
       border-radius: 999px;
       background: var(--surface-soft);
       color: var(--ink-soft);
-      padding: 6px 9px;
-      font-size: 12px;
-      font-weight: 800;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 720;
+      font-family: var(--mono);
       white-space: nowrap;
     }
 
@@ -382,7 +384,7 @@ INDEX_HTML = """<!doctype html>
     .tool-pill.coral { color: var(--coral); background: var(--coral-soft); border-color: rgba(249, 115, 22, 0.18); }
 
     .card {
-      padding: 14px;
+      padding: 12px 13px;
       min-width: 0;
     }
 
@@ -392,22 +394,23 @@ INDEX_HTML = """<!doctype html>
       justify-content: space-between;
       gap: 8px;
       color: var(--muted);
-      font-size: 12px;
-      font-weight: 800;
+      font-size: 11px;
+      font-weight: 720;
     }
 
     .card-value {
-      margin-top: 8px;
-      font-size: 25px;
+      margin-top: 7px;
+      font-size: 22px;
       line-height: 1.1;
-      font-weight: 900;
+      font-weight: 780;
       letter-spacing: 0.01em;
+      font-family: var(--mono);
     }
 
     .card-note {
       margin-top: 8px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       line-height: 1.5;
     }
 
@@ -428,15 +431,16 @@ INDEX_HTML = """<!doctype html>
     .metric-tile span {
       display: block;
       color: var(--muted);
-      font-size: 12px;
-      font-weight: 800;
+      font-size: 11px;
+      font-weight: 680;
     }
 
     .metric-tile strong {
       display: block;
       margin-top: 7px;
-      font-size: 22px;
-      font-weight: 900;
+      font-size: 20px;
+      font-weight: 760;
+      font-family: var(--mono);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -445,8 +449,8 @@ INDEX_HTML = """<!doctype html>
     .bottom-insight-grid {
       display: grid;
       grid-template-columns: 1.05fr 1fr 1fr;
-      gap: 14px;
-      margin-top: 14px;
+      gap: 12px;
+      margin-top: 12px;
       align-items: start;
     }
 
@@ -478,12 +482,12 @@ INDEX_HTML = """<!doctype html>
     table {
       width: 100%;
       border-collapse: collapse;
-      font-size: 12px;
+      font-size: 11px;
     }
 
     th,
     td {
-      padding: 9px 8px;
+      padding: 7px 8px;
       border-bottom: 1px solid var(--line);
       text-align: left;
       vertical-align: top;
@@ -491,10 +495,10 @@ INDEX_HTML = """<!doctype html>
 
     th {
       color: var(--muted);
-      font-size: 11px;
-      letter-spacing: 0.06em;
+      font-size: 10px;
+      letter-spacing: 0.04em;
       text-transform: uppercase;
-      font-weight: 900;
+      font-weight: 720;
       background: var(--surface-soft);
     }
 
@@ -509,31 +513,31 @@ INDEX_HTML = """<!doctype html>
 
     .kv-grid {
       display: grid;
-      gap: 8px;
+      gap: 6px;
     }
 
     .kv-row {
       display: grid;
-      grid-template-columns: 128px minmax(0, 1fr);
-      gap: 10px;
+      grid-template-columns: 116px minmax(0, 1fr);
+      gap: 8px;
       align-items: start;
-      padding: 8px 0;
-      border-bottom: 1px solid var(--line);
-      font-size: 13px;
+      padding: 7px 0;
+      border-bottom: 1px solid rgba(215, 224, 234, 0.75);
+      font-size: 12px;
     }
 
     .kv-row:last-child { border-bottom: 0; }
-    .kv-row span { color: var(--muted); font-weight: 800; }
-    .kv-row strong { color: var(--ink); font-weight: 850; word-break: break-word; }
+    .kv-row span { color: var(--muted); font-weight: 680; }
+    .kv-row strong { color: var(--ink); font-weight: 720; word-break: break-word; }
 
     .timeline {
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
 
     .timeline-item {
       position: relative;
-      padding: 10px 10px 10px 34px;
+      padding: 9px 10px 9px 30px;
       border: 1px solid var(--line);
       border-radius: var(--radius-sm);
       background: var(--surface-soft);
@@ -542,10 +546,10 @@ INDEX_HTML = """<!doctype html>
     .timeline-item::before {
       content: "";
       position: absolute;
-      left: 13px;
-      top: 15px;
-      width: 8px;
-      height: 8px;
+      left: 12px;
+      top: 14px;
+      width: 6px;
+      height: 6px;
       border-radius: 99px;
       background: var(--blue);
       box-shadow: 0 0 0 4px var(--blue-soft);
@@ -554,20 +558,20 @@ INDEX_HTML = """<!doctype html>
     .timeline-time {
       color: var(--muted);
       font-family: var(--mono);
-      font-size: 11px;
-      font-weight: 800;
+      font-size: 10px;
+      font-weight: 700;
     }
 
     .timeline-title {
       margin-top: 4px;
-      font-size: 13px;
-      font-weight: 900;
+      font-size: 12px;
+      font-weight: 740;
     }
 
     .timeline-body {
       margin-top: 4px;
       color: var(--muted);
-      font-size: 12px;
+      font-size: 11px;
       line-height: 1.5;
     }
 
@@ -576,10 +580,10 @@ INDEX_HTML = """<!doctype html>
       border-radius: var(--radius-sm);
       background: var(--surface-soft);
       color: var(--muted);
-      padding: 18px;
+      padding: 16px;
       text-align: center;
-      font-size: 13px;
-      font-weight: 800;
+      font-size: 12px;
+      font-weight: 700;
     }
 
     .positive { color: var(--green); }
@@ -589,19 +593,19 @@ INDEX_HTML = """<!doctype html>
     .status-chip {
       display: inline-flex;
       align-items: center;
-      gap: 6px;
+      gap: 5px;
       border-radius: 999px;
-      padding: 5px 8px;
-      font-size: 12px;
-      font-weight: 850;
+      padding: 4px 7px;
+      font-size: 11px;
+      font-weight: 720;
       border: 1px solid var(--line);
       background: #fff;
     }
 
     .status-chip::before {
       content: "";
-      width: 7px;
-      height: 7px;
+      width: 6px;
+      height: 6px;
       border-radius: 99px;
       background: var(--muted-2);
     }
@@ -952,6 +956,21 @@ INDEX_HTML = """<!doctype html>
       return signal || "--";
     }
 
+    function executionLabel(status) {
+      const s = String(status || "").toUpperCase();
+      if (s === "SKIPPED_REFRESH_ONLY") return "刷新观察";
+      if (s === "PAPER_FILLED") return "模拟成交";
+      if (s === "BLOCKED") return "已阻塞";
+      if (s === "NO_ACTION") return "无动作";
+      if (s === "PASS") return "通过";
+      if (s === "HOLD") return "持有";
+      return status || "--";
+    }
+
+    function stateBlock(label, raw) {
+      return `<div class="card-value">${escapeHtml(label)}</div><div class="card-note code">${escapeHtml(raw || "")}</div>`;
+    }
+
     function cycleModeLabel(mode) {
       const m = String(mode || "").toLowerCase();
       if (m === "decision") return "决策轮";
@@ -1083,13 +1102,13 @@ INDEX_HTML = """<!doctype html>
 
       els.riskGateCard.innerHTML = `
         <div class="card-label"><span>AI 风险闸门</span>${allowEntry === false ? statusChip("否决", "block") : statusChip("允许/未触发", "wait")}</div>
-        <div class="card-value">${allowEntry === false ? "BLOCK" : "PASS"}</div>
+        ${stateBlock(allowEntry === false ? "否决" : "通过", allowEntry === false ? "BLOCK" : "PASS")}
         <div class="card-note">${escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "暂无 AI 风险闸门输出")}</div>
       `;
 
       els.executionCard.innerHTML = `
         <div class="card-label"><span>执行状态</span>${statusChip(signalLabel(c.signal), signalClass(c.signal))}</div>
-        <div class="card-value">${escapeHtml(executionResult)}</div>
+        ${stateBlock(executionLabel(executionResult), executionResult)}
         <div class="card-note">止损 ${riskLines.stopLoss || "--"}，止盈 ${riskLines.takeProfit || "--"}，跟踪 ${riskLines.trailingStop || "--"}</div>
       `;
 
@@ -1364,8 +1383,8 @@ INDEX_HTML = """<!doctype html>
       }
       if (activeTab === "backtest") {
         const equity = payload.backtest_equity_curve || [];
-        drawLineChart(document.getElementById("btEquityChart"), equity.map((p) => ({ time: p.time || p.timestamp, value: p.equity || p.total_equity || p.net_value })), "#2563eb", "rgba(37, 99, 235, 0.10)", "权益");
-        drawLineChart(document.getElementById("btDrawdownChart"), equity.map((p) => ({ time: p.time || p.timestamp, value: p.drawdown_pct || p.drawdown || 0 })), "#dc2626", "rgba(220, 38, 38, 0.08)", "回撤");
+        drawLineChart(document.getElementById("btEquityChart"), equity.map((p) => ({ time: p.time || p.timestamp, value: p.equity || p.total_equity || p.net_value })), "#1f3f6d", "rgba(31, 63, 109, 0.08)", "权益");
+        drawLineChart(document.getElementById("btDrawdownChart"), equity.map((p) => ({ time: p.time || p.timestamp, value: p.drawdown_pct || p.drawdown || 0 })), "#b4232a", "rgba(180, 35, 42, 0.06)", "回撤");
       }
     }
 
@@ -1388,10 +1407,10 @@ INDEX_HTML = """<!doctype html>
       const setup = setupCanvas(canvas);
       if (!setup) return;
       const { ctx, width, height } = setup;
-      ctx.fillStyle = "#f8fbff";
+      ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, width, height);
-      ctx.fillStyle = "#6c7f94";
-      ctx.font = "800 13px Avenir Next, PingFang SC, sans-serif";
+      ctx.fillStyle = "#66758a";
+      ctx.font = "700 12px Hiragino Sans, PingFang SC, sans-serif";
       ctx.textAlign = "center";
       ctx.fillText(text, width / 2, height / 2);
     }
@@ -1406,10 +1425,10 @@ INDEX_HTML = """<!doctype html>
         return;
       }
 
-      const pad = { left: 56, right: 66, top: 24, bottom: 34 };
-      const volumeHeight = Math.max(54, Math.floor(height * 0.17));
+      const pad = { left: 52, right: 76, top: 22, bottom: 30 };
+      const volumeHeight = Math.max(50, Math.floor(height * 0.16));
       const volumeTop = height - pad.bottom - volumeHeight;
-      const priceBottom = volumeTop - 18;
+      const priceBottom = volumeTop - 16;
       const plotW = width - pad.left - pad.right;
       const priceH = priceBottom - pad.top;
       const values = [];
@@ -1431,7 +1450,7 @@ INDEX_HTML = """<!doctype html>
 
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, width, height);
-      ctx.strokeStyle = "#e5edf6";
+      ctx.strokeStyle = "#e8eef5";
       ctx.lineWidth = 1;
       for (let i = 0; i <= 4; i += 1) {
         const gy = pad.top + (priceH / 4) * i;
@@ -1447,8 +1466,14 @@ INDEX_HTML = """<!doctype html>
         ctx.lineTo(gx, height - pad.bottom);
         ctx.stroke();
       }
+      ctx.strokeStyle = "#cbd6e2";
+      ctx.beginPath();
+      ctx.moveTo(pad.left, pad.top);
+      ctx.lineTo(pad.left, height - pad.bottom);
+      ctx.lineTo(width - pad.right, height - pad.bottom);
+      ctx.stroke();
 
-      ctx.fillStyle = "#f1f6fb";
+      ctx.fillStyle = "#f7f9fc";
       ctx.fillRect(pad.left, volumeTop, plotW, volumeHeight);
       data.forEach((b, idx) => {
         const open = asNumber(b.open || b.close);
@@ -1457,37 +1482,37 @@ INDEX_HTML = """<!doctype html>
         const low = asNumber(b.low || close);
         const cx = x(idx);
         const up = close >= open;
-        const color = up ? "#16a34a" : "#dc2626";
+        const color = up ? "#15803d" : "#b4232a";
         const vol = asNumber(b.sample_count || b.volume || 1, 1);
         const volH = Math.max(2, vol / maxVol * (volumeHeight - 12));
-        ctx.fillStyle = up ? "rgba(22, 163, 74, 0.24)" : "rgba(220, 38, 38, 0.2)";
+        ctx.fillStyle = up ? "rgba(21, 128, 61, 0.16)" : "rgba(180, 35, 42, 0.14)";
         ctx.fillRect(cx - candleW / 2, volumeTop + volumeHeight - volH, candleW, volH);
         ctx.strokeStyle = color;
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(cx, y(high));
         ctx.lineTo(cx, y(low));
         ctx.stroke();
         const bodyY = Math.min(y(open), y(close));
-        const bodyH = Math.max(2, Math.abs(y(close) - y(open)));
-        ctx.fillStyle = up ? "rgba(22, 163, 74, 0.78)" : "rgba(220, 38, 38, 0.78)";
+        const bodyH = Math.max(1.5, Math.abs(y(close) - y(open)));
+        ctx.fillStyle = up ? "rgba(21, 128, 61, 0.72)" : "rgba(180, 35, 42, 0.72)";
         ctx.fillRect(cx - candleW / 2, bodyY, candleW, bodyH);
       });
 
-      drawRiskLine(ctx, options.riskLines?.stop_loss_price, y, pad.left, width - pad.right, "#dc2626", "止损");
-      drawRiskLine(ctx, options.riskLines?.take_profit_price, y, pad.left, width - pad.right, "#16a34a", "止盈");
-      drawRiskLine(ctx, options.riskLines?.trailing_stop_price, y, pad.left, width - pad.right, "#f97316", "跟踪");
+      drawRiskLine(ctx, options.riskLines?.stop_loss_price, y, pad.left, width - pad.right, "#b4232a", "止损");
+      drawRiskLine(ctx, options.riskLines?.take_profit_price, y, pad.left, width - pad.right, "#15803d", "止盈");
+      drawRiskLine(ctx, options.riskLines?.trailing_stop_price, y, pad.left, width - pad.right, "#c96a21", "跟踪");
 
       const indexByTime = buildTimeIndex(data);
       (options.markers || []).forEach((m) => drawTradeMarker(ctx, m, indexByTime, data.length, x, y));
       (options.vetoes || []).forEach((m) => drawVetoMarker(ctx, m, indexByTime, data.length, x, y));
 
-      ctx.fillStyle = "#64748b";
+      ctx.fillStyle = "#66758a";
       ctx.font = "11px SFMono-Regular, Menlo, monospace";
       ctx.textAlign = "right";
       for (let i = 0; i <= 4; i += 1) {
         const value = max - (max - min) / 4 * i;
-        ctx.fillText(fmtNumber(value, 4), width - 10, pad.top + priceH / 4 * i + 4);
+        ctx.fillText(fmtNumber(value, 4), width - 12, pad.top + priceH / 4 * i + 4);
       }
       ctx.textAlign = "center";
       const labelCount = Math.min(5, data.length);
@@ -1497,13 +1522,19 @@ INDEX_HTML = """<!doctype html>
       }
       const last = data[data.length - 1];
       const lastY = y(asNumber(last.close));
-      ctx.fillStyle = "#2563eb";
+      ctx.strokeStyle = "rgba(31, 63, 109, 0.45)";
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.roundRect(width - pad.right + 7, lastY - 11, 54, 22, 7);
+      ctx.moveTo(pad.left, lastY);
+      ctx.lineTo(width - pad.right + 4, lastY);
+      ctx.stroke();
+      ctx.fillStyle = "#1f3f6d";
+      ctx.beginPath();
+      ctx.roundRect(width - pad.right + 8, lastY - 10, 50, 20, 4);
       ctx.fill();
       ctx.fillStyle = "#fff";
       ctx.textAlign = "center";
-      ctx.fillText(fmtNumber(last.close, 3), width - pad.right + 34, lastY + 4);
+      ctx.fillText(fmtNumber(last.close, 3), width - pad.right + 33, lastY + 4);
     }
 
     function buildTimeIndex(data) {
@@ -1536,24 +1567,24 @@ INDEX_HTML = """<!doctype html>
       const cx = x(idx);
       const cy = y(price);
       const isBuy = side === "BUY";
-      ctx.fillStyle = trigger.startsWith("grid_") ? "#f97316" : isBuy ? "#16a34a" : "#dc2626";
+      ctx.fillStyle = trigger.startsWith("grid_") ? "#c96a21" : isBuy ? "#15803d" : "#b4232a";
       ctx.beginPath();
       if (isBuy) {
-        ctx.moveTo(cx, cy - 12);
-        ctx.lineTo(cx - 8, cy + 6);
-        ctx.lineTo(cx + 8, cy + 6);
+        ctx.moveTo(cx, cy - 8);
+        ctx.lineTo(cx - 5, cy + 4);
+        ctx.lineTo(cx + 5, cy + 4);
       } else {
-        ctx.moveTo(cx, cy + 12);
-        ctx.lineTo(cx - 8, cy - 6);
-        ctx.lineTo(cx + 8, cy - 6);
+        ctx.moveTo(cx, cy + 8);
+        ctx.lineTo(cx - 5, cy - 4);
+        ctx.lineTo(cx + 5, cy - 4);
       }
       ctx.closePath();
       ctx.fill();
       if (trigger.startsWith("grid_")) {
-        ctx.fillStyle = "#f97316";
-        ctx.font = "800 10px Avenir Next, PingFang SC, sans-serif";
+        ctx.fillStyle = "#c96a21";
+        ctx.font = "700 9px Hiragino Sans, PingFang SC, sans-serif";
         ctx.textAlign = "center";
-        ctx.fillText(trigger === "grid_buyback" ? "回补" : "网格", cx, cy + (isBuy ? 18 : -14));
+        ctx.fillText(trigger === "grid_buyback" ? "回补" : "网格", cx, cy + (isBuy ? 15 : -11));
       }
     }
 
@@ -1562,16 +1593,16 @@ INDEX_HTML = """<!doctype html>
       const idx = nearestIndex(timeIndex, marker.time || marker.timestamp || marker.timestamp_ms, length);
       const cx = x(idx);
       const cy = Number.isFinite(price) ? y(price) : 42;
-      ctx.strokeStyle = "#f97316";
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = "#c96a21";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.arc(cx, cy, 8, 0, Math.PI * 2);
+      ctx.arc(cx, cy, 6, 0, Math.PI * 2);
       ctx.stroke();
       ctx.beginPath();
-      ctx.moveTo(cx - 4, cy - 4);
-      ctx.lineTo(cx + 4, cy + 4);
-      ctx.moveTo(cx + 4, cy - 4);
-      ctx.lineTo(cx - 4, cy + 4);
+      ctx.moveTo(cx - 3, cy - 3);
+      ctx.lineTo(cx + 3, cy + 3);
+      ctx.moveTo(cx + 3, cy - 3);
+      ctx.lineTo(cx - 3, cy + 3);
       ctx.stroke();
     }
 
@@ -1580,17 +1611,21 @@ INDEX_HTML = """<!doctype html>
       const yy = y(value);
       ctx.save();
       ctx.strokeStyle = color;
-      ctx.lineWidth = 1.4;
-      ctx.setLineDash([7, 5]);
+      ctx.lineWidth = 1;
+      ctx.setLineDash([5, 4]);
       ctx.beginPath();
       ctx.moveTo(x1, yy);
       ctx.lineTo(x2, yy);
       ctx.stroke();
       ctx.setLineDash([]);
       ctx.fillStyle = color;
-      ctx.font = "800 11px Avenir Next, PingFang SC, sans-serif";
-      ctx.textAlign = "left";
-      ctx.fillText(label, x1 + 8, yy - 6);
+      ctx.beginPath();
+      ctx.roundRect(x2 + 6, yy - 9, 30, 18, 4);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "700 10px Hiragino Sans, PingFang SC, sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(label, x2 + 21, yy + 4);
       ctx.restore();
     }
 
