@@ -1015,7 +1015,8 @@ INDEX_HTML = """<!doctype html>
       const positions = paper.positions || {};
       const position = positions[symbol] || null;
       const quoteAsset = primary.quote_asset || paper.quote_asset || "JPY";
-      const currentPrice = asNumber(primary.current_price || primary.mark_price || (latest.market_prices || {})[symbol] || (payload.live_main_interval_bars || []).slice(-1)[0]?.close, 0);
+      const chartBars = payload.live_refresh_bars?.length ? payload.live_refresh_bars : payload.live_main_interval_bars || [];
+      const currentPrice = asNumber(primary.current_price || primary.mark_price || (latest.market_prices || {})[symbol] || chartBars.slice(-1)[0]?.close, 0);
       const decision = (latest.decisions || [])[0] || {};
       const strategy = decision.strategy_decision || {};
       const rawSignal = strategy.signal || decision.action || decision.signal?.action || decision.signal || latest.signal?.action || latest.signal || "HOLD";
@@ -1031,7 +1032,7 @@ INDEX_HTML = """<!doctype html>
       const activationState = (payload.position_activation_state || paper.activation_state || {})[symbol] || {};
       const schedule = (latest.scheduling_diagnostics || [])[0] || {};
       const fills = payload.recent_fills || [];
-      const bars = payload.live_main_interval_bars || [];
+      const bars = chartBars;
       const markers = payload.live_trade_markers || [];
       const vetoes = payload.live_ai_veto_markers || [];
       return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, bars, markers, vetoes };
@@ -1074,8 +1075,8 @@ INDEX_HTML = """<!doctype html>
       const allowEntry = c.aiRisk.allow_entry;
       const executionResult = c.executionStatus || "无执行";
 
-      els.chartSubtitle.textContent = `${c.symbol} 主周期 K 线、成交量、模拟成交点、AI 否决点、退出线`;
-      els.chartInterval.textContent = `主周期 ${payload.live_main_interval || "--"}`;
+      els.chartSubtitle.textContent = `${c.symbol} 实时观察 K 线、成交量、模拟成交点、AI 否决点、退出线`;
+      els.chartInterval.textContent = `观察 ${payload.live_refresh_interval || "1m"} / 策略 ${payload.live_main_interval || "--"}`;
       els.chartPointCount.textContent = `${c.bars.length} bars`;
 
       els.positionCard.innerHTML = `
@@ -1714,9 +1715,6 @@ INDEX_HTML = """<!doctype html>
       document.querySelectorAll("[data-tab]").forEach((btn) => {
         btn.addEventListener("click", () => activateTab(btn.dataset.tab));
       });
-      document.querySelectorAll("[data-rail-tab]").forEach((btn) => {
-        btn.addEventListener("click", () => activateTab(btn.dataset.railTab));
-      });
       window.addEventListener("resize", () => redrawCharts(lastPayloadSnapshot));
     }
 
@@ -2017,6 +2015,11 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         if chart_symbol
         else []
     )
+    refresh_bars = (
+        _build_live_main_interval_bars(history, symbol=chart_symbol, interval="1m", limit=180)
+        if chart_symbol
+        else []
+    )
 
     return {
         "latest_report": latest_report,
@@ -2029,6 +2032,8 @@ def build_dashboard_payload(runtime_dir: Path) -> Dict[str, Any]:
         "live_chart_symbol": chart_symbol,
         "live_main_interval": main_interval,
         "live_main_interval_bars": bars,
+        "live_refresh_interval": "1m",
+        "live_refresh_bars": refresh_bars,
         "live_trade_markers": _extract_live_trade_markers(history),
         "position_activation_markers": _extract_position_activation_markers(history),
         "live_ai_veto_markers": _extract_live_ai_veto_markers(history),

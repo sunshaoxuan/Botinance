@@ -127,6 +127,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["live_chart_symbol"], "XRPJPY")
         self.assertEqual(payload["live_main_interval"], "1h")
         self.assertEqual(len(payload["live_main_interval_bars"]), 1)
+        self.assertEqual(payload["live_refresh_interval"], "1m")
+        self.assertEqual(len(payload["live_refresh_bars"]), 1)
+        self.assertEqual(payload["live_refresh_bars"][0]["sample_count"], 3)
         self.assertEqual(len(payload["decision_ledger"]), 1)
         self.assertEqual(payload["decision_ledger"][0]["sell_blocker"], "继续持有")
 
