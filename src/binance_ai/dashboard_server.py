@@ -387,62 +387,122 @@ INDEX_HTML = """<!doctype html>
       text-overflow: ellipsis;
     }
 
-    .bottom-insight-grid {
-      display: grid;
-      grid-template-columns: 1.05fr 1fr 1fr;
-      gap: 0;
+    .trade-fill-panel {
       margin-top: 12px;
-      padding: 10px;
-      align-items: stretch;
+    }
+
+    .trade-fill-panel .panel-body {
+      padding: 10px 12px 12px;
+    }
+
+    .trade-fill-panel .scroll-table {
+      max-height: 300px;
+      overflow: auto;
+    }
+
+    .utility-button {
       border: 1px solid var(--line);
-      border-radius: var(--radius);
-      background: rgba(255, 255, 255, 0.86);
-      box-shadow: var(--shadow-soft);
-      overflow: hidden;
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink-soft);
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 740;
+      cursor: pointer;
+      transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
     }
 
-    .bottom-insight-grid > .panel {
+    .utility-button:hover {
+      border-color: rgba(31, 63, 109, 0.38);
+      color: var(--navy);
+      background: var(--blue-soft);
+    }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 40;
+      background: rgba(15, 23, 42, 0.18);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.18s ease;
+    }
+
+    .drawer-backdrop.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .insight-drawer {
+      position: fixed;
+      z-index: 41;
+      top: 0;
+      right: 0;
+      width: min(520px, 92vw);
+      height: 100vh;
+      border-left: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.98);
+      box-shadow: -18px 0 40px rgba(31, 63, 109, 0.14);
+      transform: translateX(102%);
+      transition: transform 0.22s ease;
       display: flex;
-      min-height: 236px;
-      border: 0;
-      border-right: 1px solid rgba(215, 224, 234, 0.82);
-      border-radius: 0;
-      background: transparent;
-      box-shadow: none;
       flex-direction: column;
-      overflow: hidden;
     }
 
-    .bottom-insight-grid > .panel:last-child {
-      border-right: 0;
+    .insight-drawer.active {
+      transform: translateX(0);
     }
 
-    .bottom-insight-grid .panel-header {
-      padding: 8px 11px 7px;
-      border-bottom-color: rgba(215, 224, 234, 0.68);
+    .drawer-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 14px;
+      padding: 18px 18px 14px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #fff 0%, #f8fbff 100%);
     }
 
-    .bottom-insight-grid .panel-body {
-      min-height: 0;
-      padding: 10px 11px;
+    .drawer-title {
+      font-size: 15px;
+      font-weight: 780;
+      letter-spacing: 0.02em;
+    }
+
+    .drawer-subtitle {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .drawer-close {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      width: 30px;
+      height: 30px;
+      background: #fff;
+      color: var(--muted);
+      cursor: pointer;
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .drawer-body {
+      padding: 14px 16px 22px;
       overflow: auto;
       flex: 1;
     }
 
-    .bottom-insight-grid .table-wrap {
-      border-color: rgba(215, 224, 234, 0.8);
+    .drawer-section + .drawer-section {
+      margin-top: 16px;
     }
 
-    .bottom-insight-grid .scroll-table {
-      max-height: 172px;
-    }
-
-    .bottom-insight-grid .timeline {
-      gap: 7px;
-    }
-
-    .bottom-insight-grid .timeline-item {
-      padding: 8px 9px 8px 28px;
+    .drawer-section-title {
+      margin-bottom: 8px;
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 760;
     }
 
     .page-grid-2 {
@@ -623,6 +683,11 @@ INDEX_HTML = """<!doctype html>
 
     .nowrap { white-space: nowrap; }
 
+    .muted {
+      color: var(--muted);
+      font-size: 10px;
+    }
+
     @media (max-width: 1180px) {
       .trade-workspace,
       .backtest-grid,
@@ -634,19 +699,8 @@ INDEX_HTML = """<!doctype html>
         grid-template-columns: repeat(2, minmax(0, 1fr));
       }
 
-      .bottom-insight-grid,
       .page-grid-3 {
         grid-template-columns: 1fr;
-      }
-
-      .bottom-insight-grid > .panel {
-        min-height: auto;
-        border-right: 0;
-        border-bottom: 1px solid rgba(215, 224, 234, 0.82);
-      }
-
-      .bottom-insight-grid > .panel:last-child {
-        border-bottom: 0;
       }
     }
 
@@ -718,6 +772,8 @@ INDEX_HTML = """<!doctype html>
                 <span class="tool-pill blue" id="chartInterval">主周期 --</span>
                 <span class="tool-pill green">PAPER</span>
                 <span class="tool-pill coral" id="chartPointCount">0 bars</span>
+                <button class="utility-button" data-drawer="evidence" type="button">证据来源</button>
+                <button class="utility-button" data-drawer="decision" type="button">决策链路</button>
               </div>
             </div>
             <div class="chart-frame">
@@ -735,20 +791,15 @@ INDEX_HTML = """<!doctype html>
           </aside>
         </div>
 
-        <div class="bottom-insight-grid">
-          <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">证据来源</div><div class="panel-subtitle">本轮决策引用的信息</div></div></div>
-            <div class="panel-body" id="evidenceCompact"></div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">AI 决策时间线</div><div class="panel-subtitle">规则信号之后的裁决链路</div></div></div>
-            <div class="panel-body" id="aiTimeline"></div>
-          </article>
-          <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">最近模拟成交</div><div class="panel-subtitle">仅展示 PAPER_FILLED</div></div></div>
-            <div class="panel-body" id="fillsCompact"></div>
-          </article>
-        </div>
+        <article class="panel trade-fill-panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">成交记录</div>
+              <div class="panel-subtitle">模拟与实盘成交统一展示，按最近时间排序</div>
+            </div>
+          </div>
+          <div class="panel-body" id="tradeFillsTable"></div>
+        </article>
       </section>
 
       <section class="tab-panel" id="tab-ai">
@@ -855,20 +906,33 @@ INDEX_HTML = """<!doctype html>
     </main>
   </div>
 
+  <div class="drawer-backdrop" id="insightDrawerBackdrop"></div>
+  <aside class="insight-drawer" id="insightDrawer" aria-hidden="true">
+    <div class="drawer-header">
+      <div>
+        <div class="drawer-title" id="insightDrawerTitle">详情</div>
+        <div class="drawer-subtitle" id="insightDrawerSubtitle">按需查看，不占用主交易画面</div>
+      </div>
+      <button class="drawer-close" id="insightDrawerClose" type="button" aria-label="关闭">×</button>
+    </div>
+    <div class="drawer-body" id="insightDrawerBody"></div>
+  </aside>
+
   <script>
     const refreshMs = 2000;
     let activeTab = "trading";
     let lastPayloadSnapshot = null;
     let chartHover = { active: false, x: 0, y: 0 };
+    let activeDrawerKind = null;
 
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
-      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
+      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
-      "cycleLedger"
+      "cycleLedger", "insightDrawerBackdrop", "insightDrawer", "insightDrawerTitle", "insightDrawerSubtitle", "insightDrawerBody", "insightDrawerClose"
     ];
 
     function cacheEls() {
@@ -956,7 +1020,7 @@ INDEX_HTML = """<!doctype html>
       const s = String(status || "").toUpperCase();
       if (reason) return reason;
       if (s === "SKIPPED_REFRESH_ONLY") return "本轮只刷新行情、持仓和风控线，不触发下单决策。";
-      if (s === "PAPER_FILLED") return "本轮已产生模拟成交，明细见最近模拟成交。";
+      if (s === "PAPER_FILLED") return "本轮已产生成交，明细见 K 线下方成交记录。";
       if (s === "ORDER_OPEN") return "本轮已提交限价挂单，等待行情触价或撤单规则处理。";
       if (s === "UNKNOWN") return "订单接口状态不确定，下一轮会先查询订单状态，不直接补单。";
       if (s === "CANCELED" || s === "EXPIRED") return "挂单已取消或过期，锁定资产已释放。";
@@ -1134,9 +1198,7 @@ INDEX_HTML = """<!doctype html>
         <div class="card-note">止损 ${riskLines.stopLoss || "--"}，止盈 ${riskLines.takeProfit || "--"}，跟踪 ${riskLines.trailingStop || "--"}</div>
       `;
 
-      els.evidenceCompact.innerHTML = renderEvidence(c.latest, 5);
-      els.aiTimeline.innerHTML = renderAiTimeline(c);
-      els.fillsCompact.innerHTML = renderFills(c.fills, c.quoteAsset, 6);
+      els.tradeFillsTable.innerHTML = renderFills(c.fills, c.quoteAsset, 40);
     }
 
     function updateAiTab(payload) {
@@ -1320,7 +1382,7 @@ INDEX_HTML = """<!doctype html>
         ["AI 市场判断", c.llm.action_bias_cn || c.llm.action_bias || c.llm.recommendation || "未输出", c.llm.summary_cn || c.llm.summary || c.llm.risk_note_cn || c.llm.risk_note || "暂无说明"],
         ["风险闸门", c.aiRisk.allow_entry === false ? "否决入场" : "未否决", c.aiRisk.reason || c.aiRisk.veto_reason || "暂无风险解释"],
         ["执行结果", c.executionStatus || "无执行", c.executionReason || c.decision.execution_reason || ""]
-      ];
+      ].filter((item) => String(item[1] || item[2] || "").trim());
       return `<div class="timeline">${items.map((item) => `
         <div class="timeline-item">
           <div class="timeline-time">${escapeHtml(item[0])}</div>
@@ -1328,6 +1390,65 @@ INDEX_HTML = """<!doctype html>
           <div class="timeline-body">${escapeHtml(item[2])}</div>
         </div>
       `).join("")}</div>`;
+    }
+
+    function renderDecisionDrawer(payload) {
+      const c = context(payload);
+      const ledger = payload.decision_ledger || [];
+      const orderEvents = c.orderEvents || [];
+      const ledgerRows = ledger.slice(0, 40).map((r) => `<tr>
+        <td class="nowrap">${escapeHtml(fmtTime(r.timestamp_ms || r.time))}</td>
+        <td>${escapeHtml(r.cycle_mode || "--")}</td>
+        <td>${escapeHtml(r.symbol || c.symbol)}</td>
+        <td>${escapeHtml(fmtCurrency(r.price, c.quoteAsset))}</td>
+        <td>${escapeHtml(r.buy_signal || "--")}<br><span class="muted">${escapeHtml(r.buy_blocker || "--")}</span></td>
+        <td>${escapeHtml(r.sell_signal || "--")}<br><span class="muted">${escapeHtml(r.sell_blocker || "--")}</span></td>
+        <td>${escapeHtml(r.final_action || "--")}<br><span class="muted">${escapeHtml(r.execution_status || "--")}</span></td>
+      </tr>`);
+      const eventRows = orderEvents.slice(0, 40).map((e) => `<tr>
+        <td class="nowrap">${escapeHtml(fmtTime(e.timestamp_ms || e.time))}</td>
+        <td>${statusChip(e.status || e.event_type || "--", signalClass(e.status || e.side))}</td>
+        <td>${escapeHtml(e.side || "--")}</td>
+        <td>${fmtCurrency(e.fill_price || e.limit_price, c.quoteAsset)}</td>
+        <td>${fmtNumber(e.filled_quantity || e.quantity, 8)}</td>
+        <td>${escapeHtml(e.reason || e.trigger || "--")}</td>
+      </tr>`);
+      return `
+        <div class="drawer-section">
+          <div class="drawer-section-title">历史决策账本</div>
+          ${table(["时间", "轮次", "交易对", "价格", "买入判断", "卖出判断", "最终动作"], ledgerRows, "暂无历史决策账本")}
+        </div>
+        <div class="drawer-section">
+          <div class="drawer-section-title">订单生命周期事件</div>
+          ${table(["时间", "状态", "方向", "价格", "数量", "原因"], eventRows, "暂无订单生命周期事件")}
+        </div>
+      `;
+    }
+
+    function openInsightDrawer(kind) {
+      const payload = lastPayloadSnapshot;
+      if (!payload) return;
+      const c = context(payload);
+      activeDrawerKind = kind;
+      if (kind === "evidence") {
+        els.insightDrawerTitle.textContent = "证据来源";
+        els.insightDrawerSubtitle.textContent = "本轮决策引用的新闻、市场信息与来源";
+        els.insightDrawerBody.innerHTML = renderEvidence(c.latest, 30);
+      } else {
+        els.insightDrawerTitle.textContent = "决策链路";
+        els.insightDrawerSubtitle.textContent = "按真实 cycle_reports 与订单事件生成，不使用固定假数据";
+        els.insightDrawerBody.innerHTML = renderDecisionDrawer(payload);
+      }
+      els.insightDrawer.classList.add("active");
+      els.insightDrawerBackdrop.classList.add("active");
+      els.insightDrawer.setAttribute("aria-hidden", "false");
+    }
+
+    function closeInsightDrawer() {
+      activeDrawerKind = null;
+      els.insightDrawer.classList.remove("active");
+      els.insightDrawerBackdrop.classList.remove("active");
+      els.insightDrawer.setAttribute("aria-hidden", "true");
     }
 
     function renderAiRisk(c) {
@@ -1352,7 +1473,7 @@ INDEX_HTML = """<!doctype html>
           <td class="nowrap">${escapeHtml(fmtTime(f.timestamp || f.timestamp_ms || f.time))}</td>
         </tr>`;
       });
-      return table(["方向", "数量", "价格", "手续费", "已实现", "时间"], rows, "暂无模拟成交");
+      return table(["方向", "数量", "价格", "手续费", "已实现", "时间"], rows, "暂无成交记录");
     }
 
     function activeRiskLines(c) {
@@ -1394,6 +1515,7 @@ INDEX_HTML = """<!doctype html>
       updateBacktestTab(payload);
       updateRiskTab(payload);
       updateSystemTab(payload);
+      if (activeDrawerKind) openInsightDrawer(activeDrawerKind);
       redrawCharts(payload);
     }
 
@@ -1867,6 +1989,11 @@ INDEX_HTML = """<!doctype html>
       document.querySelectorAll("[data-tab]").forEach((btn) => {
         btn.addEventListener("click", () => activateTab(btn.dataset.tab));
       });
+      document.querySelectorAll("[data-drawer]").forEach((btn) => {
+        btn.addEventListener("click", () => openInsightDrawer(btn.dataset.drawer));
+      });
+      els.insightDrawerClose.addEventListener("click", closeInsightDrawer);
+      els.insightDrawerBackdrop.addEventListener("click", closeInsightDrawer);
       const tradeChart = document.getElementById("tradeChart");
       if (tradeChart) {
         tradeChart.addEventListener("mousemove", (event) => {
