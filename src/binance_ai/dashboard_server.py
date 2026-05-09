@@ -1078,6 +1078,7 @@ INDEX_HTML = """<!doctype html>
       const realTotalEquity = realAvg > 0 && qty > 0 && c.currentPrice > 0
         ? asNumber(c.paper.quote_balance, 0) + qty * c.currentPrice
         : c.paper.total_equity;
+      const availableCash = asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0);
       const realized = asNumber(c.paper.realized_pnl, 0);
       const riskLines = activeRiskLines(c);
       const allowEntry = c.aiRisk.allow_entry;
@@ -1096,7 +1097,7 @@ INDEX_HTML = """<!doctype html>
       els.pnlCard.innerHTML = `
         <div class="card-label"><span>真实仓位盈亏</span><span class="${pnlClass(realUnrealized)}">未实现</span></div>
         <div class="card-value ${pnlClass(realUnrealized)}">${fmtCurrency(realUnrealized, c.quoteAsset)}</div>
-        <div class="card-note">Boti接管后 ${fmtCurrency(botiUnrealized, c.quoteAsset)}，模拟已实现 ${fmtCurrency(realized, c.quoteAsset)}，当前市值 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
+        <div class="card-note">可用现金 ${fmtCurrency(availableCash, c.quoteAsset)}，Boti接管后 ${fmtCurrency(botiUnrealized, c.quoteAsset)}，模拟已实现 ${fmtCurrency(realized, c.quoteAsset)}，当前市值 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
       `;
 
       els.sellDecisionCard.innerHTML = `
