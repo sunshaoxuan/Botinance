@@ -1158,7 +1158,7 @@ INDEX_HTML = """<!doctype html>
       if (s === "FILLED") return "已成交";
       if (s === "CANCELED") return "已撤单";
       if (s === "SUBMITTED") return "已提交";
-      if (s === "EXPIRED") return "已过期";
+      if (s === "EXPIRED") return "交易所过期";
       if (s === "REJECTED") return "已拒绝";
       if (s === "UNKNOWN") return "状态待确认";
       if (s === "BLOCKED") return "已阻塞";
@@ -1179,7 +1179,7 @@ INDEX_HTML = """<!doctype html>
       if (s === "ORDER_OPEN") return "挂单中";
       if (s === "FILLED") return "已成交";
       if (s === "CANCELED") return "已撤单";
-      if (s === "EXPIRED") return "已过期";
+      if (s === "EXPIRED") return "交易所过期";
       return status || "--";
     }
 
@@ -1190,7 +1190,8 @@ INDEX_HTML = """<!doctype html>
       if (s === "PAPER_FILLED") return "本轮已产生成交，明细见 K 线下方成交记录。";
       if (s === "ORDER_OPEN") return "本轮已提交限价挂单，等待行情触价或撤单规则处理。";
       if (s === "UNKNOWN") return "订单接口状态不确定，下一轮会先查询订单状态，不直接补单。";
-      if (s === "CANCELED" || s === "EXPIRED") return "挂单已取消或过期，锁定资产已释放。";
+      if (s === "CANCELED") return "挂单已撤销，锁定资产已释放。";
+      if (s === "EXPIRED") return "交易所返回订单过期，锁定资产已释放。";
       if (s === "BLOCKED") return "本轮动作被规则、预算、最小成交额或 AI 风险闸门阻塞。";
       if (s === "NO_ACTION" || s === "HOLD") return "本轮未下单，继续等待策略或退出条件。";
       if (s === "PASS") return "检查通过，但本轮没有需要执行的交易动作。";
@@ -1225,7 +1226,9 @@ INDEX_HTML = """<!doctype html>
         paper_limit_order_open: "模拟限价单已挂出",
         paper_limit_order_filled: "模拟限价单已成交",
         paper_limit_order_canceled: "模拟限价单已撤销",
-        paper_limit_order_expired: "模拟限价单已过期",
+        order_timeout_canceled: "Boti 超时撤单",
+        order_price_deviation_exceeded: "价格偏离撤单",
+        paper_limit_order_expired: "交易所过期",
         ai_entry_veto: "AI 风险闸门否决入场",
         sell_order_approved: "卖出订单已通过风控",
         buy_order_approved: "买入订单已通过风控",

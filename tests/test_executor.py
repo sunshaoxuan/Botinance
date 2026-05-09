@@ -271,7 +271,7 @@ class OrderExecutorTests(unittest.TestCase):
             self.assertEqual(events[0].status, "FILLED")
             self.assertEqual(portfolio.open_orders(), {})
 
-    def test_process_open_limit_order_expires_and_releases_cash(self) -> None:
+    def test_process_open_limit_order_timeout_cancels_and_releases_cash(self) -> None:
         settings = Settings(
             api_key="",
             api_secret="",
@@ -308,7 +308,7 @@ class OrderExecutorTests(unittest.TestCase):
                 order_type="LIMIT",
                 quantity=1.0,
                 limit_price=200.0,
-                client_order_id="buy-expire",
+                client_order_id="buy-timeout",
                 expires_at_ms=1_500,
             )
             executor.submit_limit_order(
@@ -326,7 +326,8 @@ class OrderExecutorTests(unittest.TestCase):
                 timestamp_ms=1_600,
             )
 
-            self.assertEqual(events[0].status, "EXPIRED")
+            self.assertEqual(events[0].status, "CANCELED")
+            self.assertEqual(events[0].reason, "order_timeout_canceled")
             self.assertEqual(portfolio.open_orders(), {})
             self.assertAlmostEqual(portfolio.account_snapshot().balance_of("JPY"), 1000.0)
 
@@ -559,6 +560,62 @@ class OrderExecutorTests(unittest.TestCase):
 
         self.assertEqual(events[-1].status, "CANCELED")
         self.assertEqual(events[-1].reason, "order_price_deviation_exceeded")
+        self.assertEqual(executor.all_open_orders(), [])
+
+    def test_live_open_order_timeout_is_boti_cancel_not_exchange_expiry(self) -> None:
+        settings = Settings(
+            api_key="key",
+            api_secret="secret",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=False,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            live_order_execution_enabled=True,
+            order_cancel_deviation_pct=0.0,
+        )
+        executor = OrderExecutor(settings, _LiveClientStub())
+        executor.submit_limit_order(
+            OrderRequest(
+                symbol="XRPJPY",
+                side="BUY",
+                order_type="LIMIT",
+                quantity=1.0,
+                limit_price=200.0,
+                client_order_id="live-buy",
+                expires_at_ms=1_500,
+            ),
+            current_price=200.0,
+            timestamp_ms=1_000,
+        )
+
+        _, events = executor.process_open_orders(
+            symbol="XRPJPY",
+            candles=[],
+            current_price=200.0,
+            timestamp_ms=1_600,
+        )
+
+        self.assertEqual(events[-1].status, "CANCELED")
+        self.assertEqual(events[-1].reason, "order_timeout_canceled")
         self.assertEqual(executor.all_open_orders(), [])
 
     def test_live_submit_timeout_is_unknown_then_queried_next_cycle(self) -> None:

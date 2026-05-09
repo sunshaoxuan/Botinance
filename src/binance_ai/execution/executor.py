@@ -355,9 +355,8 @@ class OrderExecutor:
             if managed.expires_at_ms and timestamp_ms >= managed.expires_at_ms:
                 event = self.paper_portfolio.cancel_open_order(
                     managed.client_order_id,
-                    "order_ttl_expired",
+                    "order_timeout_canceled",
                     timestamp_ms,
-                    status="EXPIRED",
                 )
                 if event is not None:
                     events.append(event)
@@ -501,7 +500,7 @@ class OrderExecutor:
 
     def _live_cancel_reason(self, order: ManagedOrder, current_price: float, timestamp_ms: int) -> str:
         if order.expires_at_ms and timestamp_ms >= order.expires_at_ms:
-            return "order_ttl_expired"
+            return "order_timeout_canceled"
         if self._should_cancel_for_deviation(order, current_price):
             return "order_price_deviation_exceeded"
         return ""

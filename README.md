@@ -292,6 +292,8 @@ ORDER_TTL_SECONDS=45
 ORDER_CANCEL_DEVIATION_PCT=0.0015
 ```
 
+`ORDER_TTL_SECONDS` 是 Boti 托管限价单的最大等待时间。Binance `GTC` 限价单不会自然过期；超过该时间后，Boti 会主动撤单并记录为 `order_timeout_canceled`，不是交易所 `EXPIRED`。
+
 Stop the monitor and dashboard cleanly:
 
 ```bash

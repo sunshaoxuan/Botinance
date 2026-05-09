@@ -45,6 +45,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("交割成本总盈亏", INDEX_HTML)
         self.assertIn("Boti接手后操作盈亏", INDEX_HTML)
         self.assertIn("real_cost_basis_summary", INDEX_HTML)
+        self.assertIn("Boti 超时撤单", INDEX_HTML)
+        self.assertIn("交易所过期", INDEX_HTML)
         self.assertIn("\"状态\", \"方向\", \"数量\", \"价格\", \"冻结\", \"手续费\", \"已实现\", \"时间\"", INDEX_HTML)
         self.assertIn("fillPageSize", INDEX_HTML)
         self.assertIn("fillPrev", INDEX_HTML)
