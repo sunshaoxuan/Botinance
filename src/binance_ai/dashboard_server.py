@@ -219,10 +219,10 @@ INDEX_HTML = """<!doctype html>
 
     .top-metrics {
       display: grid;
-      grid-template-columns: repeat(4, minmax(110px, 1fr));
+      grid-template-columns: repeat(5, minmax(104px, 1fr));
       gap: 7px;
       flex: 1;
-      max-width: 720px;
+      max-width: 860px;
     }
 
     .top-metric {
@@ -412,6 +412,17 @@ INDEX_HTML = """<!doctype html>
       color: var(--muted);
       font-size: 11px;
       line-height: 1.5;
+    }
+
+    .cash-card {
+      background:
+        linear-gradient(135deg, rgba(232, 240, 252, 0.82), rgba(255, 255, 255, 0.94) 52%),
+        rgba(255, 255, 255, 0.94);
+      border-color: rgba(83, 113, 154, 0.22);
+    }
+
+    .cash-card .card-value {
+      color: var(--blue);
     }
 
     .metric-grid {
@@ -716,6 +727,7 @@ INDEX_HTML = """<!doctype html>
           <div class="top-metric"><span>运行状态</span><strong id="topMode">读取中</strong></div>
           <div class="top-metric"><span>最新刷新</span><strong id="topUpdated">--</strong></div>
           <div class="top-metric"><span>当前价格</span><strong id="topPrice">--</strong></div>
+          <div class="top-metric"><span>可用现金</span><strong id="topCash">--</strong></div>
           <div class="top-metric"><span>模拟权益</span><strong id="topEquity">--</strong></div>
         </div>
       </header>
@@ -749,6 +761,7 @@ INDEX_HTML = """<!doctype html>
 
           <aside class="right-command-stack">
             <div class="card" id="positionCard"></div>
+            <div class="card cash-card" id="cashCard"></div>
             <div class="card" id="pnlCard"></div>
             <div class="card" id="sellDecisionCard"></div>
             <div class="card" id="riskGateCard"></div>
@@ -883,8 +896,8 @@ INDEX_HTML = """<!doctype html>
 
     const els = {};
     const ids = [
-      "topSymbol", "topMode", "topUpdated", "topPrice", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
-      "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
+      "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
+      "positionCard", "cashCard", "pnlCard", "sellDecisionCard", "riskGateCard", "executionCard", "evidenceCompact", "aiTimeline", "fillsCompact",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1058,10 +1071,12 @@ INDEX_HTML = """<!doctype html>
 
     function updateTopBar(payload) {
       const c = context(payload);
+      const availableCash = asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0);
       els.topSymbol.textContent = c.symbol;
       els.topMode.textContent = cycleModeLabel(c.latest.cycle_mode);
       els.topUpdated.textContent = fmtTime(c.latest.generated_at || c.latest.timestamp || c.latest.timestamp_ms || payload.generated_at);
       els.topPrice.textContent = c.currentPrice ? fmtCurrency(c.currentPrice, c.quoteAsset) : "--";
+      els.topCash.textContent = fmtCurrency(availableCash, c.quoteAsset);
       els.topEquity.textContent = fmtCurrency(c.paper.total_equity, c.quoteAsset);
     }
 
@@ -1094,10 +1109,16 @@ INDEX_HTML = """<!doctype html>
         <div class="card-note">真实成本 ${realAvg ? fmtCurrency(realAvg, c.quoteAsset) : "--"}，Boti接管价 ${avg ? fmtCurrency(avg, c.quoteAsset) : "--"}，最高价 ${fmtCurrency(highest, c.quoteAsset)}</div>
       `;
 
+      els.cashCard.innerHTML = `
+        <div class="card-label"><span>可用现金</span>${statusChip(c.quoteAsset, "wait")}</div>
+        <div class="card-value">${fmtCurrency(availableCash, c.quoteAsset)}</div>
+        <div class="card-note">来自当前纸面账户现金余额；用于后续模拟买入、网格回补和风险预算计算。</div>
+      `;
+
       els.pnlCard.innerHTML = `
         <div class="card-label"><span>真实仓位盈亏</span><span class="${pnlClass(realUnrealized)}">未实现</span></div>
         <div class="card-value ${pnlClass(realUnrealized)}">${fmtCurrency(realUnrealized, c.quoteAsset)}</div>
-        <div class="card-note">可用现金 ${fmtCurrency(availableCash, c.quoteAsset)}，Boti接管后 ${fmtCurrency(botiUnrealized, c.quoteAsset)}，模拟已实现 ${fmtCurrency(realized, c.quoteAsset)}，当前市值 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
+        <div class="card-note">Boti接管后 ${fmtCurrency(botiUnrealized, c.quoteAsset)}，模拟已实现 ${fmtCurrency(realized, c.quoteAsset)}，当前市值 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
       `;
 
       els.sellDecisionCard.innerHTML = `
