@@ -290,6 +290,12 @@ INDEX_HTML = """<!doctype html>
       align-items: start;
     }
 
+    .trade-main-column {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+
     .right-command-stack,
     .stack {
       display: grid;
@@ -437,17 +443,50 @@ INDEX_HTML = """<!doctype html>
       text-overflow: ellipsis;
     }
 
-    .trade-fill-panel {
-      margin-top: 12px;
-    }
+    .trade-fill-panel { min-width: 0; }
 
     .trade-fill-panel .panel-body {
       padding: 10px 12px 12px;
     }
 
     .trade-fill-panel .scroll-table {
-      max-height: 300px;
+      max-height: none;
       overflow: auto;
+    }
+
+    .fill-toolbar {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--muted);
+      font-size: 11px;
+      font-family: var(--mono);
+    }
+
+    .fill-toolbar select {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink);
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 720;
+      outline: none;
+    }
+
+    .pager-button {
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      background: #fff;
+      color: var(--ink-soft);
+      padding: 4px 9px;
+      font-size: 11px;
+      cursor: pointer;
+    }
+
+    .pager-button:disabled {
+      opacity: 0.38;
+      cursor: default;
     }
 
     .utility-button {
@@ -825,25 +864,46 @@ INDEX_HTML = """<!doctype html>
 
       <section class="tab-panel active" id="tab-trading">
         <div class="trade-workspace">
-          <article class="panel chart-card">
-            <div class="panel-header">
-              <div>
-                <div class="panel-title">主周期行情</div>
-                <div class="panel-subtitle" id="chartSubtitle">K 线、成交量、成交点、AI 否决点、退出线</div>
+          <div class="trade-main-column">
+            <article class="panel chart-card">
+              <div class="panel-header">
+                <div>
+                  <div class="panel-title">主周期行情</div>
+                  <div class="panel-subtitle" id="chartSubtitle">K 线、成交量、成交点、AI 否决点、退出线</div>
+                </div>
+                <div class="tool-row">
+                  <select class="chart-select" id="chartIntervalSelect" aria-label="K线周期"></select>
+                  <span class="tool-pill blue" id="chartInterval">主周期 --</span>
+                  <span class="tool-pill green">PAPER</span>
+                  <span class="tool-pill coral" id="chartPointCount">0 bars</span>
+                  <button class="utility-button" data-drawer="evidence" type="button">证据来源</button>
+                  <button class="utility-button" data-drawer="decision" type="button">决策链路</button>
+                </div>
               </div>
-              <div class="tool-row">
-                <select class="chart-select" id="chartIntervalSelect" aria-label="K线周期"></select>
-                <span class="tool-pill blue" id="chartInterval">主周期 --</span>
-                <span class="tool-pill green">PAPER</span>
-                <span class="tool-pill coral" id="chartPointCount">0 bars</span>
-                <button class="utility-button" data-drawer="evidence" type="button">证据来源</button>
-                <button class="utility-button" data-drawer="decision" type="button">决策链路</button>
+              <div class="chart-frame">
+                <canvas id="tradeChart"></canvas>
               </div>
-            </div>
-            <div class="chart-frame">
-              <canvas id="tradeChart"></canvas>
-            </div>
-          </article>
+            </article>
+
+            <article class="panel trade-fill-panel">
+              <div class="panel-header">
+                <div>
+                  <div class="panel-title">成交记录</div>
+                  <div class="panel-subtitle">模拟与实盘成交统一展示，按最近时间排序</div>
+                </div>
+                <div class="fill-toolbar">
+                  <span id="fillPageInfo">--</span>
+                  <select id="fillPageSize" aria-label="成交记录每页行数">
+                    <option value="50">50行</option>
+                    <option value="100">100行</option>
+                  </select>
+                  <button class="pager-button" id="fillPrev" type="button">上一页</button>
+                  <button class="pager-button" id="fillNext" type="button">下一页</button>
+                </div>
+              </div>
+              <div class="panel-body" id="tradeFillsTable"></div>
+            </article>
+          </div>
 
           <aside class="right-command-stack">
             <div class="card" id="positionCard"></div>
@@ -854,16 +914,6 @@ INDEX_HTML = """<!doctype html>
             <div class="card" id="executionCard"></div>
           </aside>
         </div>
-
-        <article class="panel trade-fill-panel">
-          <div class="panel-header">
-            <div>
-              <div class="panel-title">成交记录</div>
-              <div class="panel-subtitle">模拟与实盘成交统一展示，按最近时间排序</div>
-            </div>
-          </div>
-          <div class="panel-body" id="tradeFillsTable"></div>
-        </article>
       </section>
 
       <section class="tab-panel" id="tab-ai">
@@ -989,11 +1039,13 @@ INDEX_HTML = """<!doctype html>
     let chartHover = { active: false, x: 0, y: 0 };
     let activeDrawerKind = null;
     let selectedChartInterval = "1m";
+    let fillPageSize = 50;
+    let fillPage = 0;
 
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount",
-      "chartIntervalSelect", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
+      "chartIntervalSelect", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1282,7 +1334,7 @@ INDEX_HTML = """<!doctype html>
         <div class="card-note">止损 ${riskLines.stopLoss || "--"}，止盈 ${riskLines.takeProfit || "--"}，跟踪 ${riskLines.trailingStop || "--"}</div>
       `;
 
-      els.tradeFillsTable.innerHTML = renderFills(c.fills, c.quoteAsset, 40);
+      renderFills(c.fills, c.quoteAsset);
     }
 
     function updateAiTab(payload) {
@@ -1545,8 +1597,14 @@ INDEX_HTML = """<!doctype html>
       ]);
     }
 
-    function renderFills(fills, quoteAsset, limit) {
-      const rows = fills.slice(0, limit).map((f) => {
+    function renderFills(fills, quoteAsset) {
+      const allFills = fills || [];
+      const total = allFills.length;
+      const pageCount = Math.max(1, Math.ceil(total / fillPageSize));
+      fillPage = Math.max(0, Math.min(fillPage, pageCount - 1));
+      const start = fillPage * fillPageSize;
+      const pageFills = allFills.slice(start, start + fillPageSize);
+      const rows = pageFills.map((f) => {
         const side = String(f.side || f.action || "").toUpperCase();
         return `<tr>
           <td>${statusChip(side || "--", side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
@@ -1557,7 +1615,14 @@ INDEX_HTML = """<!doctype html>
           <td class="nowrap">${escapeHtml(fmtTime(f.timestamp || f.timestamp_ms || f.time))}</td>
         </tr>`;
       });
-      return table(["方向", "数量", "价格", "手续费", "已实现", "时间"], rows, "暂无成交记录");
+      if (els.fillPageInfo) {
+        const end = Math.min(total, start + pageFills.length);
+        els.fillPageInfo.textContent = total ? `${start + 1}-${end} / ${total}` : "0 / 0";
+      }
+      if (els.fillPrev) els.fillPrev.disabled = fillPage <= 0;
+      if (els.fillNext) els.fillNext.disabled = fillPage >= pageCount - 1;
+      if (els.fillPageSize) els.fillPageSize.value = String(fillPageSize);
+      els.tradeFillsTable.innerHTML = table(["方向", "数量", "价格", "手续费", "已实现", "时间"], rows, "暂无成交记录");
     }
 
     function activeRiskLines(c) {
@@ -2083,6 +2148,19 @@ INDEX_HTML = """<!doctype html>
         selectedChartInterval = els.chartIntervalSelect.value || "1m";
         tick();
       });
+      els.fillPageSize.addEventListener("change", () => {
+        fillPageSize = Number(els.fillPageSize.value) || 50;
+        fillPage = 0;
+        updateTradingTab(lastPayloadSnapshot || {});
+      });
+      els.fillPrev.addEventListener("click", () => {
+        fillPage = Math.max(0, fillPage - 1);
+        updateTradingTab(lastPayloadSnapshot || {});
+      });
+      els.fillNext.addEventListener("click", () => {
+        fillPage += 1;
+        updateTradingTab(lastPayloadSnapshot || {});
+      });
       els.insightDrawerClose.addEventListener("click", closeInsightDrawer);
       els.insightDrawerBackdrop.addEventListener("click", closeInsightDrawer);
       const tradeChart = document.getElementById("tradeChart");
@@ -2160,7 +2238,7 @@ def _read_history(path: Path, limit: int = 6000) -> List[Dict[str, Any]]:
     return rows[-limit:]
 
 
-def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 12) -> List[Dict[str, Any]]:
+def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 300) -> List[Dict[str, Any]]:
     fills: List[Dict[str, Any]] = []
     for cycle in history:
         for decision in cycle.get("decisions", []):
