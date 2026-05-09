@@ -886,7 +886,7 @@ INDEX_HTML = """<!doctype html>
           <div class="top-metric"><span>最新刷新</span><strong id="topUpdated">--</strong></div>
           <div class="top-metric"><span>当前价格</span><strong id="topPrice">--</strong></div>
           <div class="top-metric"><span>可用现金</span><strong id="topCash">--</strong></div>
-          <div class="top-metric"><span>模拟权益</span><strong id="topEquity">--</strong></div>
+          <div class="top-metric"><span>原始成本总盈亏</span><strong id="topEquity">--</strong></div>
         </div>
       </header>
 
@@ -1332,13 +1332,14 @@ INDEX_HTML = """<!doctype html>
       const schedule = (latest.scheduling_diagnostics || [])[0] || {};
       const fills = payload.recent_fills || [];
       const tradeRecords = payload.trade_records || fills;
+      const realCostBasis = payload.real_cost_basis_summary || {};
       const bars = chartBars;
       const markers = payload.live_trade_markers || [];
       const vetoes = payload.live_ai_veto_markers || [];
       const openOrders = payload.open_orders || latest.open_orders || [];
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, bars, markers, vetoes, openOrders, orderEvents, orderMarkers };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, orderEvents, orderMarkers };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1382,7 +1383,10 @@ INDEX_HTML = """<!doctype html>
       els.topUpdated.textContent = fmtTime(c.latest.generated_at || c.latest.timestamp || c.latest.timestamp_ms || payload.generated_at);
       els.topPrice.textContent = c.currentPrice ? fmtCurrency(c.currentPrice, c.quoteAsset) : "--";
       els.topCash.textContent = fmtCurrency(availableCash, c.quoteAsset);
-      els.topEquity.textContent = fmtCurrency(c.paper.total_equity, c.quoteAsset);
+      const totalPnlFromOriginal = asNumber(c.realCostBasis.total_pnl, NaN);
+      els.topEquity.textContent = Number.isFinite(totalPnlFromOriginal)
+        ? fmtCurrency(totalPnlFromOriginal, c.quoteAsset)
+        : fmtCurrency(c.paper.net_pnl, c.quoteAsset);
     }
 
     function updateTradingTab(payload) {
@@ -1394,10 +1398,12 @@ INDEX_HTML = """<!doctype html>
       const highest = asNumber(pos.highest_price || c.positionDiag.highest_price, 0);
       const holdBars = asNumber(pos.hold_bars || pos.bars_held || c.positionDiag.bars_held, 0);
       const botiUnrealized = asNumber(pos.unrealized_pnl ?? c.positionDiag.unrealized_pnl ?? c.paper.unrealized_pnl, 0);
-      const realUnrealized = qty > 0 && realAvg > 0 && c.currentPrice > 0 ? qty * (c.currentPrice - realAvg) : botiUnrealized;
-      const realTotalEquity = realAvg > 0 && qty > 0 && c.currentPrice > 0
+      const realUnrealized = asNumber(c.realCostBasis.unrealized_pnl, qty > 0 && realAvg > 0 && c.currentPrice > 0 ? qty * (c.currentPrice - realAvg) : botiUnrealized);
+      const originalTotalPnl = asNumber(c.realCostBasis.total_pnl, realUnrealized);
+      const realizedOriginalPnl = asNumber(c.realCostBasis.realized_pnl, 0);
+      const realTotalEquity = asNumber(c.realCostBasis.current_total_equity, realAvg > 0 && qty > 0 && c.currentPrice > 0
         ? asNumber(c.paper.quote_balance, 0) + qty * c.currentPrice
-        : c.paper.total_equity;
+        : c.paper.total_equity);
       const availableCash = Math.max(0, asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0) - asNumber(c.paper.reserved_quote_balance, 0));
       const realized = asNumber(c.paper.realized_pnl, 0);
       const riskLines = activeRiskLines(c);
@@ -1416,9 +1422,10 @@ INDEX_HTML = """<!doctype html>
       `;
 
       els.pnlCard.innerHTML = `
-        <div class="card-label"><span>真实仓位盈亏</span><span class="${pnlClass(realUnrealized)}">未实现</span></div>
-        <div class="card-value ${pnlClass(realUnrealized)}">${fmtCurrency(realUnrealized, c.quoteAsset)}</div>
-        <div class="card-note">Boti接管后 ${fmtCurrency(botiUnrealized, c.quoteAsset)}，模拟已实现 ${fmtCurrency(realized, c.quoteAsset)}，当前市值 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
+        <div class="card-label"><span>原始成本总盈亏</span><span class="${pnlClass(originalTotalPnl)}">总计</span></div>
+        <div class="card-value ${pnlClass(originalTotalPnl)}">${fmtCurrency(originalTotalPnl, c.quoteAsset)}</div>
+        <div class="card-note">原始已实现 ${fmtCurrency(realizedOriginalPnl, c.quoteAsset)}，原始未实现 ${fmtCurrency(realUnrealized, c.quoteAsset)}，Boti接管后 ${fmtCurrency(asNumber(c.paper.net_pnl, realized + botiUnrealized), c.quoteAsset)}</div>
+        <div class="card-note">当前权益 ${fmtCurrency(realTotalEquity, c.quoteAsset)}，原始基线 ${fmtCurrency(c.realCostBasis.original_initial_equity, c.quoteAsset)}</div>
       `;
 
       els.sellDecisionCard.innerHTML = `
@@ -2710,6 +2717,90 @@ def _build_trade_records(
     return sorted(deduped.values(), key=lambda item: _coerce_int(item.get("timestamp_ms")), reverse=True)[:limit]
 
 
+def _build_real_cost_basis_summary(
+    runtime_dir: Path,
+    paper_state: Dict[str, Any],
+    latest_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    manifest = _load_json(runtime_dir / "account_seed_manifest.json", {})
+    quote_asset = str(paper_state.get("quote_asset") or manifest.get("quote_asset") or "JPY")
+    balances = manifest.get("balances", {}) if isinstance(manifest.get("balances"), dict) else {}
+    cost_basis_by_symbol = (
+        manifest.get("cost_basis_by_symbol", {})
+        if isinstance(manifest.get("cost_basis_by_symbol"), dict)
+        else {}
+    )
+    positions = paper_state.get("positions", {}) if isinstance(paper_state.get("positions"), dict) else {}
+    market_prices = latest_report.get("market_prices", {}) if isinstance(latest_report.get("market_prices"), dict) else {}
+    if not balances or not cost_basis_by_symbol:
+        return {}
+
+    original_quote_balance = _coerce_float(balances.get(quote_asset))
+    current_quote_balance = _coerce_float(paper_state.get("quote_balance"))
+    original_cost_basis = 0.0
+    current_market_value = 0.0
+    realized_pnl = current_quote_balance - original_quote_balance
+    unrealized_pnl = 0.0
+    symbols: Dict[str, Dict[str, Any]] = {}
+
+    for symbol, basis in cost_basis_by_symbol.items():
+        if not isinstance(basis, dict):
+            continue
+        average_entry_price = _coerce_float(basis.get("average_entry_price"))
+        if average_entry_price <= 0:
+            continue
+        base_asset = _base_asset_from_symbol(str(symbol), quote_asset)
+        original_quantity = _coerce_float(balances.get(base_asset))
+        position = positions.get(symbol, {}) if isinstance(positions.get(symbol), dict) else {}
+        current_quantity = _coerce_float(position.get("quantity"))
+        current_price = _coerce_float(
+            market_prices.get(symbol),
+            _coerce_float(position.get("average_entry_price"), _coerce_float(position.get("highest_price"))),
+        )
+        sold_quantity = max(0.0, original_quantity - current_quantity)
+        symbol_original_cost = original_quantity * average_entry_price
+        symbol_current_value = current_quantity * current_price
+        symbol_unrealized = current_quantity * (current_price - average_entry_price)
+
+        original_cost_basis += symbol_original_cost
+        current_market_value += symbol_current_value
+        realized_pnl -= sold_quantity * average_entry_price
+        unrealized_pnl += symbol_unrealized
+        symbols[symbol] = {
+            "base_asset": base_asset,
+            "original_quantity": original_quantity,
+            "current_quantity": current_quantity,
+            "sold_quantity": sold_quantity,
+            "average_entry_price": average_entry_price,
+            "current_price": current_price,
+            "original_cost_basis": symbol_original_cost,
+            "current_market_value": symbol_current_value,
+            "realized_pnl": None,
+            "unrealized_pnl": symbol_unrealized,
+            "source": basis.get("source", ""),
+        }
+
+    original_initial_equity = original_quote_balance + original_cost_basis
+    current_total_equity = current_quote_balance + current_market_value
+    total_pnl = current_total_equity - original_initial_equity
+    if len(symbols) == 1:
+        only_symbol = next(iter(symbols))
+        symbols[only_symbol]["realized_pnl"] = realized_pnl
+    return {
+        "quote_asset": quote_asset,
+        "original_quote_balance": original_quote_balance,
+        "current_quote_balance": current_quote_balance,
+        "original_cost_basis": original_cost_basis,
+        "original_initial_equity": original_initial_equity,
+        "current_market_value": current_market_value,
+        "current_total_equity": current_total_equity,
+        "realized_pnl": realized_pnl,
+        "unrealized_pnl": unrealized_pnl,
+        "total_pnl": total_pnl,
+        "symbols": symbols,
+    }
+
+
 def _extract_live_trade_markers(history: List[Dict[str, Any]], limit: int = 200) -> List[Dict[str, Any]]:
     markers: List[Dict[str, Any]] = []
     for cycle in history:
@@ -3368,6 +3459,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
     order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report)
     trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate)
+    real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
 
     return {
         "latest_report": latest_report,
@@ -3378,6 +3470,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "open_orders": open_orders,
         "order_lifecycle_events": order_lifecycle_events,
         "trade_records": trade_records,
+        "real_cost_basis_summary": real_cost_basis_summary,
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "decision_ledger": _extract_decision_ledger(history, latest_report),
         "position_activation_state": paper_state.get("activation_state", {}),

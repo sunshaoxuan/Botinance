@@ -42,6 +42,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("trade-fill-panel", INDEX_HTML)
         self.assertIn("订单与成交记录", INDEX_HTML)
         self.assertIn("冻结资产", INDEX_HTML)
+        self.assertIn("原始成本总盈亏", INDEX_HTML)
+        self.assertIn("real_cost_basis_summary", INDEX_HTML)
         self.assertIn("\"状态\", \"方向\", \"数量\", \"价格\", \"冻结\", \"手续费\", \"已实现\", \"时间\"", INDEX_HTML)
         self.assertIn("fillPageSize", INDEX_HTML)
         self.assertIn("fillPrev", INDEX_HTML)
@@ -104,6 +106,13 @@ class DashboardServerTests(unittest.TestCase):
                 {
                     "quote_asset": "JPY",
                     "quote_balance": 1000.0,
+                    "positions": {
+                        "XRPJPY": {
+                            "quantity": 2.0,
+                            "average_entry_price": 220.0,
+                            "highest_price": 223.4,
+                        }
+                    },
                     "open_orders": {
                         "order-1": {
                             "client_order_id": "order-1",
@@ -118,6 +127,19 @@ class DashboardServerTests(unittest.TestCase):
                             "created_at_ms": 1_000,
                             "updated_at_ms": 1_000,
                             "expires_at_ms": 10_000,
+                        }
+                    },
+                },
+            )
+            _write_json(
+                runtime_dir / "account_seed_manifest.json",
+                {
+                    "quote_asset": "JPY",
+                    "balances": {"JPY": 100.0, "XRP": 10.0},
+                    "cost_basis_by_symbol": {
+                        "XRPJPY": {
+                            "source": "binance_my_trades_fifo",
+                            "average_entry_price": 200.0,
                         }
                     },
                 },
@@ -215,6 +237,13 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["trade_records"][0]["reserved_quote"], 220.5)
         self.assertEqual(len(payload["order_markers"]), 1)
         self.assertEqual(payload["order_markers"][0]["status"], "OPEN")
+        self.assertEqual(payload["real_cost_basis_summary"]["quote_asset"], "JPY")
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["original_initial_equity"], 2100.0)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["current_total_equity"], 1446.8)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["realized_pnl"], -700.0)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["unrealized_pnl"], 46.8)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["total_pnl"], -653.2)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["symbols"]["XRPJPY"]["sold_quantity"], 8.0)
 
     def test_dashboard_payload_can_defer_chart_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -349,6 +378,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["order_lifecycle_events"], [])
         self.assertEqual(payload["trade_records"], [])
         self.assertEqual(payload["order_markers"], [])
+        self.assertEqual(payload["real_cost_basis_summary"], {})
 
     def test_build_dashboard_payload_uses_cached_requested_chart_interval(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
