@@ -858,6 +858,7 @@ INDEX_HTML = """<!doctype html>
     const refreshMs = 2000;
     let activeTab = "trading";
     let lastPayloadSnapshot = null;
+    let chartHover = { active: false, x: 0, y: 0 };
 
     const els = {};
     const ids = [
@@ -1381,7 +1382,8 @@ INDEX_HTML = """<!doctype html>
           markers: c.markers,
           vetoes: c.vetoes,
           riskLines: activeRiskLines(c).numeric,
-          quoteAsset: c.quoteAsset
+          quoteAsset: c.quoteAsset,
+          hover: chartHover
         });
       }
       if (activeTab === "backtest") {
@@ -1538,6 +1540,88 @@ INDEX_HTML = """<!doctype html>
       ctx.fillStyle = "#fff";
       ctx.textAlign = "center";
       ctx.fillText(fmtNumber(last.close, 3), width - pad.right + 33, lastY + 4);
+
+      drawChartHover(ctx, {
+        hover: options.hover,
+        data,
+        x,
+        y,
+        pad,
+        plotW,
+        priceH,
+        volumeTop,
+        volumeHeight,
+        width,
+        height,
+        quoteAsset: options.quoteAsset || ""
+      });
+    }
+
+    function drawChartHover(ctx, options) {
+      const hover = options.hover || {};
+      if (!hover.active || !options.data.length) return;
+      const chartRight = options.width - options.pad.right;
+      const chartBottom = options.height - options.pad.bottom;
+      if (hover.x < options.pad.left || hover.x > chartRight || hover.y < options.pad.top || hover.y > chartBottom) return;
+
+      const slot = options.plotW / options.data.length;
+      const idx = Math.max(0, Math.min(options.data.length - 1, Math.floor((hover.x - options.pad.left) / slot)));
+      const bar = options.data[idx];
+      const cx = options.x(idx);
+      const close = asNumber(bar.close);
+      const cy = hover.y <= options.volumeTop ? options.y(close) : hover.y;
+      const volume = asNumber(bar.volume, NaN);
+      const samples = asNumber(bar.sample_count, NaN);
+      const volumeText = Number.isFinite(volume) && volume > 0
+        ? `量 ${fmtNumber(volume, 2)}`
+        : `样本 ${Number.isFinite(samples) ? fmtNumber(samples, 0) : "--"}`;
+      const lines = [
+        fmtTime(bar.time || bar.open_time || bar.close_time),
+        `开 ${fmtNumber(bar.open, 4)}  高 ${fmtNumber(bar.high, 4)}`,
+        `低 ${fmtNumber(bar.low, 4)}  收 ${fmtNumber(bar.close, 4)}`,
+        volumeText
+      ];
+
+      ctx.save();
+      ctx.strokeStyle = "rgba(31, 63, 109, 0.42)";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 4]);
+      ctx.beginPath();
+      ctx.moveTo(cx, options.pad.top);
+      ctx.lineTo(cx, chartBottom);
+      ctx.moveTo(options.pad.left, cy);
+      ctx.lineTo(chartRight, cy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = "#1f3f6d";
+      ctx.beginPath();
+      ctx.roundRect(chartRight + 8, cy - 10, 50, 20, 4);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "700 10px SFMono-Regular, Menlo, monospace";
+      ctx.textAlign = "center";
+      ctx.fillText(fmtNumber(close, 3), chartRight + 33, cy + 4);
+
+      const boxW = 196;
+      const boxH = 86;
+      const boxX = cx + boxW + 16 > chartRight ? cx - boxW - 12 : cx + 12;
+      const boxY = Math.max(options.pad.top + 6, Math.min(chartBottom - boxH - 6, hover.y - boxH / 2));
+      ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
+      ctx.strokeStyle = "rgba(150, 164, 184, 0.65)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxW, boxH, 7);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#172033";
+      ctx.font = "700 11px SFMono-Regular, Menlo, monospace";
+      ctx.textAlign = "left";
+      lines.forEach((line, i) => {
+        ctx.fillStyle = i === 0 ? "#536176" : "#172033";
+        ctx.fillText(line, boxX + 10, boxY + 18 + i * 17);
+      });
+      ctx.restore();
     }
 
     function buildTimeIndex(data) {
@@ -1715,6 +1799,22 @@ INDEX_HTML = """<!doctype html>
       document.querySelectorAll("[data-tab]").forEach((btn) => {
         btn.addEventListener("click", () => activateTab(btn.dataset.tab));
       });
+      const tradeChart = document.getElementById("tradeChart");
+      if (tradeChart) {
+        tradeChart.addEventListener("mousemove", (event) => {
+          const rect = tradeChart.getBoundingClientRect();
+          chartHover = {
+            active: true,
+            x: event.clientX - rect.left,
+            y: event.clientY - rect.top
+          };
+          redrawCharts(lastPayloadSnapshot);
+        });
+        tradeChart.addEventListener("mouseleave", () => {
+          chartHover = { active: false, x: 0, y: 0 };
+          redrawCharts(lastPayloadSnapshot);
+        });
+      }
       window.addEventListener("resize", () => redrawCharts(lastPayloadSnapshot));
     }
 
