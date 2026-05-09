@@ -263,6 +263,35 @@ Every cycle now records:
 - `decision_ledger`: per-cycle decision snapshots for historical review
 - `activation_state`: pending buyback quantity, last grid sell price, daily grid count, and last activation reason
 
+## Ultra-short paper profile
+
+For short-horizon paper testing, keep `DRY_RUN=true` and use a 1m main cycle with a 5m trend filter. The visual runner can still refresh every 3 seconds, but decisions are gated by the 1m closed candle, price-move threshold, or active exit/order events. This keeps REST usage well below Binance Spot API rate-limit headers while allowing quick simulated limit-order lifecycle testing.
+
+Current XRPJPY paper-test profile:
+
+```env
+KLINE_INTERVAL=1m
+KLINE_LIMIT=180
+FAST_WINDOW=3
+SLOW_WINDOW=9
+MTF_ENTRY_INTERVAL=1m
+MTF_ENTRY_FAST_WINDOW=2
+MTF_ENTRY_SLOW_WINDOW=5
+MTF_TREND_INTERVAL=5m
+MTF_TREND_FAST_WINDOW=6
+MTF_TREND_SLOW_WINDOW=18
+DECISION_PRICE_MOVE_THRESHOLD_PCT=0.0015
+STOP_LOSS_PCT=0.003
+TAKE_PROFIT_PCT=0.004
+TRAILING_STOP_PCT=0.0025
+GRID_SELL_STEP_PCT=0.0015
+GRID_BUYBACK_STEP_PCT=0.0012
+GRID_SELL_FRACTION=0.15
+GRID_MAX_DAILY_TRADES=30
+ORDER_TTL_SECONDS=45
+ORDER_CANCEL_DEVIATION_PCT=0.0015
+```
+
 Stop the monitor and dashboard cleanly:
 
 ```bash
