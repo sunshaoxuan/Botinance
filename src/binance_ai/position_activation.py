@@ -73,6 +73,19 @@ class PositionActivationEngine:
                 reason=f"浮盈 {unrealized_pct:.4%} 达到网格卖出阈值",
             )
         if unrealized_pct < 0 and self.settings.grid_allow_loss_recovery_sell:
+            cost_basis_source = str(state.get("cost_basis_source", ""))
+            if cost_basis_source and cost_basis_source != "binance_my_trades_fifo":
+                state["last_trigger"] = "grid_loss_recovery_blocked"
+                state["last_reason"] = "真实成本未确认，禁止亏损修复网格卖出"
+                return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
+            loss_recovery_threshold = max(0.0, self.settings.grid_loss_recovery_sell_step_pct)
+            if abs(unrealized_pct) < loss_recovery_threshold:
+                state["last_trigger"] = "grid_loss_recovery_wait"
+                state["last_reason"] = (
+                    f"浮亏 {unrealized_pct:.4%} 未达到亏损修复卖出阈值 "
+                    f"{loss_recovery_threshold:.4%}"
+                )
+                return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
             return self._build_grid_sell(
                 symbol=symbol,
                 price=price,

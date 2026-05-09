@@ -76,6 +76,7 @@ class Settings:
     grid_min_core_position_fraction: float = 0.25
     grid_max_daily_trades: int = 8
     grid_allow_loss_recovery_sell: bool = True
+    grid_loss_recovery_sell_step_pct: float = 0.003
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -137,4 +138,5 @@ def load_settings() -> Settings:
         grid_min_core_position_fraction=float(os.getenv("GRID_MIN_CORE_POSITION_FRACTION", "0.25")),
         grid_max_daily_trades=int(os.getenv("GRID_MAX_DAILY_TRADES", "8")),
         grid_allow_loss_recovery_sell=_parse_bool(os.getenv("GRID_ALLOW_LOSS_RECOVERY_SELL"), True),
+        grid_loss_recovery_sell_step_pct=float(os.getenv("GRID_LOSS_RECOVERY_SELL_STEP_PCT", "0.003")),
     )

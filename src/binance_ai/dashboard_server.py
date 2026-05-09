@@ -1070,6 +1070,7 @@ INDEX_HTML = """<!doctype html>
       const pos = c.position || {};
       const qty = asNumber(pos.quantity || c.positionDiag.quantity, 0);
       const avg = asNumber(pos.average_entry_price || pos.entry_price || c.positionDiag.average_entry_price, 0);
+      const realAvg = asNumber(c.activationState.real_average_entry_price, 0);
       const highest = asNumber(pos.highest_price || c.positionDiag.highest_price, 0);
       const holdBars = asNumber(pos.hold_bars || pos.bars_held || c.positionDiag.bars_held, 0);
       const unrealized = asNumber(pos.unrealized_pnl ?? c.positionDiag.unrealized_pnl ?? c.paper.unrealized_pnl, 0);
@@ -1085,11 +1086,11 @@ INDEX_HTML = """<!doctype html>
       els.positionCard.innerHTML = `
         <div class="card-label"><span>当前持仓</span>${qty > 0 ? statusChip("持仓中", "buy") : statusChip("空仓", "wait")}</div>
         <div class="card-value">${qty > 0 ? `${fmtNumber(qty, 6)} XRP` : "0 XRP"}</div>
-        <div class="card-note">均价 ${avg ? fmtCurrency(avg, c.quoteAsset) : "--"}，最高价 ${fmtCurrency(highest, c.quoteAsset)}，持仓 K 线 ${fmtNumber(holdBars, 0)}</div>
+        <div class="card-note">模拟参考 ${avg ? fmtCurrency(avg, c.quoteAsset) : "--"}${realAvg ? `，真实成本 ${fmtCurrency(realAvg, c.quoteAsset)}` : ""}，最高价 ${fmtCurrency(highest, c.quoteAsset)}</div>
       `;
 
       els.pnlCard.innerHTML = `
-        <div class="card-label"><span>模拟盈亏</span><span class="${pnlClass(unrealized)}">未实现</span></div>
+        <div class="card-label"><span>模拟起点盈亏</span><span class="${pnlClass(unrealized)}">未实现</span></div>
         <div class="card-value ${pnlClass(unrealized)}">${fmtCurrency(unrealized, c.quoteAsset)}</div>
         <div class="card-note">已实现 ${fmtCurrency(realized, c.quoteAsset)}，总权益 ${fmtCurrency(c.paper.total_equity, c.quoteAsset)}</div>
       `;
@@ -1222,6 +1223,9 @@ INDEX_HTML = """<!doctype html>
         ["最近触发", escapeHtml(activation.last_trigger || sell.activation_trigger || "--")],
         ["待回补数量", escapeHtml(fmtNumber(activation.pending_buyback_quantity, 8))],
         ["最近网格卖价", escapeHtml(fmtCurrency(activation.last_grid_sell_price, c.quoteAsset))],
+        ["同步参考价", escapeHtml(fmtCurrency(activation.seed_price, c.quoteAsset))],
+        ["真实成本", escapeHtml(fmtCurrency(activation.real_average_entry_price, c.quoteAsset))],
+        ["成本来源", escapeHtml(activation.cost_basis_source || "--")],
         ["当日次数", escapeHtml(`${activation.daily_trade_count ?? 0} / 8`)],
         ["最近原因", escapeHtml(activation.last_reason || "--")]
       ]);

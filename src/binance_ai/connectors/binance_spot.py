@@ -123,6 +123,14 @@ class BinanceSpotClient:
                 balances[item["asset"]] = total
         return balances
 
+    def get_my_trades(self, symbol: str, limit: int = 1000) -> List[Dict[str, Any]]:
+        payload = self._signed_request(
+            "GET",
+            "/api/v3/myTrades",
+            params={"symbol": symbol, "limit": limit},
+        )
+        return list(payload)
+
     def get_symbol_filters(self, symbol: str) -> SymbolFilters:
         payload = self._public_get("/api/v3/exchangeInfo", params={"symbol": symbol})
         symbol_info = payload["symbols"][0]

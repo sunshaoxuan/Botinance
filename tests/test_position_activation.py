@@ -97,6 +97,29 @@ class PositionActivationEngineTests(unittest.TestCase):
             quote_balance=100.0,
             initial_quote_balance=1000.0,
             positions={"XRPJPY": PositionSnapshot(quantity=100.0, average_entry_price=100.0, highest_price=100.0)},
+            activation_state={"XRPJPY": {"cost_basis_source": "binance_my_trades_fifo"}},
+        )
+        decision = engine.evaluate(
+            symbol="XRPJPY",
+            price=99.69,
+            account=AccountSnapshot({"JPY": 100.0, "XRP": 100.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            snapshot=snapshot,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        self.assertEqual(decision.action, "SELL")
+        self.assertEqual(decision.trigger, "grid_loss_recovery_sell")
+        self.assertAlmostEqual(decision.quantity, 25.0)
+
+    def test_loss_recovery_waits_until_threshold(self) -> None:
+        engine = PositionActivationEngine(_settings(), _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=100.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=100.0, average_entry_price=100.0, highest_price=100.0)},
+            activation_state={"XRPJPY": {"cost_basis_source": "binance_my_trades_fifo"}},
         )
         decision = engine.evaluate(
             symbol="XRPJPY",
@@ -107,9 +130,29 @@ class PositionActivationEngineTests(unittest.TestCase):
             timestamp_ms=1_778_300_000_000,
         )
 
-        self.assertEqual(decision.action, "SELL")
-        self.assertEqual(decision.trigger, "grid_loss_recovery_sell")
-        self.assertAlmostEqual(decision.quantity, 25.0)
+        self.assertEqual(decision.action, "HOLD")
+        self.assertEqual(decision.state_update["last_trigger"], "grid_loss_recovery_wait")
+
+    def test_loss_recovery_is_blocked_when_cost_basis_is_seed_price(self) -> None:
+        engine = PositionActivationEngine(_settings(), _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=100.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=100.0, average_entry_price=100.0, highest_price=100.0)},
+            activation_state={"XRPJPY": {"cost_basis_source": "sync_current_price"}},
+        )
+        decision = engine.evaluate(
+            symbol="XRPJPY",
+            price=99.0,
+            account=AccountSnapshot({"JPY": 100.0, "XRP": 100.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            snapshot=snapshot,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        self.assertEqual(decision.action, "HOLD")
+        self.assertEqual(decision.state_update["last_trigger"], "grid_loss_recovery_blocked")
 
     def test_daily_trade_limit_blocks_activation(self) -> None:
         engine = PositionActivationEngine(_settings(), _Client())
