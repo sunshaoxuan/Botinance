@@ -449,9 +449,59 @@ INDEX_HTML = """<!doctype html>
     .bottom-insight-grid {
       display: grid;
       grid-template-columns: 1.05fr 1fr 1fr;
-      gap: 12px;
+      gap: 0;
       margin-top: 12px;
-      align-items: start;
+      padding: 10px;
+      align-items: stretch;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255, 255, 255, 0.86);
+      box-shadow: var(--shadow-soft);
+      overflow: hidden;
+    }
+
+    .bottom-insight-grid > .panel {
+      display: flex;
+      min-height: 236px;
+      border: 0;
+      border-right: 1px solid rgba(215, 224, 234, 0.82);
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .bottom-insight-grid > .panel:last-child {
+      border-right: 0;
+    }
+
+    .bottom-insight-grid .panel-header {
+      padding: 8px 11px 7px;
+      border-bottom-color: rgba(215, 224, 234, 0.68);
+    }
+
+    .bottom-insight-grid .panel-body {
+      min-height: 0;
+      padding: 10px 11px;
+      overflow: auto;
+      flex: 1;
+    }
+
+    .bottom-insight-grid .table-wrap {
+      border-color: rgba(215, 224, 234, 0.8);
+    }
+
+    .bottom-insight-grid .scroll-table {
+      max-height: 172px;
+    }
+
+    .bottom-insight-grid .timeline {
+      gap: 7px;
+    }
+
+    .bottom-insight-grid .timeline-item {
+      padding: 8px 9px 8px 28px;
     }
 
     .page-grid-2 {
@@ -646,6 +696,16 @@ INDEX_HTML = """<!doctype html>
       .bottom-insight-grid,
       .page-grid-3 {
         grid-template-columns: 1fr;
+      }
+
+      .bottom-insight-grid > .panel {
+        min-height: auto;
+        border-right: 0;
+        border-bottom: 1px solid rgba(215, 224, 234, 0.82);
+      }
+
+      .bottom-insight-grid > .panel:last-child {
+        border-bottom: 0;
       }
     }
 
