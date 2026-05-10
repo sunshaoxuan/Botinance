@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from binance_ai.config import Settings
@@ -370,7 +371,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             llm_timeout_seconds=20,
             news_refresh_seconds=120,
             stop_loss_pct=0.50,
-            take_profit_pct=0.50,
+            take_profit_pct=0.001,
             trailing_stop_pct=0.50,
             max_hold_bars=999,
             decision_price_move_threshold_pct=0.0,
@@ -429,9 +430,270 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(first_report.decisions[0].execution_result["trigger"], "strategy_sell")
         self.assertTrue(any(event.status == "FILLED" and event.trigger == "strategy_sell" for event in second_report.order_lifecycle_events))
         state = snapshot.activation_state["XRPJPY"]
-        self.assertEqual(state["last_trigger"], "strategy_release_sell")
+        self.assertEqual(state["last_trigger"], "grid_wait_buyback")
+        self.assertIn("等待回补", state["last_reason"])
         self.assertAlmostEqual(state["pending_buyback_quantity"], 50.0)
         self.assertAlmostEqual(state["last_grid_sell_price"], first_report.decisions[0].execution_result["limit_price"])
+        self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 50.0)
+
+    def test_pending_buyback_blocks_repeated_strategy_sell(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=10.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.001,
+            trailing_stop_pct=0.50,
+            max_hold_bars=999,
+            decision_price_move_threshold_pct=0.0,
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.7,
+                high=100.7,
+                low=100.7,
+                close=100.7,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 20000.0, runtime_dir / "paper_state.json")
+            portfolio.apply_order(
+                order=OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=50.0),
+                fill_price=100.0,
+            )
+            snapshot = portfolio.load_snapshot()
+            portfolio.save_snapshot(
+                replace(
+                    snapshot,
+                    activation_state={
+                        "XRPJPY": {
+                            "daily_trade_day": "2026-05-10",
+                            "daily_trade_count": 1,
+                            "pending_buyback_quantity": 50.0,
+                            "last_grid_sell_price": 100.0,
+                        }
+                    },
+                )
+            )
+            engine = TradingEngine(
+                settings=settings,
+                client=_QuantizingClientStub(),
+                market_data=_MarketDataStub(candles),
+                strategy=_SellStrategyStub(),
+                risk=RiskEngine(settings, _QuantizingClientStub()),
+                executor=OrderExecutor(settings, _QuantizingClientStub(), paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertEqual(report.decisions[0].signal.action, SignalAction.HOLD)
+        self.assertIn("暂停继续策略释放卖出", report.decisions[0].signal.reason)
+        self.assertEqual(report.decisions[0].execution_result["status"], "NO_ACTION")
+        self.assertEqual(snapshot.open_orders, {})
+        self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 50.0)
+        self.assertAlmostEqual(snapshot.activation_state["XRPJPY"]["pending_buyback_quantity"], 50.0)
+
+    def test_pending_buyback_order_takes_priority_over_strategy_sell(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=10.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.001,
+            trailing_stop_pct=0.50,
+            max_hold_bars=999,
+            decision_price_move_threshold_pct=0.0,
+            grid_buyback_step_pct=0.0025,
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.7,
+                high=100.7,
+                low=100.7,
+                close=100.7,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 20000.0, runtime_dir / "paper_state.json")
+            portfolio.apply_order(
+                order=OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=50.0),
+                fill_price=100.0,
+            )
+            snapshot = portfolio.load_snapshot()
+            portfolio.save_snapshot(
+                replace(
+                    snapshot,
+                    activation_state={
+                        "XRPJPY": {
+                            "daily_trade_day": "2026-05-10",
+                            "daily_trade_count": 1,
+                            "pending_buyback_quantity": 50.0,
+                            "last_grid_sell_price": 101.0,
+                        }
+                    },
+                )
+            )
+            client = _QuantizingClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_SellStrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertEqual(report.decisions[0].signal.action, SignalAction.HOLD)
+        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "grid_buyback")
+        self.assertEqual(next(iter(snapshot.open_orders.values())).side, "BUY")
+
+    def test_pending_buyback_blocks_repeated_partial_exit_rules(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=10.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.001,
+            trailing_stop_pct=0.50,
+            max_hold_bars=0,
+            decision_price_move_threshold_pct=0.0,
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.7,
+                high=100.7,
+                low=100.7,
+                close=100.7,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 20000.0, runtime_dir / "paper_state.json")
+            portfolio.apply_order(
+                order=OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=50.0),
+                fill_price=100.0,
+                timestamp_ms=1,
+                entry_candle_close_time_ms=1,
+            )
+            snapshot = portfolio.load_snapshot()
+            portfolio.save_snapshot(
+                replace(
+                    snapshot,
+                    activation_state={
+                        "XRPJPY": {
+                            "daily_trade_day": "2026-05-10",
+                            "daily_trade_count": 1,
+                            "pending_buyback_quantity": 50.0,
+                            "last_grid_sell_price": 100.0,
+                        }
+                    },
+                )
+            )
+            client = _QuantizingClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_HoldStrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertEqual(report.decisions[0].signal.action, SignalAction.HOLD)
+        self.assertIn("暂停继续部分退出", report.decisions[0].signal.reason)
+        self.assertEqual(report.decisions[0].execution_result["status"], "NO_ACTION")
+        self.assertEqual(snapshot.open_orders, {})
         self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 50.0)
 
 

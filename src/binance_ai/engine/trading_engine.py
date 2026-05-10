@@ -146,6 +146,27 @@ class TradingEngine:
                 filters=filters,
                 timestamp_ms=cycle_timestamp_ms,
             )
+            release_exit_block_reason = self._release_exit_buyback_block_reason(
+                symbol=symbol,
+                exit_reason=exit_reason,
+                activation_decision=activation_decision,
+            )
+            if release_exit_block_reason:
+                exit_reason = None
+            strategy_sell_block_reason = self._strategy_sell_buyback_block_reason(
+                symbol=symbol,
+                signal=signal,
+                has_position=has_position,
+                exit_reason=exit_reason,
+                activation_decision=activation_decision,
+            )
+            if strategy_sell_block_reason or release_exit_block_reason:
+                signal = replace(
+                    signal,
+                    action=SignalAction.HOLD,
+                    confidence=min(signal.confidence, 0.5),
+                    reason=strategy_sell_block_reason or release_exit_block_reason,
+                )
             scheduler_exit_reason = exit_reason or (
                 activation_decision.trigger if activation_decision.order is not None else None
             )
@@ -560,6 +581,58 @@ class TradingEngine:
             snapshot=snapshot,
             timestamp_ms=timestamp_ms,
         )
+
+    def _strategy_sell_buyback_block_reason(
+        self,
+        *,
+        symbol: str,
+        signal,
+        has_position: bool,
+        exit_reason: str | None,
+        activation_decision: PositionActivationDecision,
+    ) -> str:
+        if not has_position or signal.action != SignalAction.SELL or exit_reason:
+            return ""
+        if activation_decision.trigger == "grid_buyback" and activation_decision.order is not None:
+            return "已有释放仓位到达回补线，本轮优先回补买入，暂停策略卖出"
+        if self.paper_portfolio is None:
+            return ""
+        state = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
+        pending_qty = 0.0
+        if isinstance(state, dict):
+            try:
+                pending_qty = float(state.get("pending_buyback_quantity", 0.0))
+            except (TypeError, ValueError):
+                pending_qty = 0.0
+        if pending_qty <= 0:
+            return ""
+        detail = activation_decision.reason or "等待回补"
+        return f"已有 {pending_qty:.8f} 待回补仓位，暂停继续策略释放卖出；{detail}"
+
+    def _release_exit_buyback_block_reason(
+        self,
+        *,
+        symbol: str,
+        exit_reason: str | None,
+        activation_decision: PositionActivationDecision,
+    ) -> str:
+        if exit_reason not in {"take_profit", "trailing_stop", "max_hold_exit"}:
+            return ""
+        if activation_decision.trigger == "grid_buyback" and activation_decision.order is not None:
+            return "已有释放仓位到达回补线，本轮优先回补买入，暂停继续部分退出"
+        if self.paper_portfolio is None:
+            return ""
+        state = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
+        pending_qty = 0.0
+        if isinstance(state, dict):
+            try:
+                pending_qty = float(state.get("pending_buyback_quantity", 0.0))
+            except (TypeError, ValueError):
+                pending_qty = 0.0
+        if pending_qty <= 0:
+            return ""
+        detail = activation_decision.reason or "等待回补"
+        return f"已有 {pending_qty:.8f} 待回补仓位，暂停继续部分退出 {exit_reason}；{detail}"
 
     def _record_position_activation_success(
         self,
