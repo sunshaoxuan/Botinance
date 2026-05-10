@@ -2348,8 +2348,9 @@ INDEX_HTML = """<!doctype html>
       return payload;
     }
 
-    async function tick() {
-      if (tickInFlight) return;
+    async function tick(options = {}) {
+      const force = options.force === true;
+      if (tickInFlight && !force) return;
       tickInFlight = true;
       const requestSeq = ++dashboardRequestSeq;
       const chartInterval = selectedChartInterval;
@@ -2385,7 +2386,7 @@ INDEX_HTML = """<!doctype html>
         els.topMode.textContent = "数据读取失败";
         setChartLoading(false, "图表读取失败，其他数据保留");
       } finally {
-        tickInFlight = false;
+        if (requestSeq === dashboardRequestSeq) tickInFlight = false;
       }
     }
 
@@ -2399,14 +2400,16 @@ INDEX_HTML = """<!doctype html>
       els.chartIntervalSelect.addEventListener("change", () => {
         selectedChartInterval = els.chartIntervalSelect.value || "1m";
         window.localStorage.setItem("boti.chartInterval", selectedChartInterval);
+        dashboardRequestSeq += 1;
         if (chartBarsCache[selectedChartInterval]?.length && lastPayloadSnapshot) {
           scheduleChartRender({
             ...lastPayloadSnapshot,
+            requested_chart_interval: selectedChartInterval,
             live_chart_interval: selectedChartInterval,
             live_chart_bars: chartBarsCache[selectedChartInterval],
           }, { showLoading: false });
         }
-        tick();
+        tick({ force: true });
       });
       els.fillPageSize.addEventListener("change", () => {
         fillPageSize = Number(els.fillPageSize.value) || 50;
@@ -3591,6 +3594,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         try:
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)

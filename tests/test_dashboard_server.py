@@ -62,6 +62,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
         self.assertIn("chartRenderSeq", INDEX_HTML)
         self.assertIn("tickInFlight", INDEX_HTML)
+        self.assertIn("async function tick(options = {})", INDEX_HTML)
+        self.assertIn("tick({ force: true })", INDEX_HTML)
+        self.assertIn("dashboardRequestSeq += 1", INDEX_HTML)
         self.assertIn("setChartLoading(false", INDEX_HTML)
         self.assertIn("requestSeq !== dashboardRequestSeq", INDEX_HTML)
         self.assertIn("payload.requested_chart_interval || selectedChartInterval", INDEX_HTML)
@@ -89,6 +92,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("volumeHeight", INDEX_HTML)
         self.assertIn("barVolumeValue", INDEX_HTML)
         self.assertNotIn("sample_count || b.volume", INDEX_HTML)
+
+    def test_dashboard_html_disables_browser_cache(self) -> None:
+        self.assertIn('self.send_header("Cache-Control", "no-store")', Path("src/binance_ai/dashboard_server.py").read_text(encoding="utf-8"))
 
     def test_build_dashboard_payload_prefers_walk_forward_directory(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
