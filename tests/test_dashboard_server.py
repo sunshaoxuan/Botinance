@@ -58,6 +58,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("图表后台加载", INDEX_HTML)
         self.assertIn("后台读取 ${chartInterval} K 线", INDEX_HTML)
         self.assertNotIn("chart-loading active", INDEX_HTML)
+        self.assertLess(INDEX_HTML.find("const realized ="), INDEX_HTML.find("const botiNetPnl ="))
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
         self.assertIn("chartRenderSeq", INDEX_HTML)
         self.assertIn("tickInFlight", INDEX_HTML)

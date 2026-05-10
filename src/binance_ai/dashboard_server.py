@@ -1405,13 +1405,13 @@ INDEX_HTML = """<!doctype html>
       const realUnrealized = asNumber(c.realCostBasis.unrealized_pnl, qty > 0 && realAvg > 0 && c.currentPrice > 0 ? qty * (c.currentPrice - realAvg) : botiUnrealized);
       const originalTotalPnl = asNumber(c.realCostBasis.total_pnl, realUnrealized);
       const realizedOriginalPnl = asNumber(c.realCostBasis.realized_pnl, 0);
+      const realized = asNumber(c.paper.realized_pnl, 0);
       const botiNetPnl = asNumber(c.realCostBasis.boti_net_pnl, asNumber(c.paper.net_pnl, realized + botiUnrealized));
       const botiInitialEquity = asNumber(c.realCostBasis.boti_initial_equity, NaN);
       const realTotalEquity = asNumber(c.realCostBasis.current_total_equity, realAvg > 0 && qty > 0 && c.currentPrice > 0
         ? asNumber(c.paper.quote_balance, 0) + qty * c.currentPrice
         : c.paper.total_equity);
       const availableCash = Math.max(0, asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0) - asNumber(c.paper.reserved_quote_balance, 0));
-      const realized = asNumber(c.paper.realized_pnl, 0);
       const riskLines = activeRiskLines(c);
       const allowEntry = c.aiRisk.allow_entry;
       const executionResult = c.executionStatus || "无执行";
