@@ -1310,7 +1310,7 @@ INDEX_HTML = """<!doctype html>
       const positions = paper.positions || {};
       const position = positions[symbol] || null;
       const quoteAsset = primary.quote_asset || paper.quote_asset || "JPY";
-      const requestedInterval = payload.live_chart_interval || selectedChartInterval || "1m";
+      const requestedInterval = payload.requested_chart_interval || selectedChartInterval || payload.live_chart_interval || "1m";
       if (payload.live_chart_bars?.length) {
         chartBarsCache[requestedInterval] = payload.live_chart_bars;
       }
@@ -1360,10 +1360,9 @@ INDEX_HTML = """<!doctype html>
           <option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>
         `).join("");
       }
-      const responseInterval = payload.live_chart_interval || selectedChartInterval;
-      const requestInterval = payload.requested_chart_interval || responseInterval;
-      if (requestInterval === selectedChartInterval) {
-        selectedChartInterval = responseInterval;
+      const requestedInterval = payload.requested_chart_interval || selectedChartInterval || payload.live_chart_interval || "1m";
+      if (!options.some((item) => item.value === selectedChartInterval)) {
+        selectedChartInterval = options.some((item) => item.value === requestedInterval) ? requestedInterval : options[0].value;
       }
       window.localStorage.setItem("boti.chartInterval", selectedChartInterval);
       els.chartIntervalSelect.value = selectedChartInterval;
