@@ -1147,6 +1147,30 @@ INDEX_HTML = """<!doctype html>
       return fmtShortTime(value);
     }
 
+    function chartMaConfig(payload) {
+      const cfg = payload.runtime_config || {};
+      const interval = payload.live_chart_interval || selectedChartInterval || "1m";
+      if (interval === cfg.mtf_trend_interval) {
+        return {
+          label: `${interval} 趋势`,
+          fastWindow: Number(cfg.mtf_trend_fast_window || 0),
+          slowWindow: Number(cfg.mtf_trend_slow_window || 0),
+        };
+      }
+      if (interval === cfg.mtf_entry_interval) {
+        return {
+          label: `${interval} 入场`,
+          fastWindow: Number(cfg.mtf_entry_fast_window || 0),
+          slowWindow: Number(cfg.mtf_entry_slow_window || 0),
+        };
+      }
+      return {
+        label: `${interval} 主策略`,
+        fastWindow: Number(cfg.fast_window || 0),
+        slowWindow: Number(cfg.slow_window || 0),
+      };
+    }
+
     function pnlClass(value) {
       const n = Number(value);
       if (!Number.isFinite(n) || n === 0) return "neutral";
@@ -1894,6 +1918,7 @@ INDEX_HTML = """<!doctype html>
           riskLines: activeRiskLines(c).numeric,
           quoteAsset: c.quoteAsset,
           interval: payload.live_chart_interval || selectedChartInterval,
+          maConfig: chartMaConfig(payload),
           maxVisibleBars: 80,
           hover: chartHover
         });
@@ -1942,6 +1967,8 @@ INDEX_HTML = """<!doctype html>
         drawEmptyChart(canvas, "等待主周期 K 线数据");
         return;
       }
+      const fastMa = movingAverageSeries(data, options.maConfig?.fastWindow || 0);
+      const slowMa = movingAverageSeries(data, options.maConfig?.slowWindow || 0);
 
       const pad = { left: 52, right: 76, top: 22, bottom: 30 };
       const volumeHeight = Math.max(50, Math.floor(height * 0.16));
@@ -1953,6 +1980,8 @@ INDEX_HTML = """<!doctype html>
       data.forEach((b) => {
         values.push(asNumber(b.high || b.close), asNumber(b.low || b.close), asNumber(b.open || b.close), asNumber(b.close));
       });
+      fastMa.forEach((v) => { if (Number.isFinite(v)) values.push(v); });
+      slowMa.forEach((v) => { if (Number.isFinite(v)) values.push(v); });
       Object.values((options && options.riskLines) || {}).forEach((v) => { if (Number.isFinite(v)) values.push(v); });
       let min = Math.min(...values);
       let max = Math.max(...values);
@@ -2017,6 +2046,18 @@ INDEX_HTML = """<!doctype html>
         ctx.fillRect(cx - candleW / 2, bodyY, candleW, bodyH);
       });
 
+      drawMaLine(ctx, fastMa, x, y, "#2563eb");
+      drawMaLine(ctx, slowMa, x, y, "#f59e0b");
+      drawMaLegend(ctx, {
+        x: pad.left + 8,
+        y: pad.top + 14,
+        label: options.maConfig?.label || "均线",
+        fastWindow: options.maConfig?.fastWindow || 0,
+        slowWindow: options.maConfig?.slowWindow || 0,
+        fastValue: fastMa[fastMa.length - 1],
+        slowValue: slowMa[slowMa.length - 1],
+      });
+
       drawRiskLine(ctx, options.riskLines?.stop_loss_price, y, pad.left, width - pad.right, "#b4232a", "止损");
       drawRiskLine(ctx, options.riskLines?.take_profit_price, y, pad.left, width - pad.right, "#15803d", "止盈");
       drawRiskLine(ctx, options.riskLines?.trailing_stop_price, y, pad.left, width - pad.right, "#c96a21", "跟踪");
@@ -2079,8 +2120,72 @@ INDEX_HTML = """<!doctype html>
         volumeHeight,
         width,
         height,
-        quoteAsset: options.quoteAsset || ""
+        quoteAsset: options.quoteAsset || "",
+        fastMa,
+        slowMa,
+        maConfig: options.maConfig || {}
       });
+    }
+
+    function movingAverageSeries(data, windowSize) {
+      const size = Number(windowSize);
+      if (!Number.isFinite(size) || size <= 0) return data.map(() => NaN);
+      const result = [];
+      let sum = 0;
+      data.forEach((bar, index) => {
+        sum += asNumber(bar.close, 0);
+        if (index >= size) sum -= asNumber(data[index - size].close, 0);
+        result.push(index >= size - 1 ? sum / size : NaN);
+      });
+      return result;
+    }
+
+    function drawMaLine(ctx, series, x, y, color) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      let started = false;
+      series.forEach((value, index) => {
+        if (!Number.isFinite(value)) return;
+        const px = x(index);
+        const py = y(value);
+        if (!started) {
+          ctx.moveTo(px, py);
+          started = true;
+        } else {
+          ctx.lineTo(px, py);
+        }
+      });
+      if (started) ctx.stroke();
+      ctx.restore();
+    }
+
+    function drawMaLegend(ctx, item) {
+      if (!item.fastWindow || !item.slowWindow) return;
+      const fastText = `MA${item.fastWindow} ${fmtNumber(item.fastValue, 4)}`;
+      const slowText = `MA${item.slowWindow} ${fmtNumber(item.slowValue, 4)}`;
+      const state = Number.isFinite(item.fastValue) && Number.isFinite(item.slowValue)
+        ? (item.fastValue >= item.slowValue ? "快线在上" : "快线在下")
+        : "均线计算中";
+      ctx.save();
+      ctx.font = "700 10px Hiragino Sans, PingFang SC, sans-serif";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
+      ctx.strokeStyle = "rgba(150, 164, 184, 0.48)";
+      ctx.beginPath();
+      ctx.roundRect(item.x - 6, item.y - 11, 226, 24, 6);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#536176";
+      ctx.textAlign = "left";
+      ctx.fillText(item.label, item.x, item.y + 3);
+      ctx.fillStyle = "#2563eb";
+      ctx.fillText(fastText, item.x + 64, item.y + 3);
+      ctx.fillStyle = "#f59e0b";
+      ctx.fillText(slowText, item.x + 124, item.y + 3);
+      ctx.fillStyle = state === "快线在上" ? "#15803d" : state === "快线在下" ? "#b4232a" : "#66758a";
+      ctx.fillText(state, item.x + 184, item.y + 3);
+      ctx.restore();
     }
 
     function barVolumeValue(bar) {
@@ -2107,11 +2212,15 @@ INDEX_HTML = """<!doctype html>
       const volumeText = Number.isFinite(volume) && volume > 0
         ? `量 ${fmtNumber(volume, 2)}`
         : `样本 ${Number.isFinite(samples) ? fmtNumber(samples, 0) : "--"}`;
+      const fastValue = options.fastMa ? options.fastMa[idx] : NaN;
+      const slowValue = options.slowMa ? options.slowMa[idx] : NaN;
+      const maText = `${options.maConfig?.label || "均线"} 快 ${fmtNumber(fastValue, 4)} 慢 ${fmtNumber(slowValue, 4)}`;
       const lines = [
         fmtTime(bar.time || bar.open_time || bar.close_time),
         `开 ${fmtNumber(bar.open, 4)}  高 ${fmtNumber(bar.high, 4)}`,
         `低 ${fmtNumber(bar.low, 4)}  收 ${fmtNumber(bar.close, 4)}`,
-        volumeText
+        volumeText,
+        maText
       ];
 
       ctx.save();
@@ -2136,7 +2245,7 @@ INDEX_HTML = """<!doctype html>
       ctx.fillText(fmtNumber(close, 3), chartRight + 33, cy + 4);
 
       const boxW = 196;
-      const boxH = 86;
+      const boxH = 104;
       const boxX = cx + boxW + 16 > chartRight ? cx - boxW - 12 : cx + 12;
       const boxY = Math.max(options.pad.top + 6, Math.min(chartBottom - boxH - 6, hover.y - boxH / 2));
       ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
@@ -2617,6 +2726,15 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
     return {
         "grid_buyback_step_pct": settings.grid_buyback_step_pct,
         "grid_max_daily_trades": settings.grid_max_daily_trades,
+        "kline_interval": settings.kline_interval,
+        "fast_window": settings.fast_window,
+        "slow_window": settings.slow_window,
+        "mtf_entry_interval": settings.mtf_entry_interval,
+        "mtf_entry_fast_window": settings.mtf_entry_fast_window,
+        "mtf_entry_slow_window": settings.mtf_entry_slow_window,
+        "mtf_trend_interval": settings.mtf_trend_interval,
+        "mtf_trend_fast_window": settings.mtf_trend_fast_window,
+        "mtf_trend_slow_window": settings.mtf_trend_slow_window,
     }
 
 
