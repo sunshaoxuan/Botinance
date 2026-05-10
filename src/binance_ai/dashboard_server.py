@@ -1190,12 +1190,12 @@ INDEX_HTML = """<!doctype html>
       if (s === "BUY") return "买入";
       if (s === "SELL") return "卖出";
       if (s === "HOLD") return "观望";
-      if (s === "PAPER_FILLED") return "模拟成交";
+      if (s === "PAPER_FILLED") return "模拟已成交";
       if (s === "ORDER_OPEN") return "挂单中";
       if (s === "OPEN") return "挂单中";
       if (s === "FILLED") return "已成交";
       if (s === "CANCELED") return "已撤单";
-      if (s === "SUBMITTED") return "已提交";
+      if (s === "SUBMITTED") return "已挂单";
       if (s === "EXPIRED") return "交易所过期";
       if (s === "REJECTED") return "已拒绝";
       if (s === "UNKNOWN") return "状态待确认";
@@ -1209,7 +1209,7 @@ INDEX_HTML = """<!doctype html>
     function executionLabel(status) {
       const s = String(status || "").toUpperCase();
       if (s === "SKIPPED_REFRESH_ONLY") return "刷新观察";
-      if (s === "PAPER_FILLED") return "模拟成交";
+      if (s === "PAPER_FILLED") return "模拟已成交";
       if (s === "BLOCKED") return "已阻塞";
       if (s === "NO_ACTION") return "无动作";
       if (s === "PASS") return "通过";
@@ -1223,7 +1223,8 @@ INDEX_HTML = """<!doctype html>
 
     function executionDetail(status, reason) {
       const s = String(status || "").toUpperCase();
-      if (reason) return reason;
+      const mappedReason = reasonLabel(reason);
+      if (reason) return mappedReason || reason;
       if (s === "SKIPPED_REFRESH_ONLY") return "本轮只刷新行情、持仓和风控线，不触发下单决策。";
       if (s === "PAPER_FILLED") return "本轮已产生成交，明细见 K 线下方成交记录。";
       if (s === "ORDER_OPEN") return "本轮已提交限价挂单，等待行情触价或撤单规则处理。";
@@ -1265,9 +1266,9 @@ INDEX_HTML = """<!doctype html>
       const labels = {
         refresh_only: "仅刷新行情",
         existing_open_order: "已有挂单，等待处理",
-        paper_limit_order_open: "模拟限价单已挂出",
+        paper_limit_order_open: "模拟限价单已挂出，尚未成交",
         paper_limit_order_filled: "模拟限价单已成交",
-        paper_limit_order_canceled: "模拟限价单已撤销",
+        paper_limit_order_canceled: "模拟限价单未成交，已撤销",
         order_timeout_canceled: "Boti 超时撤单",
         order_price_deviation_exceeded: "价格偏离撤单",
         paper_limit_order_expired: "交易所过期",
@@ -1800,15 +1801,25 @@ INDEX_HTML = """<!doctype html>
             : "--";
         const fee = asNumber(f.fee, 0);
         const estimatedFee = asNumber(f.estimated_fee, 0);
-        const feeText = fee > 0 ? fmtCurrency(fee, quoteAsset) : estimatedFee > 0 ? `预计 ${fmtCurrency(estimatedFee, quoteAsset)}` : "--";
+        const isFilled = status === "FILLED" || status === "PAPER_FILLED";
+        const statusText = isFilled
+          ? signalLabel(status)
+          : status === "OPEN"
+            ? "挂单未成交"
+            : status === "CANCELED"
+              ? "未成交已撤单"
+              : signalLabel(status || f.event_type || "--");
+        const feeText = fee > 0 ? fmtCurrency(fee, quoteAsset) : isFilled && estimatedFee > 0 ? `预计 ${fmtCurrency(estimatedFee, quoteAsset)}` : "--";
+        const realizedText = isFilled ? fmtCurrency(f.realized_pnl, quoteAsset) : "--";
+        const reasonText = reasonLabel(f.reason || f.event_type || status);
         return `<tr>
-          <td>${statusChip(signalLabel(status || f.event_type || "--"), statusKind)}</td>
+          <td>${statusChip(statusText, statusKind)}<br><span class="muted">${escapeHtml(reasonText)}</span></td>
           <td>${statusChip(side || "--", side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
           <td>${fmtNumber(f.quantity, 8)}</td>
           <td>${fmtCurrency(f.price || f.fill_price || f.limit_price, quoteAsset)}</td>
           <td>${escapeHtml(frozenText)}</td>
           <td>${escapeHtml(feeText)}</td>
-          <td class="${pnlClass(f.realized_pnl)}">${fmtCurrency(f.realized_pnl, quoteAsset)}</td>
+          <td class="${pnlClass(isFilled ? f.realized_pnl : 0)}">${realizedText}</td>
           <td class="nowrap">${escapeHtml(fmtTime(f.timestamp || f.timestamp_ms || f.time))}</td>
         </tr>`;
       });
@@ -1819,7 +1830,7 @@ INDEX_HTML = """<!doctype html>
       if (els.fillPrev) els.fillPrev.disabled = fillPage <= 0;
       if (els.fillNext) els.fillNext.disabled = fillPage >= pageCount - 1;
       if (els.fillPageSize) els.fillPageSize.value = String(fillPageSize);
-      els.tradeFillsTable.innerHTML = table(["状态", "方向", "数量", "价格", "冻结", "手续费", "已实现", "时间"], rows, "暂无订单或成交记录");
+      els.tradeFillsTable.innerHTML = table(["订单状态", "方向", "数量", "挂单/成交价", "冻结", "手续费", "已实现", "时间"], rows, "暂无订单或成交记录");
     }
 
     function activeRiskLines(c) {
