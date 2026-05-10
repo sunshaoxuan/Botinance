@@ -87,16 +87,11 @@ class TradingEngine:
             )
             order_lifecycle_events.extend(lifecycle_events)
             for result in lifecycle_results:
-                trigger = str(result.get("trigger", ""))
-                if result.get("status") == "PAPER_FILLED" and trigger.startswith("grid_"):
+                activation_success = self._activation_success_from_fill(symbol=symbol, result=result)
+                if activation_success is not None:
                     self._record_position_activation_success(
                         symbol=symbol,
-                        decision=PositionActivationDecision(
-                            action=str(result.get("side", "")),
-                            trigger=trigger,
-                            reason="订单成交后更新仓位激活状态",
-                            quantity=float(result.get("quantity", 0.0)),
-                        ),
+                        decision=activation_success,
                         fill_price=float(result.get("fill_price", price)),
                         timestamp_ms=cycle_timestamp_ms,
                     )
@@ -585,6 +580,66 @@ class TradingEngine:
             timestamp_ms=timestamp_ms,
         )
         self.paper_portfolio.save_snapshot(updated)
+
+    def _activation_success_from_fill(
+        self,
+        *,
+        symbol: str,
+        result: Dict[str, object],
+    ) -> PositionActivationDecision | None:
+        if result.get("status") != "PAPER_FILLED":
+            return None
+        trigger = str(result.get("trigger", ""))
+        side = str(result.get("side", "")).upper()
+        quantity = float(result.get("quantity", 0.0))
+        if trigger == "grid_buyback" and side == "BUY":
+            return PositionActivationDecision(
+                action="BUY",
+                trigger=trigger,
+                reason="回补买入成交后更新仓位激活状态",
+                quantity=quantity,
+            )
+        if side != "SELL":
+            return None
+
+        release_trigger = self._release_trigger_for_sell_fill(symbol=symbol, trigger=trigger)
+        if not release_trigger:
+            return None
+        return PositionActivationDecision(
+            action="SELL",
+            trigger=release_trigger,
+            reason=self._release_reason_for_trigger(release_trigger),
+            quantity=quantity,
+        )
+
+    def _release_trigger_for_sell_fill(self, *, symbol: str, trigger: str) -> str:
+        trigger_map = {
+            "strategy_sell": "strategy_release_sell",
+            "take_profit": "take_profit_release_sell",
+            "trailing_stop": "trailing_stop_release_sell",
+            "max_hold_exit": "max_hold_release_sell",
+            "grid_profit_sell": "grid_profit_sell",
+            "grid_loss_recovery_sell": "grid_loss_recovery_sell",
+        }
+        release_trigger = trigger_map.get(trigger, "")
+        if not release_trigger or self.paper_portfolio is None:
+            return ""
+        remaining_position = self.paper_portfolio.position_snapshot(symbol)
+        if remaining_position is None or remaining_position.quantity <= 0:
+            return ""
+        return release_trigger
+
+    @staticmethod
+    def _release_reason_for_trigger(trigger: str) -> str:
+        labels = {
+            "strategy_release_sell": "策略卖出已登记待回补",
+            "take_profit_release_sell": "止盈部分卖出已登记待回补",
+            "trailing_stop_release_sell": "跟踪止损部分卖出已登记待回补",
+            "max_hold_release_sell": "超时退出部分卖出已登记待回补",
+            "grid_profit_sell": "网格卖出成交后登记待回补",
+            "grid_loss_recovery_sell": "亏损修复卖出成交后登记待回补",
+        }
+        return labels.get(trigger, "释放仓位已登记待回补")
 
     def _record_position_activation_state(
         self,

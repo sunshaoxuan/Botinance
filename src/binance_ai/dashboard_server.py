@@ -1211,6 +1211,10 @@ INDEX_HTML = """<!doctype html>
         max_hold_exit: "超时退出",
         grid_profit_sell: "网格止盈卖出",
         grid_loss_recovery_sell: "亏损修复卖出",
+        strategy_release_sell: "策略释放待回补",
+        take_profit_release_sell: "止盈释放待回补",
+        trailing_stop_release_sell: "跟踪止损释放待回补",
+        max_hold_release_sell: "超时释放待回补",
         grid_buyback: "网格回补",
         grid_wait_buyback: "等待回补",
         refresh_only: "仅刷新",
@@ -1549,6 +1553,10 @@ INDEX_HTML = """<!doctype html>
       const sell = c.sellDiag || {};
       const activation = c.activationState || {};
       const risk = activeRiskLines(c);
+      const buybackStep = asNumber((payload.runtime_config || {}).grid_buyback_step_pct, 0);
+      const lastReleasePrice = asNumber(activation.last_grid_sell_price, 0);
+      const buybackTriggerPrice = lastReleasePrice > 0 && buybackStep > 0 ? lastReleasePrice * (1 - buybackStep) : 0;
+      const pendingBuyback = asNumber(activation.pending_buyback_quantity, 0);
 
       els.buyDecisionFull.innerHTML = kvRows([
         ["规则信号", statusChip(signalLabel(c.signal), signalClass(c.signal))],
@@ -1571,9 +1579,11 @@ INDEX_HTML = """<!doctype html>
       ]);
 
       els.riskParametersCard.innerHTML = kvRows([
-        ["最近触发", escapeHtml(activation.last_trigger || sell.activation_trigger || "--")],
-        ["待回补数量", escapeHtml(fmtNumber(activation.pending_buyback_quantity, 8))],
-        ["最近网格卖价", escapeHtml(fmtCurrency(activation.last_grid_sell_price, c.quoteAsset))],
+        ["最近触发", escapeHtml(triggerLabel(activation.last_trigger || sell.activation_trigger || "--"))],
+        ["待回补数量", escapeHtml(fmtNumber(pendingBuyback, 8))],
+        ["最近释放卖价", escapeHtml(fmtCurrency(lastReleasePrice, c.quoteAsset))],
+        ["回补触发价", escapeHtml(buybackTriggerPrice ? fmtCurrency(buybackTriggerPrice, c.quoteAsset) : "--")],
+        ["回补状态", pendingBuyback > 0 ? (c.currentPrice <= buybackTriggerPrice ? statusChip("已到回补线", "buy") : statusChip("等待回落", "wait")) : statusChip("无待回补", "wait")],
         ["同步参考价", escapeHtml(fmtCurrency(activation.seed_price, c.quoteAsset))],
         ["真实成本", escapeHtml(fmtCurrency(activation.real_average_entry_price, c.quoteAsset))],
         ["成本来源", escapeHtml(activation.cost_basis_source || "--")],
@@ -2583,6 +2593,17 @@ def _dashboard_fee_rate(default: float = 0.001) -> float:
     return max(0.0, fee_rate)
 
 
+def _dashboard_runtime_config() -> Dict[str, Any]:
+    try:
+        settings = load_settings()
+    except Exception:
+        return {}
+    return {
+        "grid_buyback_step_pct": settings.grid_buyback_step_pct,
+        "grid_max_daily_trades": settings.grid_max_daily_trades,
+    }
+
+
 def _base_asset_from_symbol(symbol: str, quote_asset: str) -> str:
     if symbol and quote_asset and symbol.upper().endswith(quote_asset.upper()):
         return symbol[: -len(quote_asset)] or "BASE"
@@ -2886,7 +2907,15 @@ def _extract_order_markers(history: List[Dict[str, Any]], limit: int = 200) -> L
 
 
 def _extract_position_activation_markers(history: List[Dict[str, Any]], limit: int = 200) -> List[Dict[str, Any]]:
-    activation_triggers = {"grid_profit_sell", "grid_loss_recovery_sell", "grid_buyback"}
+    activation_triggers = {
+        "grid_profit_sell",
+        "grid_loss_recovery_sell",
+        "strategy_release_sell",
+        "take_profit_release_sell",
+        "trailing_stop_release_sell",
+        "max_hold_release_sell",
+        "grid_buyback",
+    }
     markers = [
         marker
         for marker in _extract_live_trade_markers(history, limit=limit * 2)
@@ -3524,6 +3553,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "decision_ledger": _extract_decision_ledger(history, latest_report),
         "position_activation_state": paper_state.get("activation_state", {}),
+        "runtime_config": _dashboard_runtime_config(),
         "live_main_interval_bars": main_bars,
         "live_refresh_interval": "1m",
         "live_refresh_bars": refresh_bars,

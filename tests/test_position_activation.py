@@ -2,7 +2,7 @@ import unittest
 
 from binance_ai.config import Settings
 from binance_ai.models import AccountSnapshot, PortfolioSnapshot, PositionSnapshot, SymbolFilters
-from binance_ai.position_activation import PositionActivationEngine
+from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
 
 
 class _Client:
@@ -90,6 +90,69 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertEqual(decision.action, "BUY")
         self.assertEqual(decision.trigger, "grid_buyback")
         self.assertAlmostEqual(decision.quantity, 25.0)
+
+    def test_strategy_release_sell_registers_pending_buyback(self) -> None:
+        engine = PositionActivationEngine(_settings(), _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=3000.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=50.0, average_entry_price=100.0, highest_price=101.0)},
+            activation_state={"XRPJPY": {"daily_trade_day": "2026-05-09", "daily_trade_count": 0}},
+        )
+
+        updated = engine.apply_success(
+            snapshot=snapshot,
+            symbol="XRPJPY",
+            decision=PositionActivationDecision(
+                action="SELL",
+                trigger="strategy_release_sell",
+                reason="策略卖出已登记待回补",
+                quantity=25.0,
+            ),
+            fill_price=101.0,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        state = updated.activation_state["XRPJPY"]
+        self.assertEqual(state["last_trigger"], "strategy_release_sell")
+        self.assertAlmostEqual(state["pending_buyback_quantity"], 25.0)
+        self.assertAlmostEqual(state["last_grid_sell_price"], 101.0)
+
+    def test_grid_buyback_success_reduces_pending_buyback(self) -> None:
+        engine = PositionActivationEngine(_settings(), _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=3000.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=75.0, average_entry_price=100.0, highest_price=101.0)},
+            activation_state={
+                "XRPJPY": {
+                    "pending_buyback_quantity": 25.0,
+                    "last_grid_sell_price": 101.0,
+                    "daily_trade_day": "2026-05-09",
+                    "daily_trade_count": 1,
+                }
+            },
+        )
+
+        updated = engine.apply_success(
+            snapshot=snapshot,
+            symbol="XRPJPY",
+            decision=PositionActivationDecision(
+                action="BUY",
+                trigger="grid_buyback",
+                reason="回补买入成交后更新仓位激活状态",
+                quantity=25.0,
+            ),
+            fill_price=100.7,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        state = updated.activation_state["XRPJPY"]
+        self.assertEqual(state["last_trigger"], "grid_buyback")
+        self.assertAlmostEqual(state["pending_buyback_quantity"], 0.0)
+        self.assertAlmostEqual(state["last_grid_sell_price"], 0.0)
 
     def test_loss_recovery_sell_is_allowed_with_standard_fraction(self) -> None:
         engine = PositionActivationEngine(_settings(), _Client())

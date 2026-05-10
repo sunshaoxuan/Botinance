@@ -115,7 +115,7 @@ class PositionActivationEngine:
         state["last_reason"] = decision.reason
         state["last_trade_timestamp_ms"] = timestamp_ms
 
-        if decision.trigger in {"grid_profit_sell", "grid_loss_recovery_sell"}:
+        if decision.trigger in self.release_sell_triggers():
             state["last_grid_sell_price"] = fill_price
             state["pending_buyback_quantity"] = float(state["pending_buyback_quantity"]) + decision.quantity
         elif decision.trigger == "grid_buyback":
@@ -247,3 +247,14 @@ class PositionActivationEngine:
         state.setdefault("last_reason", "")
         state.setdefault("last_trade_timestamp_ms", 0)
         return state
+
+    @staticmethod
+    def release_sell_triggers() -> set[str]:
+        return {
+            "grid_profit_sell",
+            "grid_loss_recovery_sell",
+            "strategy_release_sell",
+            "take_profit_release_sell",
+            "trailing_stop_release_sell",
+            "max_hold_release_sell",
+        }
