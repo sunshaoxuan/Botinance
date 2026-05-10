@@ -10,6 +10,7 @@ from binance_ai.dashboard_server import (
     _aggregate_chart_bars,
     _build_dashboard_chart_payload,
     _build_live_main_interval_bars,
+    _chart_cache_bars_match_interval,
     _chart_cache_needs_tail_refresh,
     _extract_chart_trade_markers_from_file,
     _extract_recent_fills_from_file,
@@ -89,6 +90,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("风险控制", INDEX_HTML)
         self.assertIn("系统日志", INDEX_HTML)
         self.assertIn("drawCandlestickChart", INDEX_HTML)
+        self.assertIn("fmtChartAxisTime", INDEX_HTML)
+        self.assertIn('["1d", "7d", "10d", "30d", "90d", "180d", "1y"]', INDEX_HTML)
         self.assertIn("volumeHeight", INDEX_HTML)
         self.assertIn("barVolumeValue", INDEX_HTML)
         self.assertNotIn("sample_count || b.volume", INDEX_HTML)
@@ -544,6 +547,33 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(aggregated[0]["close"], 107)
         self.assertEqual(aggregated[0]["volume"], 5)
 
+    def test_chart_cache_interval_validation_rejects_minute_bars_in_daily_cache(self) -> None:
+        polluted_daily_cache = [
+            {
+                "symbol": "XRPJPY",
+                "open_time": 1_778_416_200_000,
+                "close_time": 1_778_416_259_999,
+                "open": 223.0,
+                "high": 223.1,
+                "low": 222.9,
+                "close": 223.0,
+            }
+        ]
+        valid_daily_cache = [
+            {
+                "symbol": "XRPJPY",
+                "open_time": 86_400_000,
+                "close_time": 172_799_999,
+                "open": 223.0,
+                "high": 225.0,
+                "low": 220.0,
+                "close": 224.0,
+            }
+        ]
+
+        self.assertFalse(_chart_cache_bars_match_interval(polluted_daily_cache, "1d"))
+        self.assertTrue(_chart_cache_bars_match_interval(valid_daily_cache, "1d"))
+
     def test_extract_live_trade_veto_markers_and_bars(self) -> None:
         history = [
             {
@@ -658,6 +688,48 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(bars[0]["low"], 219.0)
         self.assertEqual(bars[0]["close"], 224.0)
         self.assertEqual(bars[0]["source"], "binance_kline")
+
+    def test_live_bars_aggregate_latest_report_klines_to_requested_daily_interval(self) -> None:
+        latest_report = {
+            "market_snapshots": [
+                {
+                    "symbol": "XRPJPY",
+                    "main_interval_bars": [
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 86_400_000,
+                            "close_time": 86_459_999,
+                            "open": 220.0,
+                            "high": 225.0,
+                            "low": 219.0,
+                            "close": 224.0,
+                            "volume": 10.0,
+                        },
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 86_460_000,
+                            "close_time": 86_519_999,
+                            "open": 224.0,
+                            "high": 226.0,
+                            "low": 223.0,
+                            "close": 225.0,
+                            "volume": 12.0,
+                        },
+                    ],
+                }
+            ]
+        }
+
+        bars = _build_live_main_interval_bars([], symbol="XRPJPY", interval="1d", latest_report=latest_report)
+
+        self.assertEqual(len(bars), 1)
+        self.assertEqual(bars[0]["open_time"], 86_400_000)
+        self.assertEqual(bars[0]["close_time"], 172_799_999)
+        self.assertEqual(bars[0]["open"], 220.0)
+        self.assertEqual(bars[0]["high"], 226.0)
+        self.assertEqual(bars[0]["low"], 219.0)
+        self.assertEqual(bars[0]["close"], 225.0)
+        self.assertEqual(bars[0]["volume"], 22.0)
 
     def test_live_bars_merge_runtime_sample_without_flattening_real_kline(self) -> None:
         latest_report = {

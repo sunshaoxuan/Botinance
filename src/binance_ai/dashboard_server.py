@@ -1134,6 +1134,19 @@ INDEX_HTML = """<!doctype html>
       return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
     }
 
+    function fmtChartAxisTime(value, interval) {
+      if (!value) return "--";
+      const d = new Date(value);
+      if (Number.isNaN(d.getTime())) return String(value).slice(0, 16);
+      if (["1d", "7d", "10d", "30d", "90d", "180d", "1y"].includes(interval)) {
+        return d.toLocaleDateString("zh-CN", { month: "2-digit", day: "2-digit" });
+      }
+      if (["4h", "8h"].includes(interval)) {
+        return d.toLocaleString("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false });
+      }
+      return fmtShortTime(value);
+    }
+
     function pnlClass(value) {
       const n = Number(value);
       if (!Number.isFinite(n) || n === 0) return "neutral";
@@ -1880,6 +1893,7 @@ INDEX_HTML = """<!doctype html>
           openOrders: c.openOrders,
           riskLines: activeRiskLines(c).numeric,
           quoteAsset: c.quoteAsset,
+          interval: payload.live_chart_interval || selectedChartInterval,
           maxVisibleBars: 80,
           hover: chartHover
         });
@@ -2035,7 +2049,7 @@ INDEX_HTML = """<!doctype html>
       const labelCount = Math.min(5, data.length);
       for (let i = 0; i < labelCount; i += 1) {
         const idx = Math.floor(i * (data.length - 1) / Math.max(1, labelCount - 1));
-        ctx.fillText(fmtShortTime(data[idx].time || data[idx].open_time), x(idx), height - 12);
+        ctx.fillText(fmtChartAxisTime(data[idx].time || data[idx].open_time, options.interval || "1m"), x(idx), height - 12);
       }
       const last = data[data.length - 1];
       const lastY = y(asNumber(last.close));
@@ -3174,6 +3188,24 @@ def _chart_cache_needs_tail_refresh(cached: Dict[str, Any], interval: str, lates
     return (time.time() - fetched_at) >= _chart_cache_refresh_seconds(interval)
 
 
+def _chart_cache_bars_match_interval(bars: List[Dict[str, Any]], interval: str) -> bool:
+    interval_ms = INTERVAL_MS.get(interval)
+    if not interval_ms:
+        return True
+    for bar in bars:
+        open_time = _coerce_int(bar.get("open_time"), -1)
+        close_time = _coerce_int(bar.get("close_time"), open_time + interval_ms - 1)
+        if open_time < 0:
+            return False
+        if open_time % interval_ms != 0:
+            return False
+        if close_time < open_time:
+            return False
+        if (close_time - open_time + 1) > interval_ms:
+            return False
+    return True
+
+
 def _append_chart_source(existing_source: object, source: str) -> str:
     parts = [item for item in str(existing_source or "cache").split("+") if item]
     if source not in parts:
@@ -3222,6 +3254,10 @@ def _load_or_fetch_chart_bars(
     )
     cache_path = _chart_cache_path(runtime_dir, symbol, interval)
     cached = _read_cached_chart_bars(cache_path)
+    if cached:
+        cached_bars = [bar for bar in cached.get("bars", []) if isinstance(bar, dict)]
+        if cached.get("interval") != interval or not _chart_cache_bars_match_interval(cached_bars, interval):
+            cached = None
     if cached:
         cache_source = cached.get("source", "cache")
         cache_refreshed = False
@@ -3373,6 +3409,9 @@ def _build_live_main_interval_bars(
     bars = [buckets[key] for key in sorted(buckets)]
     if not snapshot_bars:
         return bars[-limit:]
+
+    if interval != "1m":
+        snapshot_bars = _aggregate_chart_bars(snapshot_bars, symbol=symbol, interval=interval, limit=limit)
 
     merged = {bar["open_time"]: dict(bar) for bar in snapshot_bars}
     for bar in bars:
