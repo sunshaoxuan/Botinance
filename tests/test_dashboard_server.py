@@ -100,6 +100,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("drawMaLine", INDEX_HTML)
         self.assertIn("drawMaLegend", INDEX_HTML)
         self.assertIn("快线在上", INDEX_HTML)
+        self.assertIn("ctx.measureText(line).width", INDEX_HTML)
+        self.assertIn("快 ${fmtNumber(fastValue, 4)}  慢 ${fmtNumber(slowValue, 4)}", INDEX_HTML)
         self.assertIn('["1d", "7d", "10d", "30d", "90d", "180d", "1y"]', INDEX_HTML)
         self.assertIn("volumeHeight", INDEX_HTML)
         self.assertIn("barVolumeValue", INDEX_HTML)

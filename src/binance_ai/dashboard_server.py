@@ -2225,13 +2225,14 @@ INDEX_HTML = """<!doctype html>
         : `样本 ${Number.isFinite(samples) ? fmtNumber(samples, 0) : "--"}`;
       const fastValue = options.fastMa ? options.fastMa[idx] : NaN;
       const slowValue = options.slowMa ? options.slowMa[idx] : NaN;
-      const maText = `${options.maConfig?.label || "均线"} 快 ${fmtNumber(fastValue, 4)} 慢 ${fmtNumber(slowValue, 4)}`;
+      const maLabel = options.maConfig?.label || "均线";
       const lines = [
         fmtTime(bar.time || bar.open_time || bar.close_time),
         `开 ${fmtNumber(bar.open, 4)}  高 ${fmtNumber(bar.high, 4)}`,
         `低 ${fmtNumber(bar.low, 4)}  收 ${fmtNumber(bar.close, 4)}`,
         volumeText,
-        maText
+        `${maLabel}`,
+        `快 ${fmtNumber(fastValue, 4)}  慢 ${fmtNumber(slowValue, 4)}`
       ];
 
       ctx.save();
@@ -2255,8 +2256,10 @@ INDEX_HTML = """<!doctype html>
       ctx.textAlign = "center";
       ctx.fillText(fmtNumber(close, 3), chartRight + 33, cy + 4);
 
-      const boxW = 196;
-      const boxH = 104;
+      ctx.font = "700 11px SFMono-Regular, Menlo, monospace";
+      const textW = Math.max(...lines.map((line) => ctx.measureText(line).width));
+      const boxW = Math.min(Math.max(196, Math.ceil(textW + 24)), Math.max(196, chartRight - options.pad.left - 12));
+      const boxH = 122;
       const boxX = cx + boxW + 16 > chartRight ? cx - boxW - 12 : cx + 12;
       const boxY = Math.max(options.pad.top + 6, Math.min(chartBottom - boxH - 6, hover.y - boxH / 2));
       ctx.fillStyle = "rgba(255, 255, 255, 0.96)";
@@ -2267,7 +2270,6 @@ INDEX_HTML = """<!doctype html>
       ctx.fill();
       ctx.stroke();
       ctx.fillStyle = "#172033";
-      ctx.font = "700 11px SFMono-Regular, Menlo, monospace";
       ctx.textAlign = "left";
       lines.forEach((line, i) => {
         ctx.fillStyle = i === 0 ? "#536176" : "#172033";
