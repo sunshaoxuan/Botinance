@@ -5,7 +5,8 @@ param(
   [string]$HostAddress = $(if ($env:DASHBOARD_HOST) { $env:DASHBOARD_HOST } else { "0.0.0.0" }),
   [int]$Port = $(if ($env:DASHBOARD_PORT) { [int]$env:DASHBOARD_PORT } else { 8765 }),
   [int]$SleepSeconds = $(if ($env:SLEEP_SECONDS) { [int]$env:SLEEP_SECONDS } else { 3 }),
-  [int]$StaleSeconds = $(if ($env:BOTI_STALE_SECONDS) { [int]$env:BOTI_STALE_SECONDS } else { 180 })
+  [int]$StaleSeconds = $(if ($env:BOTI_STALE_SECONDS) { [int]$env:BOTI_STALE_SECONDS } else { 180 }),
+  [int]$StopTimeoutSeconds = $(if ($env:BOTI_STOP_TIMEOUT_SECONDS) { [int]$env:BOTI_STOP_TIMEOUT_SECONDS } else { 30 })
 )
 
 $ErrorActionPreference = "Stop"
@@ -55,6 +56,18 @@ function Invoke-InRepo {
   & $Git -C $RootDir @Arguments
 }
 
+function Stop-BotinanceProcesses {
+  $patterns = @("*binance_ai*", "*openssl.exe*secrets*")
+  foreach ($pattern in $patterns) {
+    Get-CimInstance Win32_Process |
+      Where-Object { $_.CommandLine -like $pattern } |
+      ForEach-Object {
+        Write-Log "force stopping pid=$($_.ProcessId)"
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+      }
+  }
+}
+
 function Invoke-Start {
   $startScript = Join-Path $RootDir "Start-Botinance.ps1"
   if (Test-Path $startScript) {
@@ -70,16 +83,25 @@ function Invoke-Start {
 }
 
 function Invoke-Stop {
-  $stopScript = Join-Path $RootDir "Stop-Botinance.ps1"
-  if (Test-Path $stopScript) {
-    & $stopScript
-    return
+  $scriptBlock = {
+    param($RootDir, $Python, $OutputDir, $HostAddress, $Port)
+    Set-Location $RootDir
+    $env:PYTHONPATH = "src"
+    & $Python -m binance_ai.service_manager stop `
+      --output-dir $OutputDir `
+      --host $HostAddress `
+      --port $Port
   }
-  $env:PYTHONPATH = "src"
-  & $Python -m binance_ai.service_manager stop `
-    --output-dir $OutputDir `
-    --host $HostAddress `
-    --port $Port
+  $job = Start-Job -ScriptBlock $scriptBlock -ArgumentList $RootDir, $Python, $OutputDir, $HostAddress, $Port
+  if (Wait-Job $job -Timeout $StopTimeoutSeconds) {
+    Receive-Job $job
+    Remove-Job $job
+  } else {
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Write-Log "graceful stop timed out after ${StopTimeoutSeconds}s"
+    Stop-BotinanceProcesses
+  }
 }
 
 function Test-Healthy {
@@ -102,6 +124,7 @@ try {
   if ($localHead -ne $remoteHead) {
     Write-Log "update detected local=$($localHead.Substring(0, 7)) remote=$($remoteHead.Substring(0, 7))"
     Invoke-Stop | Out-Null
+    Stop-BotinanceProcesses
     Invoke-InRepo @("reset", "--hard", "$Remote/$Branch") | Out-Null
     Invoke-Start | Out-Null
     Write-Log "updated and restarted head=$($remoteHead.Substring(0, 7))"
@@ -113,6 +136,7 @@ try {
     Write-Log "no update; service healthy head=$($localHead.Substring(0, 7))"
   } catch {
     Write-Log "no update; health failed, restarting: $($_.Exception.Message)"
+    Stop-BotinanceProcesses
     Invoke-Start | Out-Null
   }
 } catch {
