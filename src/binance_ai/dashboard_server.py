@@ -447,6 +447,41 @@ INDEX_HTML = """<!doctype html>
       line-height: 1.5;
     }
 
+    .card-note.prose {
+      max-width: 100%;
+    }
+
+    .mini-kv {
+      display: grid;
+      gap: 5px;
+      margin-top: 9px;
+    }
+
+    .mini-kv-row {
+      display: grid;
+      grid-template-columns: minmax(86px, 0.9fr) minmax(0, 1fr);
+      gap: 8px;
+      align-items: baseline;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .mini-kv-row span {
+      color: var(--muted);
+      font-weight: 680;
+      white-space: normal;
+    }
+
+    .mini-kv-row strong {
+      min-width: 0;
+      color: var(--ink-soft);
+      font-weight: 720;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+
     .metric-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1338,6 +1373,15 @@ INDEX_HTML = """<!doctype html>
       return `<div class="kv-grid">${html}</div>`;
     }
 
+    function miniKvRows(rows) {
+      const html = rows
+        .filter(([_, value]) => value !== undefined && value !== null && String(value).trim() !== "")
+        .map(([label, value]) => `
+          <div class="mini-kv-row"><span>${escapeHtml(label)}</span><strong>${value}</strong></div>
+        `).join("");
+      return html ? `<div class="mini-kv">${html}</div>` : "";
+    }
+
     function table(headers, rows, emptyText) {
       if (!rows || rows.length === 0) return emptyBox(emptyText || "暂无数据");
       const thead = `<thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>`;
@@ -1474,45 +1518,69 @@ INDEX_HTML = """<!doctype html>
       els.positionCard.innerHTML = `
         <div class="card-label"><span>当前持仓</span>${qty > 0 ? statusChip("持仓中", "buy") : statusChip("空仓", "wait")}</div>
         <div class="card-value">${qty > 0 ? `${fmtNumber(qty, 6)} XRP` : "0 XRP"}</div>
-        <div class="card-note">真实成本 ${realAvg ? fmtCurrency(realAvg, c.quoteAsset) : "--"}，Boti接管价 ${avg ? fmtCurrency(avg, c.quoteAsset) : "--"}，最高价 ${fmtCurrency(highest, c.quoteAsset)}</div>
+        ${miniKvRows([
+          ["真实成本", realAvg ? fmtCurrency(realAvg, c.quoteAsset) : "--"],
+          ["Boti接管价", avg ? fmtCurrency(avg, c.quoteAsset) : "--"],
+          ["最高价", fmtCurrency(highest, c.quoteAsset)],
+          ["持仓K线", fmtNumber(holdBars, 0)],
+        ])}
       `;
 
       els.pnlCard.innerHTML = `
         <div class="card-label"><span>交割成本总盈亏</span><span class="${pnlClass(originalTotalPnl)}">原始成本</span></div>
         <div class="card-value ${pnlClass(originalTotalPnl)}">${fmtCurrency(originalTotalPnl, c.quoteAsset)}</div>
-        <div class="card-note">交割成本 ${fmtCurrency(c.realCostBasis.original_initial_equity, c.quoteAsset)}，当前权益 ${fmtCurrency(realTotalEquity, c.quoteAsset)}</div>
-        <div class="card-note">原始已实现 ${fmtCurrency(realizedOriginalPnl, c.quoteAsset)}，原始未实现 ${fmtCurrency(realUnrealized, c.quoteAsset)}</div>
-        <div class="card-note">Boti接手后操作盈亏 ${fmtCurrency(botiNetPnl, c.quoteAsset)}${Number.isFinite(botiInitialEquity) ? `，接手基线 ${fmtCurrency(botiInitialEquity, c.quoteAsset)}` : ""}</div>
+        ${miniKvRows([
+          ["交割成本", fmtCurrency(c.realCostBasis.original_initial_equity, c.quoteAsset)],
+          ["当前权益", fmtCurrency(realTotalEquity, c.quoteAsset)],
+          ["原始已实现", fmtCurrency(realizedOriginalPnl, c.quoteAsset)],
+          ["原始未实现", fmtCurrency(realUnrealized, c.quoteAsset)],
+          ["Boti接手后操作盈亏", fmtCurrency(botiNetPnl, c.quoteAsset)],
+          ["接手基线", Number.isFinite(botiInitialEquity) ? fmtCurrency(botiInitialEquity, c.quoteAsset) : "--"],
+        ])}
       `;
 
       els.sellDecisionCard.innerHTML = `
         <div class="card-label"><span>卖出判断</span>${c.sellDiag.eligible_to_sell ? statusChip("可卖", "sell") : statusChip("持有", "wait")}</div>
         <div class="card-value">${c.sellDiag.eligible_to_sell ? fmtNumber(c.sellDiag.recommended_sell_quantity, 8) : "HOLD"}</div>
-        <div class="card-note">${escapeHtml(c.sellDiag.blocker || "暂无卖出诊断")}；网格 ${escapeHtml(c.sellDiag.activation_trigger || c.activationState.last_trigger || "--")}</div>
+        ${miniKvRows([
+          ["判断原因", escapeHtml(c.sellDiag.blocker || "暂无卖出诊断")],
+          ["网格状态", escapeHtml(triggerLabel(c.sellDiag.activation_trigger || c.activationState.last_trigger || "--"))],
+          ["建议数量", c.sellDiag.eligible_to_sell ? fmtNumber(c.sellDiag.recommended_sell_quantity, 8) : "--"],
+          ["浮盈比例", fmtPercent(c.sellDiag.unrealized_pnl_pct)],
+        ])}
       `;
 
       els.riskGateCard.innerHTML = `
         <div class="card-label"><span>AI 风险闸门</span>${allowEntry === false ? statusChip("否决", "block") : statusChip("允许/未触发", "wait")}</div>
         ${stateBlock(allowEntry === false ? "否决" : "通过", allowEntry === false ? "BLOCK" : "PASS")}
-        <div class="card-note">${escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "暂无 AI 风险闸门输出")}</div>
+        <div class="card-note prose">${escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "暂无 AI 风险闸门输出")}</div>
       `;
 
       const openOrder = c.openOrders.find((item) => item.symbol === c.symbol) || c.openOrders[0] || null;
       els.openOrderCard.innerHTML = openOrder ? `
         <div class="card-label"><span>当前挂单</span>${statusChip(openOrder.side || "--", String(openOrder.side || "").toUpperCase() === "BUY" ? "buy" : "sell")}</div>
         <div class="card-value">${fmtCurrency(openOrder.limit_price, c.quoteAsset)}</div>
-        <div class="card-note">数量 ${fmtNumber(openOrder.quantity, 8)}，触发 ${escapeHtml(openOrder.trigger || "--")}，状态 ${escapeHtml(openOrder.status || "OPEN")}</div>
+        ${miniKvRows([
+          ["数量", fmtNumber(openOrder.quantity, 8)],
+          ["触发", escapeHtml(triggerLabel(openOrder.trigger || "--"))],
+          ["状态", escapeHtml(signalLabel(openOrder.status || "OPEN"))],
+          ["冻结现金", openOrder.reserved_quote ? fmtCurrency(openOrder.reserved_quote, c.quoteAsset) : "--"],
+        ])}
       ` : `
         <div class="card-label"><span>当前挂单</span>${statusChip("无挂单", "wait")}</div>
         <div class="card-value">--</div>
-        <div class="card-note">当前没有等待成交的限价单。</div>
+        <div class="card-note prose">当前没有等待成交的限价单。</div>
       `;
 
       els.executionCard.innerHTML = `
         <div class="card-label"><span>本轮操作</span>${statusChip(signalLabel(c.signal), signalClass(c.signal))}</div>
         <div class="card-value">${escapeHtml(executionLabel(executionResult))}</div>
-        <div class="card-note">${escapeHtml(executionDetail(executionResult, c.executionReason))}</div>
-        <div class="card-note">止损 ${riskLines.stopLoss || "--"}，止盈 ${riskLines.takeProfit || "--"}，跟踪 ${riskLines.trailingStop || "--"}</div>
+        <div class="card-note prose">${escapeHtml(executionDetail(executionResult, c.executionReason))}</div>
+        ${miniKvRows([
+          ["止损", riskLines.stopLoss || "--"],
+          ["止盈", riskLines.takeProfit || "--"],
+          ["跟踪", riskLines.trailingStop || "--"],
+        ])}
       `;
 
       renderFills(c.tradeRecords, c.quoteAsset);
