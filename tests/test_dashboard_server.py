@@ -51,6 +51,12 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("交易所过期", INDEX_HTML)
         self.assertIn("\"订单状态\", \"方向\", \"数量\", \"挂单/成交价\", \"冻结\", \"手续费\", \"已实现\", \"时间\"", INDEX_HTML)
         self.assertIn("fillPageSize", INDEX_HTML)
+        self.assertIn("fillFilter", INDEX_HTML)
+        self.assertIn("全部订单", INDEX_HTML)
+        self.assertIn("已成交", INDEX_HTML)
+        self.assertIn("挂单中", INDEX_HTML)
+        self.assertIn("撤单/过期", INDEX_HTML)
+        self.assertIn("boti.fillFilter", INDEX_HTML)
         self.assertIn("fillPrev", INDEX_HTML)
         self.assertIn("fillNext", INDEX_HTML)
         self.assertIn("insight-drawer", INDEX_HTML)
@@ -392,6 +398,79 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(len(markers), 1)
         self.assertEqual(len(chart_payload["live_trade_markers"]), 1)
         self.assertEqual(chart_payload["live_trade_markers"][0]["trigger"], "")
+
+    def test_trade_records_scan_full_runtime_file_not_history_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(
+                runtime_dir / "latest_report.json",
+                {
+                    "timestamp_ms": 2_000_000,
+                    "decisions": [{"symbol": "XRPJPY", "signal": {"action": "HOLD"}}],
+                    "market_prices": {"XRPJPY": 223.4},
+                },
+            )
+            _write_json(
+                runtime_dir / "paper_state.json",
+                {
+                    "quote_asset": "JPY",
+                    "quote_balance": 1000,
+                    "initial_quote_balance": 1000,
+                    "positions": {},
+                    "open_orders": {},
+                },
+            )
+            old_fill_cycle = {
+                "timestamp_ms": 1_000,
+                "market_prices": {"XRPJPY": 222.0},
+                "decisions": [
+                    {
+                        "symbol": "XRPJPY",
+                        "execution_result": {
+                            "status": "PAPER_FILLED",
+                            "symbol": "XRPJPY",
+                            "side": "BUY",
+                            "quantity": 1.0,
+                            "fill_price": 222.0,
+                            "timestamp_ms": 1_000,
+                        },
+                    }
+                ],
+            }
+            old_order_cycle = {
+                "timestamp_ms": 2_000,
+                "market_prices": {"XRPJPY": 223.0},
+                "decisions": [],
+                "order_lifecycle_events": [
+                    {
+                        "status": "CANCELED",
+                        "symbol": "XRPJPY",
+                        "side": "SELL",
+                        "quantity": 2.0,
+                        "limit_price": 224.0,
+                        "timestamp_ms": 2_000,
+                        "client_order_id": "old-cancel",
+                    }
+                ],
+            }
+            filler = [
+                json.dumps({"timestamp_ms": 3_000 + i, "market_prices": {"XRPJPY": 223.0}, "decisions": []})
+                for i in range(1_200)
+            ]
+            _write_text(
+                runtime_dir / "cycle_reports.jsonl",
+                "\n".join([json.dumps(old_fill_cycle), json.dumps(old_order_cycle), *filler]),
+            )
+
+            payload = build_dashboard_payload(runtime_dir)
+
+        self.assertEqual(payload["history_count"], 800)
+        statuses = {record["status"] for record in payload["trade_records"]}
+        sides = {record["side"] for record in payload["trade_records"]}
+        self.assertIn("PAPER_FILLED", statuses)
+        self.assertIn("CANCELED", statuses)
+        self.assertIn("BUY", sides)
+        self.assertIn("SELL", sides)
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

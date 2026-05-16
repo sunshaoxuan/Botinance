@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 import secrets as token_secrets
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, Tuple
@@ -170,6 +171,8 @@ def resolve_passphrase(service: str, account: str) -> str:
 def _run_openssl(command: list[str], input_bytes: bytes | None, passphrase: str) -> bytes:
     env = os.environ.copy()
     env[PASSPHRASE_ENV_VAR] = passphrase
+    command = list(command)
+    command[0] = _resolve_openssl_executable()
     result = subprocess.run(
         command,
         input=input_bytes,
@@ -178,6 +181,22 @@ def _run_openssl(command: list[str], input_bytes: bytes | None, passphrase: str)
         env=env,
     )
     return result.stdout
+
+
+def _resolve_openssl_executable() -> str:
+    found = shutil.which("openssl")
+    if found:
+        return found
+    candidates = [
+        Path(r"C:\Program Files\Git\usr\bin\openssl.exe"),
+        Path(r"C:\Program Files (x86)\Git\usr\bin\openssl.exe"),
+        Path(r"C:\Program Files\OpenSSL-Win64\bin\openssl.exe"),
+        Path(r"C:\Program Files\OpenSSL-Win32\bin\openssl.exe"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return "openssl"
 
 
 def encrypt_secret_values(

@@ -9,7 +9,7 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, Iterable, List
 from urllib.parse import parse_qs, urlparse
 
 from binance_ai.config import load_settings
@@ -929,6 +929,14 @@ INDEX_HTML = """<!doctype html>
                   <div class="panel-subtitle">挂单、成交、撤单、冻结资产和手续费统一展示</div>
                 </div>
                 <div class="fill-toolbar">
+                  <select id="fillFilter" aria-label="订单成交记录筛选">
+                    <option value="all">全部订单</option>
+                    <option value="filled">已成交</option>
+                    <option value="open">挂单中</option>
+                    <option value="closed">撤单/过期</option>
+                    <option value="buy">买入</option>
+                    <option value="sell">卖出</option>
+                  </select>
                   <span id="fillPageInfo">--</span>
                   <select id="fillPageSize" aria-label="成交记录每页行数">
                     <option value="50">50行</option>
@@ -1078,6 +1086,7 @@ INDEX_HTML = """<!doctype html>
     let selectedChartInterval = window.localStorage.getItem("boti.chartInterval") || "1m";
     let fillPageSize = 50;
     let fillPage = 0;
+    let fillFilter = window.localStorage.getItem("boti.fillFilter") || "all";
     let dashboardRequestSeq = 0;
     let chartRenderSeq = 0;
     let tickInFlight = false;
@@ -1086,7 +1095,7 @@ INDEX_HTML = """<!doctype html>
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
-      "chartIntervalSelect", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
+      "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1611,6 +1620,7 @@ INDEX_HTML = """<!doctype html>
         ["止损线", risk.stopLoss || "--"],
         ["止盈线", risk.takeProfit || "--"],
         ["跟踪止损", risk.trailingStop || "--"],
+        ["动态退出", escapeHtml((sell.blocker_details || []).find((item) => String(item).startsWith("动态退出")) || "未输出")],
         ["持仓 K 线数", escapeHtml(fmtNumber(sell.bars_held ?? (c.position || {}).hold_bars, 0))],
         ["触发状态", escapeHtml(c.positionDiag.exit_trigger || c.positionDiag.exit_reason || "未触发")]
       ]);
@@ -1778,11 +1788,21 @@ INDEX_HTML = """<!doctype html>
 
     function renderFills(records, quoteAsset) {
       const allRecords = records || [];
-      const total = allRecords.length;
+      const filteredRecords = allRecords.filter((record) => {
+        const status = String(record.status || record.event_type || "").toUpperCase();
+        const side = String(record.side || record.action || "").toUpperCase();
+        if (fillFilter === "filled") return status === "FILLED" || status === "PAPER_FILLED";
+        if (fillFilter === "open") return status === "OPEN" || status === "NEW" || status === "PARTIALLY_FILLED" || status === "UNKNOWN";
+        if (fillFilter === "closed") return status === "CANCELED" || status === "EXPIRED" || status === "REJECTED";
+        if (fillFilter === "buy") return side === "BUY";
+        if (fillFilter === "sell") return side === "SELL";
+        return true;
+      });
+      const total = filteredRecords.length;
       const pageCount = Math.max(1, Math.ceil(total / fillPageSize));
       fillPage = Math.max(0, Math.min(fillPage, pageCount - 1));
       const start = fillPage * fillPageSize;
-      const pageRecords = allRecords.slice(start, start + fillPageSize);
+      const pageRecords = filteredRecords.slice(start, start + fillPageSize);
       const rows = pageRecords.map((f) => {
         const side = String(f.side || f.action || "").toUpperCase();
         const status = String(f.status || "").toUpperCase();
@@ -1825,8 +1845,9 @@ INDEX_HTML = """<!doctype html>
       });
       if (els.fillPageInfo) {
         const end = Math.min(total, start + pageRecords.length);
-        els.fillPageInfo.textContent = total ? `${start + 1}-${end} / ${total}` : "0 / 0";
+        els.fillPageInfo.textContent = total ? `${start + 1}-${end} / ${total}（全量 ${allRecords.length}）` : `0 / 0（全量 ${allRecords.length}）`;
       }
+      if (els.fillFilter) els.fillFilter.value = fillFilter;
       if (els.fillPrev) els.fillPrev.disabled = fillPage <= 0;
       if (els.fillNext) els.fillNext.disabled = fillPage >= pageCount - 1;
       if (els.fillPageSize) els.fillPageSize.value = String(fillPageSize);
@@ -2552,6 +2573,12 @@ INDEX_HTML = """<!doctype html>
         fillPage = 0;
         updateTradingTab(lastPayloadSnapshot || {});
       });
+      els.fillFilter.addEventListener("change", () => {
+        fillFilter = els.fillFilter.value || "all";
+        window.localStorage.setItem("boti.fillFilter", fillFilter);
+        fillPage = 0;
+        updateTradingTab(lastPayloadSnapshot || {});
+      });
       els.fillPrev.addEventListener("click", () => {
         fillPage = Math.max(0, fillPage - 1);
         updateTradingTab(lastPayloadSnapshot || {});
@@ -2657,7 +2684,39 @@ def _read_history(path: Path, limit: int = 6000) -> List[Dict[str, Any]]:
     return rows
 
 
-def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 300) -> List[Dict[str, Any]]:
+def _apply_optional_limit_newest_first(items: List[Dict[str, Any]], limit: int | None) -> List[Dict[str, Any]]:
+    newest_first = items[::-1]
+    if limit is None:
+        return newest_first
+    if limit <= 0:
+        return []
+    return newest_first[:limit]
+
+
+def _iter_matching_cycles_from_file(path: Path, markers: tuple[str, ...], scan_lines: int | None) -> Iterable[Dict[str, Any]]:
+    if not path.exists():
+        return
+    if scan_lines is None:
+        line_iter: Iterable[str] = path.open("r", encoding="utf-8", errors="ignore")
+    else:
+        line_iter = _read_recent_lines(path, scan_lines)
+    try:
+        for line in line_iter:
+            if markers and not any(marker in line for marker in markers):
+                continue
+            try:
+                cycle = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(cycle, dict):
+                yield cycle
+    finally:
+        close = getattr(line_iter, "close", None)
+        if callable(close):
+            close()
+
+
+def _extract_recent_fills(history: List[Dict[str, Any]], limit: int | None = 300) -> List[Dict[str, Any]]:
     fills: List[Dict[str, Any]] = []
     for cycle in history:
         for decision in cycle.get("decisions", []):
@@ -2679,21 +2738,11 @@ def _extract_recent_fills(history: List[Dict[str, Any]], limit: int = 300) -> Li
                         "client_order_id": event.get("client_order_id"),
                     }
                 )
-    return fills[-limit:][::-1]
+    return _apply_optional_limit_newest_first(fills, limit)
 
 
-def _extract_recent_fills_from_file(path: Path, limit: int = 300, scan_lines: int = 8000) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    matching_cycles: List[Dict[str, Any]] = []
-    for line in _read_recent_lines(path, scan_lines):
-        if '"PAPER_FILLED"' not in line and '"order_lifecycle_events"' not in line:
-            continue
-        try:
-            cycle = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        matching_cycles.append(cycle)
+def _extract_recent_fills_from_file(path: Path, limit: int | None = 300, scan_lines: int | None = 8000) -> List[Dict[str, Any]]:
+    matching_cycles = list(_iter_matching_cycles_from_file(path, ('"PAPER_FILLED"', '"order_lifecycle_events"'), scan_lines))
     return _extract_recent_fills(matching_cycles, limit=limit)
 
 
@@ -2712,6 +2761,15 @@ def _extract_order_lifecycle_events(
             if isinstance(event, dict):
                 events.append(event)
     return events[-limit:][::-1]
+
+
+def _extract_order_lifecycle_events_from_file(path: Path, limit: int | None = 200, scan_lines: int | None = 8000) -> List[Dict[str, Any]]:
+    events: List[Dict[str, Any]] = []
+    for cycle in _iter_matching_cycles_from_file(path, ('"order_lifecycle_events"',), scan_lines):
+        for event in cycle.get("order_lifecycle_events", []):
+            if isinstance(event, dict):
+                events.append(event)
+    return _apply_optional_limit_newest_first(events, limit)
 
 
 def _dashboard_fee_rate(default: float = 0.001) -> float:
@@ -2854,7 +2912,7 @@ def _build_trade_records(
     order_events: List[Dict[str, Any]],
     quote_asset: str,
     fee_rate: float,
-    limit: int = 500,
+    limit: int | None = 500,
 ) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     current_open_clients = {str(order.get("client_order_id") or "") for order in open_orders if order.get("client_order_id")}
@@ -2898,7 +2956,8 @@ def _build_trade_records(
             record.get("quantity"),
         )
         deduped[key] = record
-    return sorted(deduped.values(), key=lambda item: _coerce_int(item.get("timestamp_ms")), reverse=True)[:limit]
+    sorted_records = sorted(deduped.values(), key=lambda item: _coerce_int(item.get("timestamp_ms")), reverse=True)
+    return sorted_records if limit is None else sorted_records[:limit]
 
 
 def _build_real_cost_basis_summary(
@@ -3706,10 +3765,14 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
             "live_ai_veto_markers": [],
         }
 
-    recent_fills = _extract_recent_fills(history) if include_chart else _extract_recent_fills_from_file(history_path)
+    recent_fills = _extract_recent_fills_from_file(history_path)
+    all_fills = _extract_recent_fills_from_file(history_path, limit=None, scan_lines=None)
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
     order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report)
-    trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate)
+    all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=None, scan_lines=None)
+    if not all_order_lifecycle_events:
+        all_order_lifecycle_events = order_lifecycle_events
+    trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=None)
     real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
 
     return {

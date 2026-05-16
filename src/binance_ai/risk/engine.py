@@ -16,6 +16,21 @@ class RiskDecision:
     order: OrderRequest | None = None
 
 
+@dataclass(frozen=True)
+class DynamicExitProfile:
+    stop_loss_pct: float
+    take_profit_pct: float
+    trailing_stop_pct: float
+    stop_loss_multiplier: float
+    take_profit_multiplier: float
+    trailing_stop_multiplier: float
+    trend_score: float
+    volatility_ratio: float
+    volume_ratio: float
+    strong_trend: bool
+    explanation: str
+
+
 class RiskEngine:
     def __init__(self, settings: Settings, client: BinanceSpotClient) -> None:
         self.settings = settings
@@ -260,6 +275,8 @@ class RiskEngine:
             blocker_details.append(position_diagnostic.exit_watch_reason)
             if activation_decision and activation_decision.reason:
                 blocker_details.append(activation_decision.reason)
+        dynamic_profile = self.dynamic_exit_profile(candles)
+        blocker_details.append(dynamic_profile.explanation)
 
         return SellDecisionDiagnostic(
             symbol=symbol,
@@ -293,7 +310,11 @@ class RiskEngine:
     ) -> str | None:
         entry_price = position.average_entry_price
         highest_price = max(position.highest_price or entry_price, price)
-        stop_loss_price, take_profit_price, trailing_stop_price = self._fee_adjusted_exit_prices(entry_price, highest_price)
+        stop_loss_price, take_profit_price, trailing_stop_price = self._fee_adjusted_exit_prices(
+            entry_price,
+            highest_price,
+            candles=candles,
+        )
 
         bars_held = 0
         if position.entry_candle_close_time > 0:
@@ -313,13 +334,148 @@ class RiskEngine:
             return "max_hold_exit"
         return None
 
-    def _fee_adjusted_exit_prices(self, entry_price: float, highest_price: float) -> tuple[float, float, float]:
+    def _fee_adjusted_exit_prices(
+        self,
+        entry_price: float,
+        highest_price: float,
+        candles: Sequence[Candle] | None = None,
+    ) -> tuple[float, float, float]:
+        profile = self.dynamic_exit_profile(candles or [])
         trading_fee_rate = getattr(self.settings, "trading_fee_rate", 0.0)
         sell_net_multiplier = max(0.000001, 1.0 - max(0.0, trading_fee_rate))
-        stop_loss_price = entry_price * (1.0 - self.settings.stop_loss_pct) / sell_net_multiplier
-        take_profit_price = entry_price * (1.0 + self.settings.take_profit_pct) / sell_net_multiplier
-        trailing_stop_price = highest_price * (1.0 - self.settings.trailing_stop_pct) / sell_net_multiplier
+        stop_loss_price = entry_price * (1.0 - profile.stop_loss_pct) / sell_net_multiplier
+        take_profit_price = entry_price * (1.0 + profile.take_profit_pct) / sell_net_multiplier
+        trailing_stop_price = highest_price * (1.0 - profile.trailing_stop_pct) / sell_net_multiplier
         return stop_loss_price, take_profit_price, trailing_stop_price
+
+    @staticmethod
+    def _clamp(value: float, lower: float, upper: float) -> float:
+        return min(upper, max(lower, value))
+
+    @staticmethod
+    def _true_range(current: Candle, previous_close: float | None) -> float:
+        if previous_close is None:
+            return max(0.0, current.high - current.low)
+        return max(
+            max(0.0, current.high - current.low),
+            abs(current.high - previous_close),
+            abs(current.low - previous_close),
+        )
+
+    def dynamic_exit_profile(self, candles: Sequence[Candle]) -> DynamicExitProfile:
+        base_stop = self.settings.stop_loss_pct
+        base_take = self.settings.take_profit_pct
+        base_trailing = self.settings.trailing_stop_pct
+        dynamic_enabled = getattr(self.settings, "dynamic_exit_enabled", True)
+        if not dynamic_enabled or len(candles) < 6:
+            return DynamicExitProfile(
+                stop_loss_pct=base_stop,
+                take_profit_pct=base_take,
+                trailing_stop_pct=base_trailing,
+                stop_loss_multiplier=1.0,
+                take_profit_multiplier=1.0,
+                trailing_stop_multiplier=1.0,
+                trend_score=0.0,
+                volatility_ratio=1.0,
+                volume_ratio=1.0,
+                strong_trend=False,
+                explanation="动态退出未启用或样本不足，使用基础止损止盈线",
+            )
+
+        closes = [candle.close for candle in candles if candle.close > 0]
+        if len(closes) < 6:
+            return DynamicExitProfile(
+                stop_loss_pct=base_stop,
+                take_profit_pct=base_take,
+                trailing_stop_pct=base_trailing,
+                stop_loss_multiplier=1.0,
+                take_profit_multiplier=1.0,
+                trailing_stop_multiplier=1.0,
+                trend_score=0.0,
+                volatility_ratio=1.0,
+                volume_ratio=1.0,
+                strong_trend=False,
+                explanation="动态退出样本不足，使用基础止损止盈线",
+            )
+
+        price = closes[-1]
+        fast_window = min(6, len(closes))
+        slow_window = min(18, len(closes))
+        fast_ma = sum(closes[-fast_window:]) / fast_window
+        slow_ma = sum(closes[-slow_window:]) / slow_window
+        ma_gap_pct = (fast_ma - slow_ma) / price if price > 0 else 0.0
+        recent_change_pct = (closes[-1] - closes[-fast_window]) / closes[-fast_window] if closes[-fast_window] > 0 else 0.0
+        trend_unit = max(0.000001, getattr(self.settings, "dynamic_exit_strong_trend_threshold", 0.004))
+        trend_score = self._clamp((ma_gap_pct + recent_change_pct * 0.5) / trend_unit, -1.0, 1.0)
+
+        ranges = []
+        previous_close = None
+        for candle in candles:
+            ranges.append(self._true_range(candle, previous_close) / candle.close if candle.close > 0 else 0.0)
+            previous_close = candle.close
+        recent_ranges = [value for value in ranges[-fast_window:] if value > 0]
+        baseline_ranges = [value for value in ranges[-slow_window:] if value > 0]
+        recent_atr = sum(recent_ranges) / len(recent_ranges) if recent_ranges else 0.0
+        baseline_atr = sum(baseline_ranges) / len(baseline_ranges) if baseline_ranges else recent_atr
+        volatility_ratio = self._clamp(recent_atr / baseline_atr if baseline_atr > 0 else 1.0, 0.7, 1.4)
+
+        volume_lookback = max(3, min(getattr(self.settings, "dynamic_exit_volume_lookback", 20), len(candles)))
+        recent_volume = sum(candle.volume for candle in candles[-fast_window:]) / fast_window
+        baseline_volume = sum(candle.volume for candle in candles[-volume_lookback:]) / volume_lookback
+        volume_ratio = self._clamp(recent_volume / baseline_volume if baseline_volume > 0 else 1.0, 0.7, 1.4)
+
+        min_multiplier = getattr(self.settings, "dynamic_exit_min_multiplier", 0.75)
+        max_multiplier = getattr(self.settings, "dynamic_exit_max_multiplier", 1.35)
+        stop_max_multiplier = min(getattr(self.settings, "dynamic_stop_max_multiplier", 1.25), max_multiplier)
+        strong_trend = trend_score >= 0.55 and volume_ratio >= 0.95
+        take_profit_multiplier = self._clamp(
+            1.0
+            + 0.28 * trend_score
+            + 0.14 * (volatility_ratio - 1.0)
+            + 0.10 * (volume_ratio - 1.0),
+            min_multiplier,
+            max_multiplier,
+        )
+        stop_loss_multiplier = self._clamp(
+            1.0
+            + 0.14 * (volatility_ratio - 1.0)
+            - 0.12 * max(-trend_score, 0.0),
+            min_multiplier,
+            stop_max_multiplier,
+        )
+        trailing_stop_multiplier = self._clamp(
+            1.0
+            + 0.22 * max(trend_score, 0.0)
+            + 0.16 * (volatility_ratio - 1.0)
+            + 0.08 * (volume_ratio - 1.0),
+            min_multiplier,
+            max_multiplier,
+        )
+        if strong_trend:
+            take_profit_multiplier = self._clamp(take_profit_multiplier * 1.08, min_multiplier, max_multiplier)
+            trailing_stop_multiplier = self._clamp(trailing_stop_multiplier * 1.10, min_multiplier, max_multiplier)
+
+        explanation = (
+            f"动态退出：趋势 {trend_score:.2f}，波动 {volatility_ratio:.2f}，量能 {volume_ratio:.2f}；"
+            f"止损系数 {stop_loss_multiplier:.2f}，止盈系数 {take_profit_multiplier:.2f}，"
+            f"跟踪系数 {trailing_stop_multiplier:.2f}"
+        )
+        if strong_trend:
+            explanation += "；强势/阶梯上涨，放宽止盈与跟踪区间"
+
+        return DynamicExitProfile(
+            stop_loss_pct=base_stop * stop_loss_multiplier,
+            take_profit_pct=base_take * take_profit_multiplier,
+            trailing_stop_pct=base_trailing * trailing_stop_multiplier,
+            stop_loss_multiplier=stop_loss_multiplier,
+            take_profit_multiplier=take_profit_multiplier,
+            trailing_stop_multiplier=trailing_stop_multiplier,
+            trend_score=trend_score,
+            volatility_ratio=volatility_ratio,
+            volume_ratio=volume_ratio,
+            strong_trend=strong_trend,
+            explanation=explanation,
+        )
 
     def build_position_diagnostic(
         self,
@@ -331,7 +487,11 @@ class RiskEngine:
     ) -> PositionDiagnostic:
         entry_price = position.average_entry_price
         highest_price = max(position.highest_price or entry_price, price)
-        stop_loss_price, take_profit_price, trailing_stop_price = self._fee_adjusted_exit_prices(entry_price, highest_price)
+        stop_loss_price, take_profit_price, trailing_stop_price = self._fee_adjusted_exit_prices(
+            entry_price,
+            highest_price,
+            candles=candles,
+        )
         bars_held = 0
         if position.entry_candle_close_time > 0:
             bars_held = sum(

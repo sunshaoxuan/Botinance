@@ -517,6 +517,105 @@ class RiskEngineTests(unittest.TestCase):
         )
         self.assertEqual(reason, "stop_loss")
 
+    def test_dynamic_exit_profile_widens_profit_and_trailing_in_strong_uptrend(self) -> None:
+        from binance_ai.models import Candle, PositionSnapshot
+
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="30m",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.03,
+            take_profit_pct=0.06,
+            trailing_stop_pct=0.02,
+            max_hold_bars=24,
+        )
+        risk = RiskEngine(settings, _ClientStub())
+        candles = [
+            Candle(open_time=i * 60_000, open=200 + i, high=201 + i, low=199 + i, close=200 + i, volume=100 + i * 8, close_time=(i + 1) * 60_000 - 1)
+            for i in range(24)
+        ]
+
+        profile = risk.dynamic_exit_profile(candles)
+        diagnostic = risk.build_position_diagnostic(
+            symbol="XRPJPY",
+            price=223.0,
+            position=PositionSnapshot(
+                quantity=1.0,
+                average_entry_price=200.0,
+                opened_at_ms=1,
+                entry_candle_close_time=1,
+                highest_price=223.0,
+            ),
+            candles=candles,
+            current_timestamp_ms=candles[-1].close_time,
+        )
+
+        self.assertTrue(profile.strong_trend)
+        self.assertGreater(profile.take_profit_multiplier, 1.0)
+        self.assertGreater(profile.trailing_stop_multiplier, 1.0)
+        self.assertGreater(diagnostic.take_profit_price, 212.0)
+        self.assertLess(diagnostic.trailing_stop_price, 223.0 * 0.98)
+
+    def test_dynamic_exit_profile_tightens_in_weak_downtrend(self) -> None:
+        from binance_ai.models import Candle
+
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="30m",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.03,
+            take_profit_pct=0.06,
+            trailing_stop_pct=0.02,
+            max_hold_bars=24,
+        )
+        risk = RiskEngine(settings, _ClientStub())
+        candles = [
+            Candle(open_time=i * 60_000, open=230 - i, high=231 - i, low=229 - i, close=230 - i, volume=300 - i * 6, close_time=(i + 1) * 60_000 - 1)
+            for i in range(24)
+        ]
+
+        profile = risk.dynamic_exit_profile(candles)
+
+        self.assertLess(profile.take_profit_multiplier, 1.0)
+        self.assertLess(profile.stop_loss_multiplier, 1.0)
+        self.assertFalse(profile.strong_trend)
+
 
 if __name__ == "__main__":
     unittest.main()

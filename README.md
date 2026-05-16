@@ -140,22 +140,59 @@ Inspect the latest simulated result and paper portfolio:
 Visual dashboard with auto-refresh:
 
 ```bash
-chmod +x run_visual_dashboard.sh stop_visual_dashboard.sh
+chmod +x run_visual_dashboard.sh stop_visual_dashboard.sh boti_status.sh boti_health.sh
 ./run_visual_dashboard.sh
 ```
 
-The script prints the final dashboard URL. It prefers `8765` and automatically switches to the next free port if that port is already occupied.
+The script starts both Botinance processes through the cross-platform service manager:
 
-Typical URL:
+- `monitor`: continuous paper/live-decision loop
+- `dashboard`: local web dashboard
+
+Default URL:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-This script starts:
+Check status and health:
 
-- a background paper monitor loop writing to `runtime_visual/`
-- a local dashboard server reading from the same directory
+```bash
+./boti_status.sh
+./boti_health.sh
+```
+
+Stop both processes:
+
+```bash
+./stop_visual_dashboard.sh
+```
+
+Windows PowerShell uses the same Python service manager:
+
+```powershell
+.\run_visual_dashboard.ps1
+.\boti_status.ps1
+.\boti_health.ps1
+.\stop_visual_dashboard.ps1
+```
+
+Linux/macOS can call the manager directly:
+
+```bash
+PYTHONPATH=src python3 -m binance_ai.service_manager start
+PYTHONPATH=src python3 -m binance_ai.service_manager status
+PYTHONPATH=src python3 -m binance_ai.service_manager health
+PYTHONPATH=src python3 -m binance_ai.service_manager stop
+```
+
+For 24-hour hosting, run the same command under the platform supervisor:
+
+- Windows: Task Scheduler, NSSM, or WinSW; configure auto-start on boot and restart on failure.
+- Linux: `systemd`; configure `Restart=always`.
+- macOS: `launchd`; configure `KeepAlive=true`.
+
+Health is considered bad if the dashboard is unreachable, the monitor process is missing, or `latest_report.json` is older than `BOTI_STALE_SECONDS` seconds. The default stale threshold is `180`.
 
 The dashboard is a five-tab Botinance interface:
 

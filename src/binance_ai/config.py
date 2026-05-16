@@ -97,6 +97,12 @@ class Settings:
     exit_take_profit_fraction: float = 0.5
     exit_max_hold_fraction: float = 0.25
     strategy_sell_fraction: float = 0.5
+    dynamic_exit_enabled: bool = True
+    dynamic_exit_min_multiplier: float = 0.75
+    dynamic_exit_max_multiplier: float = 1.35
+    dynamic_stop_max_multiplier: float = 1.25
+    dynamic_exit_strong_trend_threshold: float = 0.004
+    dynamic_exit_volume_lookback: int = 20
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -181,4 +187,10 @@ def load_settings() -> Settings:
         exit_take_profit_fraction=float(os.getenv("EXIT_TAKE_PROFIT_FRACTION", "0.5")),
         exit_max_hold_fraction=float(os.getenv("EXIT_MAX_HOLD_FRACTION", "0.25")),
         strategy_sell_fraction=float(os.getenv("STRATEGY_SELL_FRACTION", "0.5")),
+        dynamic_exit_enabled=_parse_bool(os.getenv("DYNAMIC_EXIT_ENABLED"), True),
+        dynamic_exit_min_multiplier=float(os.getenv("DYNAMIC_EXIT_MIN_MULTIPLIER", "0.75")),
+        dynamic_exit_max_multiplier=float(os.getenv("DYNAMIC_EXIT_MAX_MULTIPLIER", "1.35")),
+        dynamic_stop_max_multiplier=float(os.getenv("DYNAMIC_STOP_MAX_MULTIPLIER", "1.25")),
+        dynamic_exit_strong_trend_threshold=float(os.getenv("DYNAMIC_EXIT_STRONG_TREND_THRESHOLD", "0.004")),
+        dynamic_exit_volume_lookback=int(os.getenv("DYNAMIC_EXIT_VOLUME_LOOKBACK", "20")),
     )
