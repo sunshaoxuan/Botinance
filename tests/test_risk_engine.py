@@ -224,6 +224,99 @@ class RiskEngineTests(unittest.TestCase):
         self.assertEqual(diagnostic.ai_veto_reason, "新闻风险过高")
         self.assertIn("AI 风险闸门否决入场", diagnostic.blocker_details[0] if diagnostic.blocker_details else "")
 
+    def test_inspect_buy_decision_allows_cash_rebuild_with_existing_small_position(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=50.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            cash_rebuild_enabled=True,
+            cash_rebuild_max_position_fraction=0.6,
+            cash_rebuild_min_cash_fraction=0.1,
+        )
+        risk = RiskEngine(settings, _ClientStub())
+        diagnostic = risk.inspect_buy_decision(
+            symbol="XRPJPY",
+            price=100.0,
+            account=AccountSnapshot(balances={"JPY": 900.0}),
+            filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+            signal_action="BUY",
+            signal_reason="bullish_cross",
+            has_position=True,
+            position_value=100.0,
+        )
+
+        self.assertTrue(diagnostic.eligible_to_buy)
+        self.assertTrue(diagnostic.eligible_signal)
+        self.assertIn("允许现金补仓", diagnostic.blocker_details[0])
+
+    def test_inspect_buy_decision_blocks_cash_rebuild_when_position_is_already_large(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=50.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            cash_rebuild_enabled=True,
+            cash_rebuild_max_position_fraction=0.6,
+            cash_rebuild_min_cash_fraction=0.1,
+        )
+        risk = RiskEngine(settings, _ClientStub())
+        diagnostic = risk.inspect_buy_decision(
+            symbol="XRPJPY",
+            price=100.0,
+            account=AccountSnapshot(balances={"JPY": 200.0}),
+            filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+            signal_action="BUY",
+            signal_reason="bullish_cross",
+            has_position=True,
+            position_value=800.0,
+        )
+
+        self.assertFalse(diagnostic.eligible_to_buy)
+        self.assertIn("未满足现金补仓条件", diagnostic.blocker_details[0])
+
     def test_determine_exit_reason_take_profit(self) -> None:
         settings = Settings(
             api_key="",

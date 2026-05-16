@@ -82,6 +82,7 @@ class RiskEngine:
         signal_action: str,
         signal_reason: str,
         has_position: bool,
+        position_value: float = 0.0,
         ai_assessment: AiRiskAssessment | None = None,
     ) -> BuyDecisionDiagnostic:
         quote_balance = account.balance_of(self.settings.quote_asset)
@@ -98,11 +99,28 @@ class RiskEngine:
         final_notional = quantity * price
 
         blocker_details = []
-        eligible_signal = signal_action == "BUY" and not has_position
+        total_equity = quote_balance + max(0.0, position_value)
+        current_position_fraction = position_value / total_equity if total_equity > 0 else 0.0
+        cash_fraction = quote_balance / total_equity if total_equity > 0 else 0.0
+        rebuild_allowed = (
+            self.settings.cash_rebuild_enabled
+            and has_position
+            and signal_action == "BUY"
+            and cash_fraction >= self.settings.cash_rebuild_min_cash_fraction
+            and current_position_fraction < self.settings.cash_rebuild_max_position_fraction
+        )
+        eligible_signal = signal_action == "BUY" and (not has_position or rebuild_allowed)
         if signal_action != "BUY":
             blocker_details.append("当前策略信号不是买入")
-        if has_position:
-            blocker_details.append("当前已经有持仓，不重复买入")
+        if has_position and not rebuild_allowed:
+            blocker_details.append(
+                f"当前已有持仓且仓位占比 {current_position_fraction:.2%}，"
+                f"未满足现金补仓条件"
+            )
+        elif rebuild_allowed:
+            blocker_details.append(
+                f"允许现金补仓：现金占比 {cash_fraction:.2%}，仓位占比 {current_position_fraction:.2%}"
+            )
         if not ai_allow_entry:
             blocker_details.append(f"AI 风险闸门否决入场：{ai_veto_reason or '未提供否决原因'}")
         elif ai_position_multiplier < 1.0:

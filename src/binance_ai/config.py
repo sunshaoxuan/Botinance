@@ -108,6 +108,9 @@ class Settings:
     strategy_sell_fraction: float = 0.5
     ai_can_cancel_buyback: bool = False
     ai_extreme_risk_cancel_buyback: bool = True
+    cash_rebuild_enabled: bool = True
+    cash_rebuild_max_position_fraction: float = 0.6
+    cash_rebuild_min_cash_fraction: float = 0.1
     dynamic_exit_enabled: bool = True
     dynamic_exit_min_multiplier: float = 0.75
     dynamic_exit_max_multiplier: float = 1.35
@@ -209,6 +212,9 @@ def load_settings() -> Settings:
         strategy_sell_fraction=float(os.getenv("STRATEGY_SELL_FRACTION", "0.5")),
         ai_can_cancel_buyback=_parse_bool(os.getenv("AI_CAN_CANCEL_BUYBACK"), False),
         ai_extreme_risk_cancel_buyback=_parse_bool(os.getenv("AI_EXTREME_RISK_CANCEL_BUYBACK"), True),
+        cash_rebuild_enabled=_parse_bool(os.getenv("CASH_REBUILD_ENABLED"), True),
+        cash_rebuild_max_position_fraction=float(os.getenv("CASH_REBUILD_MAX_POSITION_FRACTION", "0.6")),
+        cash_rebuild_min_cash_fraction=float(os.getenv("CASH_REBUILD_MIN_CASH_FRACTION", "0.1")),
         dynamic_exit_enabled=_parse_bool(os.getenv("DYNAMIC_EXIT_ENABLED"), True),
         dynamic_exit_min_multiplier=float(os.getenv("DYNAMIC_EXIT_MIN_MULTIPLIER", "0.75")),
         dynamic_exit_max_multiplier=float(os.getenv("DYNAMIC_EXIT_MAX_MULTIPLIER", "1.35")),

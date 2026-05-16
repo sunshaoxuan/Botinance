@@ -311,7 +311,7 @@ class TradingEngine:
                 position_multiplier=1.0,
                 veto_reason="",
             )
-            applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY and not has_position else None
+            applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY else None
             open_orders = list(context.get("open_orders", []))
             cooldown_remaining_bars = self._buyback_cooldown_remaining_bars(
                 symbol=symbol,
@@ -328,6 +328,7 @@ class TradingEngine:
                 signal_action=signal.action.value,
                 signal_reason=signal.reason,
                 has_position=has_position,
+                position_value=base_balance * price,
                 ai_assessment=applied_ai_assessment,
             )
             sell_diagnostic = self.risk.inspect_sell_decision(
@@ -417,7 +418,7 @@ class TradingEngine:
                         order_lifecycle_events.append(event)
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason, "trigger": exit_reason}
-            elif signal.action == SignalAction.BUY and not has_position:
+            elif signal.action == SignalAction.BUY and (buy_diagnostic.eligible_to_buy or not ai_assessment.allow_entry):
                 if not ai_assessment.allow_entry:
                     execution_result = {
                         "status": "BLOCKED",
@@ -452,6 +453,13 @@ class TradingEngine:
                             order_lifecycle_events.append(event)
                     else:
                         execution_result = {"status": "BLOCKED", "reason": decision.reason}
+            elif signal.action == SignalAction.BUY:
+                execution_result = {
+                    "status": "BLOCKED",
+                    "reason": buy_diagnostic.blocker,
+                    "decision_state": self._decision_state_for_symbol(symbol),
+                    "cooldown_remaining_bars": cooldown_remaining_bars,
+                }
             elif signal.action == SignalAction.SELL and has_position:
                 decision = self.risk.build_sell_order(
                     symbol,
