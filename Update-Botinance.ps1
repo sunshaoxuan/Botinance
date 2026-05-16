@@ -6,7 +6,8 @@ param(
   [int]$Port = $(if ($env:DASHBOARD_PORT) { [int]$env:DASHBOARD_PORT } else { 8765 }),
   [int]$SleepSeconds = $(if ($env:SLEEP_SECONDS) { [int]$env:SLEEP_SECONDS } else { 3 }),
   [int]$StaleSeconds = $(if ($env:BOTI_STALE_SECONDS) { [int]$env:BOTI_STALE_SECONDS } else { 180 }),
-  [int]$StopTimeoutSeconds = $(if ($env:BOTI_STOP_TIMEOUT_SECONDS) { [int]$env:BOTI_STOP_TIMEOUT_SECONDS } else { 30 })
+  [int]$StopTimeoutSeconds = $(if ($env:BOTI_STOP_TIMEOUT_SECONDS) { [int]$env:BOTI_STOP_TIMEOUT_SECONDS } else { 30 }),
+  [int]$StartTimeoutSeconds = $(if ($env:BOTI_START_TIMEOUT_SECONDS) { [int]$env:BOTI_START_TIMEOUT_SECONDS } else { 45 })
 )
 
 $ErrorActionPreference = "Stop"
@@ -70,16 +71,30 @@ function Stop-BotinanceProcesses {
 
 function Invoke-Start {
   $startScript = Join-Path $RootDir "Start-Botinance.ps1"
-  if (Test-Path $startScript) {
-    & $startScript
-    return
+  $scriptBlock = {
+    param($RootDir, $Python, $OutputDir, $SleepSeconds, $HostAddress, $Port, $StartScript)
+    Set-Location $RootDir
+    if (Test-Path $StartScript) {
+      & $StartScript
+      return
+    }
+    $env:PYTHONPATH = "src"
+    & $Python -m binance_ai.service_manager start `
+      --output-dir $OutputDir `
+      --sleep-seconds $SleepSeconds `
+      --host $HostAddress `
+      --port $Port
   }
-  $env:PYTHONPATH = "src"
-  & $Python -m binance_ai.service_manager start `
-    --output-dir $OutputDir `
-    --sleep-seconds $SleepSeconds `
-    --host $HostAddress `
-    --port $Port
+  $job = Start-Job -ScriptBlock $scriptBlock -ArgumentList $RootDir, $Python, $OutputDir, $SleepSeconds, $HostAddress, $Port, $startScript
+  if (Wait-Job $job -Timeout $StartTimeoutSeconds) {
+    Receive-Job $job
+    Remove-Job $job
+  } else {
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Write-Log "start timed out after ${StartTimeoutSeconds}s; checking health"
+    Test-Healthy
+  }
 }
 
 function Invoke-Stop {
