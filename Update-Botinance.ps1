@@ -11,9 +11,36 @@ param(
 $ErrorActionPreference = "Stop"
 $RootDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Git = $(if ($env:GIT_EXE) { $env:GIT_EXE } else { "git" })
-$Python = $(if ($env:PYTHON_EXE) { $env:PYTHON_EXE } else { "python" })
 $LogDir = Join-Path $RootDir $OutputDir
 $LogPath = Join-Path $LogDir "git_sync.log"
+
+function Resolve-Python {
+  if ($env:PYTHON_EXE -and (Test-Path $env:PYTHON_EXE)) {
+    return $env:PYTHON_EXE
+  }
+  $candidates = @(
+    "C:\Users\sunsx\AppData\Local\Programs\Python\Python312\python.exe",
+    "C:\Users\sunsx\AppData\Local\Programs\Python\Python311\python.exe",
+    "C:\Python312\python.exe",
+    "C:\Python311\python.exe"
+  )
+  foreach ($candidate in $candidates) {
+    if (Test-Path $candidate) {
+      return $candidate
+    }
+  }
+  $cmd = Get-Command python -ErrorAction SilentlyContinue
+  if ($cmd) {
+    return $cmd.Source
+  }
+  $py = Get-Command py -ErrorAction SilentlyContinue
+  if ($py) {
+    return $py.Source
+  }
+  throw "Python executable not found. Set PYTHON_EXE or install Python."
+}
+
+$Python = Resolve-Python
 
 function Write-Log {
   param([string]$Message)
