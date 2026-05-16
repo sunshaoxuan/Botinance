@@ -505,6 +505,51 @@ class TradingEngine:
                     decision=activation_decision,
                     timestamp_ms=cycle_timestamp_ms,
                 )
+            elif self._can_run_capital_deployment(
+                symbol=symbol,
+                signal_action=signal.action.value,
+                exit_reason=exit_reason,
+                ai_assessment=ai_assessment,
+                timestamp_ms=cycle_timestamp_ms,
+            ):
+                target_order, target_blocker = self._build_target_position_buy_order(
+                    symbol=symbol,
+                    price=price,
+                    account=account,
+                    base_balance=base_balance,
+                    filters=filters,
+                    position_multiplier=ai_assessment.position_multiplier,
+                )
+                if target_order is not None:
+                    execution_result, events, orders = self._submit_ladder_orders(
+                        target_order,
+                        current_price=price,
+                        filters=filters,
+                        timestamp_ms=cycle_timestamp_ms,
+                        entry_candle_close_time_ms=latest_closed_candle_close_time,
+                        trigger="target_rebuild_buy",
+                        urgent=False,
+                        ladder_group="entry",
+                        tiers_raw=self.settings.entry_ladder_tiers,
+                    )
+                    order_lifecycle_events.extend(events)
+                    order = orders[0] if orders else None
+                    execution_result["target_position_fraction"] = self.settings.target_position_fraction
+                    execution_result["min_cash_reserve_fraction"] = self.settings.min_cash_reserve_fraction
+                    execution_result["capital_deployment"] = True
+                else:
+                    self._record_position_activation_state(
+                        symbol=symbol,
+                        decision=activation_decision,
+                        timestamp_ms=cycle_timestamp_ms,
+                    )
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": target_blocker,
+                        "trigger": "target_rebuild_buy",
+                        "decision_state": self._decision_state_for_symbol(symbol),
+                        "cooldown_remaining_bars": cooldown_remaining_bars,
+                    }
             else:
                 self._record_position_activation_state(
                     symbol=symbol,
@@ -632,6 +677,30 @@ class TradingEngine:
             ladder_group=ladder_group,
             target_fraction=target_fraction,
         )
+
+    def _can_run_capital_deployment(
+        self,
+        *,
+        symbol: str,
+        signal_action: str,
+        exit_reason: str | None,
+        ai_assessment: AiRiskAssessment,
+        timestamp_ms: int,
+    ) -> bool:
+        if not self.settings.order_ladder_enabled or self.settings.target_position_fraction <= 0:
+            return False
+        state = self._activation_state_for_symbol(symbol)
+        if float(state.get("pending_buyback_quantity", 0.0) or 0.0) > 0:
+            return False
+        if self._buyback_cooldown_remaining_bars(symbol=symbol, timestamp_ms=timestamp_ms) > 0:
+            return False
+        if signal_action.upper() == "SELL":
+            return False
+        if exit_reason in {"emergency_stop", "stop_loss"}:
+            return False
+        if not ai_assessment.allow_entry or self._ai_extreme_risk(ai_assessment):
+            return False
+        return True
 
     def _build_target_position_buy_order(
         self,
