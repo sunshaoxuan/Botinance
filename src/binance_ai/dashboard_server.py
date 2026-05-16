@@ -2292,32 +2292,15 @@ INDEX_HTML = """<!doctype html>
       ];
       ctx.save();
       ctx.font = "560 9.5px Hiragino Sans, PingFang SC, sans-serif";
-      const gap = 8;
       const paddingX = 8;
-      const rowH = 15;
-      const maxW = Math.max(170, Math.min(360, item.maxWidth || 320));
+      const rowH = 14;
       const measured = segments.map((segment) => ({
         ...segment,
         width: Math.ceil(ctx.measureText(segment.text).width),
       }));
-      const rows = [];
-      let row = [];
-      let rowW = 0;
-      measured.forEach((segment) => {
-        const nextW = row.length ? rowW + gap + segment.width : segment.width;
-        if (row.length && nextW > maxW - paddingX * 2) {
-          rows.push({ items: row, width: rowW });
-          row = [segment];
-          rowW = segment.width;
-        } else {
-          row.push(segment);
-          rowW = nextW;
-        }
-      });
-      if (row.length) rows.push({ items: row, width: rowW });
-      const contentW = Math.max(...rows.map((line) => line.width));
-      const boxW = Math.min(maxW, contentW + paddingX * 2);
-      const boxH = rows.length * rowH + 8;
+      const contentW = Math.max(...measured.map((segment) => segment.width));
+      const boxW = contentW + paddingX * 2;
+      const boxH = measured.length * rowH + 8;
       ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
       ctx.strokeStyle = "rgba(150, 164, 184, 0.48)";
       ctx.beginPath();
@@ -2325,14 +2308,9 @@ INDEX_HTML = """<!doctype html>
       ctx.fill();
       ctx.stroke();
       ctx.textAlign = "left";
-      rows.forEach((line, lineIndex) => {
-        let cursorX = item.x;
-        const baseline = item.y + 3 + lineIndex * rowH;
-        line.items.forEach((segment) => {
-          ctx.fillStyle = segment.color;
-          ctx.fillText(segment.text, cursorX, baseline);
-          cursorX += segment.width + gap;
-        });
+      measured.forEach((segment, index) => {
+        ctx.fillStyle = segment.color;
+        ctx.fillText(segment.text, item.x, item.y + 3 + index * rowH);
       });
       ctx.restore();
     }
