@@ -1357,6 +1357,7 @@ INDEX_HTML = """<!doctype html>
         trailing_stop_release_sell: "跟踪止损释放待回补",
         max_hold_release_sell: "超时释放待回补",
         grid_buyback: "网格回补",
+        target_rebuild_buy: "目标仓位补仓/建仓",
         grid_wait_buyback: "等待回补",
         grid_buyback_blocked: "回补受阻",
         grid_sell_blocked: "释放受阻",
@@ -1389,6 +1390,10 @@ INDEX_HTML = """<!doctype html>
         ai_entry_veto: "AI 风险闸门否决入场",
         net_edge_too_small: "手续费后净边际不足",
         profitability_guard_passed: "交易收益闸门通过",
+        target_position_reached_or_cash_reserved: "目标仓位已满足或现金保留线不足",
+        target_position_disabled: "目标仓位部署未启用",
+        target_notional_below_min_notional: "目标补仓金额低于最小成交额",
+        target_quantity_below_min_qty: "目标补仓数量低于最小数量",
         buyback_cooldown_blocks_loss_recovery: "回补冷却期内禁止亏损修复卖出",
         sell_order_approved: "卖出订单已通过风控",
         buy_order_approved: "买入订单已通过风控",
@@ -1656,15 +1661,29 @@ INDEX_HTML = """<!doctype html>
         <div class="card-note prose">当前没有等待成交的限价单。</div>
       `;
 
+      const cfg = lastPayloadSnapshot?.runtime_config || payload?.runtime_config || {};
+      const targetFraction = asNumber(executionResult.target_position_fraction, asNumber(cfg.target_position_fraction, 0));
+      const cashReserveFraction = asNumber(executionResult.min_cash_reserve_fraction, asNumber(cfg.min_cash_reserve_fraction, 0));
+      const capitalDeployment = Boolean(executionResult.capital_deployment || executionResult.trigger === "target_rebuild_buy");
+      const submittedCount = asNumber(executionResult.submitted_count, executionResult.status === "ORDER_OPEN" ? 1 : 0);
+      const operationRows = capitalDeployment
+        ? [
+            ["动作类型", escapeHtml(triggerLabel(executionResult.trigger || "target_rebuild_buy"))],
+            ["目标仓位", targetFraction ? fmtPercent(targetFraction) : "--"],
+            ["现金保留", cashReserveFraction ? fmtPercent(cashReserveFraction) : "--"],
+            ["挂单层数", submittedCount ? `${fmtNumber(submittedCount, 0)} 层` : "--"],
+          ]
+        : [
+            ["动作类型", escapeHtml(triggerLabel(executionResult.trigger || c.executionReason || "--"))],
+            ["止损", riskLines.stopLoss || "--"],
+            ["止盈", riskLines.takeProfit || "--"],
+            ["跟踪", riskLines.trailingStop || "--"],
+          ];
       els.executionCard.innerHTML = `
         <div class="card-label"><span>本轮操作</span>${statusChip(signalLabel(c.signal), signalClass(c.signal))}</div>
         <div class="card-value">${escapeHtml(executionLabel(executionResult))}</div>
         <div class="card-note prose">${escapeHtml(executionDetail(executionResult, c.executionReason))}</div>
-        ${miniKvRows([
-          ["止损", riskLines.stopLoss || "--"],
-          ["止盈", riskLines.takeProfit || "--"],
-          ["跟踪", riskLines.trailingStop || "--"],
-        ])}
+        ${miniKvRows(operationRows)}
       `;
 
       renderFills(c.tradeRecords, c.quoteAsset);
