@@ -1557,6 +1557,7 @@ INDEX_HTML = """<!doctype html>
       const rawSignal = strategy.signal || decision.action || decision.signal?.action || decision.signal || latest.signal?.action || latest.signal || "HOLD";
       const signal = typeof rawSignal === "object" ? (rawSignal.action || rawSignal.signal || "HOLD") : rawSignal;
       const execution = decision.execution_result || latest.execution_result || {};
+      const executionResult = execution && typeof execution === "object" ? execution : {};
       const executionStatus = typeof execution === "object" ? (execution.status || execution.result || JSON.stringify(execution)) : execution;
       const executionReason = typeof execution === "object" ? (execution.reason || execution.message || "") : "";
       const llm = (latest.llm_assessments || [])[0] || latest.llm_analysis || {};
@@ -1577,7 +1578,7 @@ INDEX_HTML = """<!doctype html>
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
       const profitCurve = payload.live_profit_curve || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, orderEvents, orderMarkers, profitCurve };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, orderEvents, orderMarkers, profitCurve };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1647,7 +1648,8 @@ INDEX_HTML = """<!doctype html>
       const availableCash = Math.max(0, asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0) - asNumber(c.paper.reserved_quote_balance, 0));
       const riskLines = activeRiskLines(c);
       const allowEntry = c.aiRisk.allow_entry;
-      const executionResult = c.executionStatus || "无执行";
+      const executionResult = c.executionResult || {};
+      const executionStatus = c.executionStatus || executionResult.status || "无执行";
 
       els.chartSubtitle.textContent = `${fmtSymbol(c.symbol, c.quoteAsset)} 实时观察 K 线、成交量、模拟成交点、AI 否决点、退出线`;
       const chartSource = payload.live_chart_source || "runtime";
@@ -1724,7 +1726,14 @@ INDEX_HTML = """<!doctype html>
       const targetFraction = asNumber(executionResult.target_position_fraction, asNumber(cfg.target_position_fraction, 0));
       const cashReserveFraction = asNumber(executionResult.min_cash_reserve_fraction, asNumber(cfg.min_cash_reserve_fraction, 0));
       const capitalDeployment = Boolean(executionResult.capital_deployment || executionResult.trigger === "target_rebuild_buy");
-      const submittedCount = asNumber(executionResult.submitted_count, executionResult.status === "ORDER_OPEN" ? 1 : 0);
+      const submittedCount = asNumber(executionResult.submitted_count, executionStatus === "ORDER_OPEN" ? 1 : 0);
+      const operationAction = executionResult.trigger
+        ? triggerLabel(executionResult.trigger)
+        : executionStatus === "SKIPPED_REFRESH_ONLY"
+          ? "仅刷新"
+          : executionStatus === "NO_ACTION" || executionStatus === "HOLD"
+            ? "无交易动作"
+            : executionLabel(executionStatus);
       const operationRows = capitalDeployment
         ? [
             ["动作类型", escapeHtml(triggerLabel(executionResult.trigger || "target_rebuild_buy"))],
@@ -1733,15 +1742,15 @@ INDEX_HTML = """<!doctype html>
             ["挂单层数", submittedCount ? `${fmtNumber(submittedCount, 0)} 层` : "--"],
           ]
         : [
-            ["动作类型", escapeHtml(triggerLabel(executionResult.trigger || c.executionReason || "--"))],
+            ["动作类型", escapeHtml(operationAction)],
             ["止损", riskLines.stopLoss || "--"],
             ["止盈", riskLines.takeProfit || "--"],
             ["跟踪", riskLines.trailingStop || "--"],
           ];
       els.executionCard.innerHTML = `
         <div class="card-label"><span>本轮操作</span>${statusChip(signalLabel(c.signal), signalClass(c.signal))}</div>
-        <div class="card-value">${escapeHtml(executionLabel(executionResult))}</div>
-        <div class="card-note prose">${escapeHtml(executionDetail(executionResult, c.executionReason))}</div>
+        <div class="card-value">${escapeHtml(executionLabel(executionStatus))}</div>
+        <div class="card-note prose">${escapeHtml(executionDetail(executionStatus, c.executionReason))}</div>
         ${miniKvRows(operationRows)}
       `;
 
