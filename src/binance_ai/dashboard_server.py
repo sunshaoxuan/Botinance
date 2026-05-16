@@ -2150,6 +2150,7 @@ INDEX_HTML = """<!doctype html>
 
     function preserveChartPayload(payload, previousPayload, chartInterval, cachedBars) {
       const previous = previousPayload || {};
+      const keepCompleteTradeRecords = previous.trade_records_complete === true && payload.trade_records_complete === false;
       const bars = cachedBars?.length
         ? cachedBars
         : payload.live_chart_bars?.length
@@ -2167,6 +2168,11 @@ INDEX_HTML = """<!doctype html>
         order_markers: payload.order_markers?.length ? payload.order_markers : previous.order_markers || [],
         position_activation_markers: payload.position_activation_markers?.length ? payload.position_activation_markers : previous.position_activation_markers || [],
         live_ai_veto_markers: payload.live_ai_veto_markers?.length ? payload.live_ai_veto_markers : previous.live_ai_veto_markers || [],
+        trade_records: keepCompleteTradeRecords ? previous.trade_records || [] : payload.trade_records || previous.trade_records || [],
+        recent_fills: keepCompleteTradeRecords ? previous.recent_fills || [] : payload.recent_fills || previous.recent_fills || [],
+        order_lifecycle_events: keepCompleteTradeRecords ? previous.order_lifecycle_events || [] : payload.order_lifecycle_events || previous.order_lifecycle_events || [],
+        trade_records_complete: keepCompleteTradeRecords ? true : payload.trade_records_complete === true,
+        order_records_meta: keepCompleteTradeRecords ? previous.order_records_meta || {} : payload.order_records_meta || previous.order_records_meta || {},
       };
     }
 
@@ -2905,7 +2911,7 @@ INDEX_HTML = """<!doctype html>
         if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
         const hydratedPayload = preserveChartPayload(payload, previousPayload, chartInterval, cachedBars);
         updateDom(hydratedPayload, { renderChart: false });
-        refreshOrderRecords(!payload.trade_records?.length);
+        refreshOrderRecords(!hydratedPayload.trade_records_complete || !hydratedPayload.trade_records?.length);
         if (cachedBars.length) {
           scheduleChartRender(hydratedPayload, { showLoading: false });
         }
