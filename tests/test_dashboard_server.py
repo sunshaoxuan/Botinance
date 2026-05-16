@@ -19,6 +19,7 @@ from binance_ai.dashboard_server import (
     _extract_live_trade_markers,
     _merge_chart_bars,
     _sample_rows,
+    build_decision_drawer_payload,
     build_dashboard_payload,
 )
 
@@ -75,6 +76,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertLess(INDEX_HTML.find("const realized ="), INDEX_HTML.find("const botiNetPnl ="))
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
         self.assertIn("chartRenderSeq", INDEX_HTML)
+        self.assertIn("drawerRequestSeq", INDEX_HTML)
         self.assertIn("tickInFlight", INDEX_HTML)
         self.assertIn("async function tick(options = {})", INDEX_HTML)
         self.assertIn("tick({ force: true })", INDEX_HTML)
@@ -85,6 +87,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertNotIn("selectedChartInterval = responseInterval", INDEX_HTML)
         self.assertIn("include_chart", INDEX_HTML)
         self.assertIn("/api/dashboard/chart", INDEX_HTML)
+        self.assertIn("/api/dashboard/decision-drawer", INDEX_HTML)
+        self.assertIn("refreshDecisionDrawer", INDEX_HTML)
         self.assertIn("scheduleChartRender", INDEX_HTML)
         self.assertIn("preserveChartPayload", INDEX_HTML)
         self.assertIn("previous.live_trade_markers", INDEX_HTML)
@@ -495,6 +499,7 @@ class DashboardServerTests(unittest.TestCase):
             _write_text(runtime_dir / "cycle_reports.jsonl", "\n".join(lines))
 
             payload = build_dashboard_payload(runtime_dir, chart_interval="5m", include_chart=False)
+            drawer_payload = build_decision_drawer_payload(runtime_dir)
 
         self.assertEqual(payload["history_count"], 80)
         self.assertEqual(payload["history"], [])
@@ -502,6 +507,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["decision_ledger"][0]["cycle_mode"], "DECISION")
         self.assertEqual(len(payload["order_lifecycle_events"]), 1)
         self.assertEqual(payload["order_lifecycle_events"][0]["client_order_id"], "drawer-order-1")
+        self.assertEqual(len(drawer_payload["decision_ledger"]), 1)
+        self.assertEqual(drawer_payload["decision_drawer_meta"]["scan_lines"], 5000)
+        self.assertEqual(drawer_payload["decision_drawer_meta"]["decision_ledger_count"], 1)
 
     def test_trade_records_scan_full_runtime_file_not_history_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

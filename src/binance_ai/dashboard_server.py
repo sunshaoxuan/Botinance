@@ -1162,6 +1162,7 @@ INDEX_HTML = """<!doctype html>
     let fillFilter = window.localStorage.getItem("boti.fillFilter") || "all";
     let dashboardRequestSeq = 0;
     let chartRenderSeq = 0;
+    let drawerRequestSeq = 0;
     let tickInFlight = false;
     const chartBarsCache = {};
     const SNAPSHOT_CACHE_KEY = "boti.lastDashboardSnapshot.v2";
@@ -1969,6 +1970,7 @@ INDEX_HTML = """<!doctype html>
         els.insightDrawerTitle.textContent = "决策链路";
         els.insightDrawerSubtitle.textContent = "按真实 cycle_reports 与订单事件生成，不使用固定假数据";
         els.insightDrawerBody.innerHTML = renderDecisionDrawer(payload);
+        refreshDecisionDrawer();
       }
       els.insightDrawer.classList.add("active");
       els.insightDrawerBackdrop.classList.add("active");
@@ -2800,6 +2802,22 @@ INDEX_HTML = """<!doctype html>
       payload.requested_chart_interval = chartInterval;
       payload.request_seq = requestSeq;
       return payload;
+    }
+
+    async function refreshDecisionDrawer() {
+      if (activeDrawerKind !== "decision") return;
+      const requestSeq = ++drawerRequestSeq;
+      try {
+        const response = await fetch("/api/dashboard/decision-drawer", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const drawerPayload = await response.json();
+        if (requestSeq !== drawerRequestSeq || activeDrawerKind !== "decision" || !lastPayloadSnapshot) return;
+        const mergedPayload = { ...lastPayloadSnapshot, ...drawerPayload };
+        lastPayloadSnapshot = mergedPayload;
+        els.insightDrawerBody.innerHTML = renderDecisionDrawer(mergedPayload);
+      } catch (err) {
+        console.error(err);
+      }
     }
 
     async function tick(options = {}) {
@@ -4301,6 +4319,25 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     }
 
 
+def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
+    latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    history_path = runtime_dir / "cycle_reports.jsonl"
+    scan_lines = 5000
+    decision_ledger = _extract_decision_ledger_from_file(history_path, latest_report, limit=300, scan_lines=scan_lines)
+    order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=300, scan_lines=scan_lines)
+    if not order_lifecycle_events:
+        order_lifecycle_events = _extract_order_lifecycle_events([], latest_report, limit=300)
+    return {
+        "decision_ledger": decision_ledger,
+        "order_lifecycle_events": order_lifecycle_events,
+        "decision_drawer_meta": {
+            "scan_lines": scan_lines,
+            "decision_ledger_count": len(decision_ledger),
+            "order_lifecycle_event_count": len(order_lifecycle_events),
+        },
+    }
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     runtime_dir: Path
 
@@ -4319,6 +4356,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             requested_interval = query.get("chart_interval", [None])[0]
             self._send_json(_build_dashboard_chart_payload(self.runtime_dir, chart_interval=requested_interval))
+            return
+        if parsed.path == "/api/dashboard/decision-drawer":
+            self._send_json(build_decision_drawer_payload(self.runtime_dir))
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
