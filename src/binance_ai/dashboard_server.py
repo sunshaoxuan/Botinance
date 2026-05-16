@@ -1164,6 +1164,7 @@ INDEX_HTML = """<!doctype html>
     let chartRenderSeq = 0;
     let tickInFlight = false;
     const chartBarsCache = {};
+    const SNAPSHOT_CACHE_KEY = "boti.lastDashboardSnapshot.v2";
 
     const els = {};
     const ids = [
@@ -1178,6 +1179,36 @@ INDEX_HTML = """<!doctype html>
 
     function cacheEls() {
       ids.forEach((id) => { els[id] = document.getElementById(id); });
+    }
+
+    function compactSnapshotForCache(payload) {
+      if (!payload) return null;
+      const copy = { ...payload };
+      copy.history = [];
+      copy.live_chart_bars = (payload.live_chart_bars || []).slice(-160);
+      copy.live_main_interval_bars = (payload.live_main_interval_bars || []).slice(-160);
+      copy.live_refresh_bars = (payload.live_refresh_bars || []).slice(-160);
+      copy.live_profit_curve = (payload.live_profit_curve || []).slice(-600);
+      copy.trade_records = (payload.trade_records || []).slice(0, 200);
+      return copy;
+    }
+
+    function saveSnapshotCache(payload) {
+      try {
+        const compact = compactSnapshotForCache(payload);
+        if (compact) window.localStorage.setItem(SNAPSHOT_CACHE_KEY, JSON.stringify(compact));
+      } catch (_) {
+        // Cache is a best-effort first-paint optimization.
+      }
+    }
+
+    function loadSnapshotCache() {
+      try {
+        const raw = window.localStorage.getItem(SNAPSHOT_CACHE_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch (_) {
+        return null;
+      }
     }
 
     function asNumber(value, fallback = 0) {
@@ -2062,6 +2093,7 @@ INDEX_HTML = """<!doctype html>
 
     function updateDom(payload, options = {}) {
       lastPayloadSnapshot = payload;
+      saveSnapshotCache(payload);
       syncChartIntervalOptions(payload);
       updateTopBar(payload);
       updateTradingTab(payload);
@@ -2876,6 +2908,11 @@ INDEX_HTML = """<!doctype html>
     cacheEls();
     wireTabs();
     activateTab("trading");
+    const cachedSnapshot = loadSnapshotCache();
+    if (cachedSnapshot) {
+      updateDom(cachedSnapshot, { renderChart: true, showChartLoading: false });
+      els.topMode.textContent = "读取中";
+    }
     tick();
     setInterval(tick, refreshMs);
   </script>
@@ -4167,8 +4204,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
-    history = _read_history(history_path, limit=800 if include_chart else 300)
-    profit_history = _read_history(history_path, limit=6000)
+    history = _read_history(history_path, limit=800 if include_chart else 80)
+    profit_history = _read_history(history_path, limit=800 if include_chart else 240)
     backtest_payload = _load_backtest_payload(runtime_dir)
     quote_asset = paper_state.get("quote_asset", "JPY")
     fee_rate = _dashboard_fee_rate()
@@ -4203,12 +4240,12 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
             "live_ai_veto_markers": [],
         }
 
-    recent_fills = _extract_recent_fills_from_file(history_path)
-    all_fills = _extract_recent_fills_from_file(history_path, limit=None, scan_lines=None)
+    recent_fills = _extract_recent_fills_from_file(history_path, scan_lines=240 if not include_chart else 800)
+    all_fills = _extract_recent_fills_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
     open_order_groups = _build_open_order_groups(open_orders, quote_asset)
     order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report)
-    all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=None, scan_lines=None)
+    all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
     if not all_order_lifecycle_events:
         all_order_lifecycle_events = order_lifecycle_events
     trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=None)
@@ -4230,6 +4267,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "reserved_base_balances": paper_state.get("reserved_base_balances", {}),
         "order_lifecycle_events": order_lifecycle_events,
         "trade_records": trade_records,
+        "trade_records_complete": False,
         "real_cost_basis_summary": real_cost_basis_summary,
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "decision_ledger": _extract_decision_ledger(history, latest_report),

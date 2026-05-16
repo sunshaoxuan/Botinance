@@ -95,6 +95,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("目标仓位补仓/建仓", INDEX_HTML)
         self.assertIn("capital_deployment", INDEX_HTML)
         self.assertIn("现金保留", INDEX_HTML)
+        self.assertIn("SNAPSHOT_CACHE_KEY", INDEX_HTML)
+        self.assertIn("loadSnapshotCache", INDEX_HTML)
+        self.assertIn("compactSnapshotForCache", INDEX_HTML)
         self.assertIn("回补触发价", INDEX_HTML)
         self.assertIn("跟踪止损", INDEX_HTML)
         self.assertIn("模拟限价单已成交", INDEX_HTML)
@@ -432,14 +435,11 @@ class DashboardServerTests(unittest.TestCase):
             fills = _extract_recent_fills_from_file(runtime_dir / "cycle_reports.jsonl")
             markers = _extract_chart_trade_markers_from_file(runtime_dir / "cycle_reports.jsonl")
 
-        self.assertEqual(payload["history_count"], 300)
+        self.assertEqual(payload["history_count"], 80)
         self.assertEqual(payload["history"], [])
-        self.assertEqual(len(payload["recent_fills"]), 1)
-        self.assertEqual(payload["recent_fills"][0]["status"], "PAPER_FILLED")
-        self.assertEqual(len(payload["trade_records"]), 1)
-        self.assertEqual(payload["trade_records"][0]["status"], "PAPER_FILLED")
-        self.assertGreater(payload["trade_records"][0]["fee"], 0.0)
-        self.assertEqual(payload["trade_records"][0]["reserved_quote"], 0.0)
+        self.assertEqual(payload["recent_fills"], [])
+        self.assertEqual(payload["trade_records"], [])
+        self.assertFalse(payload["trade_records_complete"])
         self.assertEqual(len(fills), 1)
         self.assertEqual(len(markers), 1)
         self.assertEqual(len(chart_payload["live_trade_markers"]), 1)
@@ -511,12 +511,13 @@ class DashboardServerTests(unittest.TestCase):
             payload = build_dashboard_payload(runtime_dir)
 
         self.assertEqual(payload["history_count"], 800)
+        self.assertFalse(payload["trade_records_complete"])
         statuses = {record["status"] for record in payload["trade_records"]}
         sides = {record["side"] for record in payload["trade_records"]}
-        self.assertIn("PAPER_FILLED", statuses)
-        self.assertIn("CANCELED", statuses)
-        self.assertIn("BUY", sides)
-        self.assertIn("SELL", sides)
+        self.assertNotIn("PAPER_FILLED", statuses)
+        self.assertNotIn("CANCELED", statuses)
+        self.assertNotIn("BUY", sides)
+        self.assertNotIn("SELL", sides)
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
