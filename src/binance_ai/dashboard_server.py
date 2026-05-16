@@ -879,6 +879,33 @@ INDEX_HTML = """<!doctype html>
       overflow: auto;
     }
 
+    .drawer-body .scroll-table {
+      max-height: none;
+    }
+
+    .drawer-body table {
+      min-width: 760px;
+    }
+
+    .drawer-body th,
+    .drawer-body td {
+      white-space: nowrap;
+    }
+
+    .drawer-body .muted {
+      white-space: normal;
+      display: inline-block;
+      max-width: 140px;
+      line-height: 1.35;
+    }
+
+    .drawer-count {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 560;
+      margin-left: 6px;
+    }
+
     .code {
       font-family: var(--mono);
       font-size: 12px;
@@ -1928,6 +1955,9 @@ INDEX_HTML = """<!doctype html>
       const c = context(payload);
       const ledger = payload.decision_ledger || [];
       const orderEvents = c.orderEvents || [];
+      const ledgerShown = Math.min(ledger.length, 100);
+      const eventsShown = Math.min(orderEvents.length, 100);
+      const meta = payload.decision_drawer_meta || {};
       const ledgerRows = ledger.slice(0, 100).map((r) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(r.timestamp_ms || r.time))}</td>
         <td>${labelWithRaw(cycleModeLabel(r.cycle_mode), r.cycle_mode)}</td>
@@ -1947,11 +1977,11 @@ INDEX_HTML = """<!doctype html>
       </tr>`);
       return `
         <div class="drawer-section">
-          <div class="drawer-section-title">历史决策账本</div>
+          <div class="drawer-section-title">历史决策账本 <span class="drawer-count">已加载 ${ledger.length} 条，显示 ${ledgerShown} 条${meta.scan_lines ? `，扫描 ${meta.scan_lines} 行` : ""}</span></div>
           ${table(["时间", "轮次", "交易对", "价格", "买入判断", "卖出判断", "最终动作"], ledgerRows, "暂无历史决策账本")}
         </div>
         <div class="drawer-section">
-          <div class="drawer-section-title">订单生命周期事件</div>
+          <div class="drawer-section-title">订单生命周期事件 <span class="drawer-count">已加载 ${orderEvents.length} 条，显示 ${eventsShown} 条</span></div>
           ${table(["时间", "状态", "方向", "价格", "数量", "原因"], eventRows, "暂无订单生命周期事件")}
         </div>
       `;
