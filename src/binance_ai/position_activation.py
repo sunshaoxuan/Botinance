@@ -50,7 +50,7 @@ class PositionActivationEngine:
         last_sell_price = float(state["last_grid_sell_price"])
         if pending_qty > 0 and last_sell_price > 0:
             state["decision_state"] = "RELEASED_WAIT_BUYBACK"
-            buyback_price = last_sell_price * (1.0 - self.settings.grid_buyback_step_pct)
+            buyback_price = self._effective_buyback_price(last_sell_price)
             if price <= buyback_price:
                 guard = self.profitability_guard.inspect_buyback(last_sell_price, price)
                 state["last_net_edge_pct"] = guard.net_edge_pct
@@ -135,7 +135,7 @@ class PositionActivationEngine:
             state["last_grid_sell_price"] = fill_price
             state["pending_buyback_quantity"] = float(state["pending_buyback_quantity"]) + decision.quantity
             state["last_release_fee_adjusted_price"] = fill_price * (1.0 - self.settings.trading_fee_rate)
-            expected_buyback_price = fill_price * (1.0 - self.settings.grid_buyback_step_pct)
+            expected_buyback_price = self._effective_buyback_price(fill_price)
             guard = self.profitability_guard.inspect_release(fill_price, expected_buyback_price)
             state["last_net_edge_pct"] = guard.net_edge_pct
             state["decision_state"] = "RELEASED_WAIT_BUYBACK"
@@ -217,7 +217,7 @@ class PositionActivationEngine:
             state["last_trigger"] = "grid_sell_blocked"
             state["last_reason"] = f"网格卖出金额低于最小成交额：{notional:.8f}"
             return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
-        expected_buyback_price = price * (1.0 - self.settings.grid_buyback_step_pct)
+        expected_buyback_price = self._effective_buyback_price(price)
         guard = self.profitability_guard.inspect_release(price, expected_buyback_price)
         state["last_net_edge_pct"] = guard.net_edge_pct
         state["last_release_fee_adjusted_price"] = price * (1.0 - self.settings.trading_fee_rate)
@@ -307,6 +307,16 @@ class PositionActivationEngine:
         if raw.endswith("d"):
             return value * 24 * 60 * 60 * 1000
         return 60 * 60 * 1000
+
+    def _effective_buyback_step_pct(self) -> float:
+        return max(
+            0.0,
+            self.settings.grid_buyback_step_pct,
+            self.profitability_guard.required_edge_pct,
+        )
+
+    def _effective_buyback_price(self, release_price: float) -> float:
+        return release_price * (1.0 - self._effective_buyback_step_pct())
 
     @staticmethod
     def release_sell_triggers() -> set[str]:

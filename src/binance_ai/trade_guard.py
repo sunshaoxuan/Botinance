@@ -33,7 +33,7 @@ class TradeProfitabilityGuard:
         if release_price <= 0 or buyback_price <= 0:
             return ProfitabilityGuardResult(False, "profitability_price_missing", 0.0, self.required_edge_pct, release_price, buyback_price)
         net_edge_pct = (release_price - buyback_price) / release_price
-        allowed = net_edge_pct >= self.required_edge_pct
+        allowed = net_edge_pct + 1e-12 >= self.required_edge_pct
         return ProfitabilityGuardResult(
             allowed=allowed,
             reason="profitability_guard_passed" if allowed else "net_edge_too_small",

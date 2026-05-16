@@ -119,8 +119,38 @@ class PositionActivationEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.action, "HOLD")
-        self.assertEqual(decision.reason, "net_edge_too_small")
-        self.assertEqual(decision.state_update["last_trigger"], "grid_buyback_blocked")
+        self.assertEqual(decision.state_update["last_trigger"], "grid_wait_buyback")
+        self.assertIn("100.69700000", decision.reason)
+
+    def test_buyback_uses_profitability_edge_when_grid_step_is_too_small(self) -> None:
+        settings = replace(_settings(), trading_fee_rate=0.001, grid_buyback_step_pct=0.0012, min_net_edge_pct=0.001)
+        engine = PositionActivationEngine(settings, _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=3000.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=75.0, average_entry_price=100.0, highest_price=101.0)},
+            activation_state={
+                "XRPJPY": {
+                    "pending_buyback_quantity": 25.0,
+                    "last_grid_sell_price": 101.0,
+                    "daily_trade_day": "2026-05-09",
+                    "daily_trade_count": 1,
+                }
+            },
+        )
+        decision = engine.evaluate(
+            symbol="XRPJPY",
+            price=100.69,
+            account=AccountSnapshot({"JPY": 3000.0, "XRP": 75.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            snapshot=snapshot,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        self.assertEqual(decision.action, "BUY")
+        self.assertEqual(decision.trigger, "grid_buyback")
+        self.assertAlmostEqual(decision.state_update["last_net_edge_pct"], (101.0 - 100.69) / 101.0)
 
     def test_strategy_release_sell_registers_pending_buyback(self) -> None:
         engine = PositionActivationEngine(_settings(), _Client())
@@ -149,6 +179,7 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertEqual(state["last_trigger"], "strategy_release_sell")
         self.assertAlmostEqual(state["pending_buyback_quantity"], 25.0)
         self.assertAlmostEqual(state["last_grid_sell_price"], 101.0)
+        self.assertAlmostEqual(state["last_net_edge_pct"], 0.0025)
 
     def test_grid_buyback_success_reduces_pending_buyback(self) -> None:
         engine = PositionActivationEngine(_settings(), _Client())
@@ -205,9 +236,9 @@ class PositionActivationEngineTests(unittest.TestCase):
             timestamp_ms=1_778_300_000_000,
         )
 
-        self.assertEqual(decision.action, "HOLD")
-        self.assertEqual(decision.trigger, "net_edge_too_small")
-        self.assertEqual(decision.state_update["last_trigger"], "grid_sell_blocked")
+        self.assertEqual(decision.action, "SELL")
+        self.assertEqual(decision.trigger, "grid_profit_sell")
+        self.assertAlmostEqual(decision.state_update["last_net_edge_pct"], 0.003)
 
     def test_loss_recovery_sell_is_allowed_with_standard_fraction(self) -> None:
         engine = PositionActivationEngine(_settings(), _Client())
