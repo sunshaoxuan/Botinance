@@ -2171,6 +2171,7 @@ INDEX_HTML = """<!doctype html>
         slowWindow: options.maConfig?.slowWindow || 0,
         fastValue: fastMa[fastMa.length - 1],
         slowValue: slowMa[slowMa.length - 1],
+        maxWidth: Math.max(180, (width - pad.left - pad.right) * 0.42),
       });
 
       drawRiskLine(ctx, options.riskLines?.stop_loss_price, y, pad.left, width - pad.right, "#b4232a", "止损");
@@ -2290,27 +2291,48 @@ INDEX_HTML = """<!doctype html>
         { text: state, color: state === "快线在上" ? "#15803d" : state === "快线在下" ? "#b4232a" : "#66758a" },
       ];
       ctx.save();
-      ctx.font = "560 10px Hiragino Sans, PingFang SC, sans-serif";
-      const gap = 10;
+      ctx.font = "560 9.5px Hiragino Sans, PingFang SC, sans-serif";
+      const gap = 8;
       const paddingX = 8;
+      const rowH = 15;
+      const maxW = Math.max(170, Math.min(360, item.maxWidth || 320));
       const measured = segments.map((segment) => ({
         ...segment,
         width: Math.ceil(ctx.measureText(segment.text).width),
       }));
-      const contentW = measured.reduce((sum, segment) => sum + segment.width, 0) + gap * (measured.length - 1);
-      const boxW = contentW + paddingX * 2;
+      const rows = [];
+      let row = [];
+      let rowW = 0;
+      measured.forEach((segment) => {
+        const nextW = row.length ? rowW + gap + segment.width : segment.width;
+        if (row.length && nextW > maxW - paddingX * 2) {
+          rows.push({ items: row, width: rowW });
+          row = [segment];
+          rowW = segment.width;
+        } else {
+          row.push(segment);
+          rowW = nextW;
+        }
+      });
+      if (row.length) rows.push({ items: row, width: rowW });
+      const contentW = Math.max(...rows.map((line) => line.width));
+      const boxW = Math.min(maxW, contentW + paddingX * 2);
+      const boxH = rows.length * rowH + 8;
       ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
       ctx.strokeStyle = "rgba(150, 164, 184, 0.48)";
       ctx.beginPath();
-      ctx.roundRect(item.x - paddingX, item.y - 11, boxW, 24, 6);
+      ctx.roundRect(item.x - paddingX, item.y - 11, boxW, boxH, 6);
       ctx.fill();
       ctx.stroke();
       ctx.textAlign = "left";
-      let cursorX = item.x;
-      measured.forEach((segment) => {
-        ctx.fillStyle = segment.color;
-        ctx.fillText(segment.text, cursorX, item.y + 3);
-        cursorX += segment.width + gap;
+      rows.forEach((line, lineIndex) => {
+        let cursorX = item.x;
+        const baseline = item.y + 3 + lineIndex * rowH;
+        line.items.forEach((segment) => {
+          ctx.fillStyle = segment.color;
+          ctx.fillText(segment.text, cursorX, baseline);
+          cursorX += segment.width + gap;
+        });
       });
       ctx.restore();
     }
