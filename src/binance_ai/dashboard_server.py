@@ -470,14 +470,14 @@ INDEX_HTML = """<!doctype html>
 
     .mini-kv-row span {
       color: var(--muted);
-      font-weight: 680;
+      font-weight: 520;
       white-space: normal;
     }
 
     .mini-kv-row strong {
       min-width: 0;
       color: var(--ink-soft);
-      font-weight: 720;
+      font-weight: 540;
       text-align: right;
       overflow-wrap: anywhere;
     }
