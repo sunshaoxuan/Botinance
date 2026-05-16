@@ -21,24 +21,50 @@ class TradeProfitabilityGuard:
 
     @property
     def required_edge_pct(self) -> float:
-        return max(0.0, self.settings.trading_fee_rate * 2.0 + self.settings.min_net_edge_pct)
+        return self.required_edge_pct_for_net(self.settings.min_net_edge_pct)
 
-    def inspect_release(self, release_price: float, expected_buyback_price: float) -> ProfitabilityGuardResult:
-        return self._inspect(release_price, expected_buyback_price)
+    def required_edge_pct_for_net(self, min_net_edge_pct: float) -> float:
+        return max(0.0, self.settings.trading_fee_rate * 2.0 + max(0.0, min_net_edge_pct))
 
-    def inspect_buyback(self, release_price: float, buyback_price: float) -> ProfitabilityGuardResult:
-        return self._inspect(release_price, buyback_price)
+    def inspect_release(
+        self,
+        release_price: float,
+        expected_buyback_price: float,
+        *,
+        min_net_edge_pct: float | None = None,
+    ) -> ProfitabilityGuardResult:
+        return self._inspect(release_price, expected_buyback_price, min_net_edge_pct=min_net_edge_pct)
 
-    def _inspect(self, release_price: float, buyback_price: float) -> ProfitabilityGuardResult:
+    def inspect_buyback(
+        self,
+        release_price: float,
+        buyback_price: float,
+        *,
+        min_net_edge_pct: float | None = None,
+    ) -> ProfitabilityGuardResult:
+        return self._inspect(release_price, buyback_price, min_net_edge_pct=min_net_edge_pct)
+
+    def _inspect(
+        self,
+        release_price: float,
+        buyback_price: float,
+        *,
+        min_net_edge_pct: float | None = None,
+    ) -> ProfitabilityGuardResult:
+        required_edge_pct = (
+            self.required_edge_pct
+            if min_net_edge_pct is None
+            else self.required_edge_pct_for_net(min_net_edge_pct)
+        )
         if release_price <= 0 or buyback_price <= 0:
-            return ProfitabilityGuardResult(False, "profitability_price_missing", 0.0, self.required_edge_pct, release_price, buyback_price)
+            return ProfitabilityGuardResult(False, "profitability_price_missing", 0.0, required_edge_pct, release_price, buyback_price)
         net_edge_pct = (release_price - buyback_price) / release_price
-        allowed = net_edge_pct + 1e-12 >= self.required_edge_pct
+        allowed = net_edge_pct + 1e-12 >= required_edge_pct
         return ProfitabilityGuardResult(
             allowed=allowed,
             reason="profitability_guard_passed" if allowed else "net_edge_too_small",
             net_edge_pct=net_edge_pct,
-            required_edge_pct=self.required_edge_pct,
+            required_edge_pct=required_edge_pct,
             release_price=release_price,
             buyback_price=buyback_price,
         )

@@ -348,6 +348,37 @@ INDEX_HTML = """<!doctype html>
       background: #fff;
     }
 
+    .profit-strip {
+      height: 112px;
+      border-top: 1px solid var(--line);
+      background: linear-gradient(180deg, rgba(248, 251, 255, 0.72), #fff);
+    }
+
+    .profit-strip-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      height: 28px;
+      padding: 8px 12px 0;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 620;
+    }
+
+    .profit-strip-header strong {
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 560;
+    }
+
+    .profit-strip canvas {
+      display: block;
+      width: 100%;
+      height: 84px;
+    }
+
     .chart-loading {
       position: absolute;
       inset: 10px;
@@ -955,6 +986,13 @@ INDEX_HTML = """<!doctype html>
                 <div class="chart-loading" id="chartLoading"><span class="chart-spinner"></span><span>图表后台加载</span></div>
                 <canvas id="tradeChart"></canvas>
               </div>
+              <div class="profit-strip">
+                <div class="profit-strip-header">
+                  <span>全时间总利润线</span>
+                  <strong id="profitCurveLabel">--</strong>
+                </div>
+                <canvas id="profitCurveChart"></canvas>
+              </div>
             </article>
 
             <article class="panel trade-fill-panel">
@@ -1130,6 +1168,7 @@ INDEX_HTML = """<!doctype html>
     const els = {};
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
+      "profitCurveLabel",
       "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
@@ -1453,7 +1492,8 @@ INDEX_HTML = """<!doctype html>
       const openOrders = payload.open_orders || latest.open_orders || [];
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, orderEvents, orderMarkers };
+      const profitCurve = payload.live_profit_curve || [];
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, orderEvents, orderMarkers, profitCurve };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1529,6 +1569,13 @@ INDEX_HTML = """<!doctype html>
       const chartSource = payload.live_chart_source || "runtime";
       els.chartInterval.textContent = `图表 ${payload.live_chart_interval_label || payload.live_chart_interval || "1m"} / 策略 ${payload.live_main_interval || "--"} / ${chartSource}`;
       els.chartPointCount.textContent = `${c.bars.length} bars`;
+      const lastProfitPoint = c.profitCurve.slice(-1)[0] || {};
+      const latestNetPnl = asNumber(lastProfitPoint.net_pnl, NaN);
+      if (els.profitCurveLabel) {
+        els.profitCurveLabel.textContent = Number.isFinite(latestNetPnl)
+          ? `${fmtCurrency(latestNetPnl, c.quoteAsset)} / ${c.profitCurve.length} 点`
+          : "暂无利润曲线";
+      }
 
       els.positionCard.innerHTML = `
         <div class="card-label"><span>当前持仓</span>${qty > 0 ? statusChip("持仓中", "buy") : statusChip("空仓", "wait")}</div>
@@ -1684,7 +1731,10 @@ INDEX_HTML = """<!doctype html>
       const risk = activeRiskLines(c);
       const buybackStep = asNumber((payload.runtime_config || {}).grid_buyback_step_pct, 0);
       const lastReleasePrice = asNumber(activation.last_grid_sell_price, 0);
-      const buybackTriggerPrice = lastReleasePrice > 0 && buybackStep > 0 ? lastReleasePrice * (1 - buybackStep) : 0;
+      const buybackTriggerPrice = asNumber(
+        activation.buyback_trigger_price,
+        lastReleasePrice > 0 && buybackStep > 0 ? lastReleasePrice * (1 - buybackStep) : 0
+      );
       const pendingBuyback = asNumber(activation.pending_buyback_quantity, 0);
 
       els.buyDecisionFull.innerHTML = kvRows([
@@ -1713,6 +1763,7 @@ INDEX_HTML = """<!doctype html>
         ["待回补数量", escapeHtml(fmtNumber(pendingBuyback, 8))],
         ["最近释放卖价", escapeHtml(fmtCurrency(lastReleasePrice, c.quoteAsset))],
         ["回补触发价", escapeHtml(buybackTriggerPrice ? fmtCurrency(buybackTriggerPrice, c.quoteAsset) : "--")],
+        ["回补层级", escapeHtml(`${fmtNumber(asNumber(activation.buyback_tier_index, 0) + 1, 0)} / ${fmtPercent(asNumber(activation.buyback_tier_net_edge_pct, 0))}`)],
         ["回补状态", pendingBuyback > 0 ? (c.currentPrice <= buybackTriggerPrice ? statusChip("已到回补线", "buy") : statusChip("等待回落", "wait")) : statusChip("无待回补", "wait")],
         ["同步参考价", escapeHtml(fmtCurrency(activation.seed_price, c.quoteAsset))],
         ["真实成本", escapeHtml(fmtCurrency(activation.real_average_entry_price, c.quoteAsset))],
@@ -2037,6 +2088,7 @@ INDEX_HTML = """<!doctype html>
           maxVisibleBars: 80,
           hover: chartHover
         });
+        drawProfitCurve(document.getElementById("profitCurveChart"), c.profitCurve, c.quoteAsset);
       }
       if (activeTab === "backtest") {
         const equity = payload.backtest_equity_curve || [];
@@ -2577,6 +2629,83 @@ INDEX_HTML = """<!doctype html>
       }
     }
 
+    function drawProfitCurve(canvas, points, quoteAsset) {
+      const setup = setupCanvas(canvas);
+      if (!setup) return;
+      const { ctx, width, height } = setup;
+      const data = (points || []).filter((p) => Number.isFinite(Number(p.net_pnl)));
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, width, height);
+      if (!data.length) {
+        ctx.fillStyle = "#6b7a90";
+        ctx.font = "11px Hiragino Sans, PingFang SC, sans-serif";
+        ctx.textAlign = "center";
+        ctx.fillText("暂无利润曲线数据", width / 2, height / 2);
+        return;
+      }
+      const pad = { left: 54, right: 16, top: 10, bottom: 18 };
+      const plotW = Math.max(1, width - pad.left - pad.right);
+      const plotH = Math.max(1, height - pad.top - pad.bottom);
+      let min = Math.min(0, ...data.map((p) => Number(p.net_pnl)));
+      let max = Math.max(0, ...data.map((p) => Number(p.net_pnl)));
+      if (min === max) { min -= 1; max += 1; }
+      const x = (i) => pad.left + (i / Math.max(1, data.length - 1)) * plotW;
+      const y = (v) => pad.top + (max - v) / (max - min) * plotH;
+      const zeroY = y(0);
+
+      ctx.strokeStyle = "#edf2f8";
+      ctx.lineWidth = 1;
+      for (let i = 0; i <= 2; i += 1) {
+        const gy = pad.top + (plotH / 2) * i;
+        ctx.beginPath();
+        ctx.moveTo(pad.left, gy);
+        ctx.lineTo(width - pad.right, gy);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = "rgba(31, 63, 109, 0.24)";
+      ctx.beginPath();
+      ctx.moveTo(pad.left, zeroY);
+      ctx.lineTo(width - pad.right, zeroY);
+      ctx.stroke();
+
+      const lastValue = Number(data[data.length - 1].net_pnl);
+      const positive = lastValue >= 0;
+      const lineColor = positive ? "#14854f" : "#b4232a";
+      const fill = positive ? "rgba(20, 133, 79, 0.08)" : "rgba(180, 35, 42, 0.07)";
+      ctx.beginPath();
+      data.forEach((p, i) => {
+        const px = x(i);
+        const py = y(Number(p.net_pnl));
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.lineTo(x(data.length - 1), zeroY);
+      ctx.lineTo(x(0), zeroY);
+      ctx.closePath();
+      ctx.fillStyle = fill;
+      ctx.fill();
+
+      ctx.beginPath();
+      data.forEach((p, i) => {
+        const px = x(i);
+        const py = y(Number(p.net_pnl));
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      });
+      ctx.strokeStyle = lineColor;
+      ctx.lineWidth = 1.7;
+      ctx.stroke();
+
+      ctx.fillStyle = "#617089";
+      ctx.font = "10px SFMono-Regular, Menlo, monospace";
+      ctx.textAlign = "right";
+      ctx.fillText(fmtNumber(max, 2), pad.left - 8, pad.top + 4);
+      ctx.fillText(fmtNumber(0, 2), pad.left - 8, zeroY + 4);
+      ctx.fillText(fmtNumber(min, 2), pad.left - 8, height - pad.bottom);
+      ctx.textAlign = "left";
+      ctx.fillText(`总利润 ${fmtCurrency(lastValue, quoteAsset || "")}`, pad.left, 12);
+    }
+
     async function loadData(chartInterval, requestSeq, includeChart = true) {
       const params = new URLSearchParams();
       if (chartInterval) params.set("chart_interval", chartInterval);
@@ -2891,6 +3020,7 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         return {}
     return {
         "grid_buyback_step_pct": settings.grid_buyback_step_pct,
+        "grid_buyback_tiers": settings.grid_buyback_tiers,
         "grid_max_daily_trades": settings.grid_max_daily_trades,
         "kline_interval": settings.kline_interval,
         "fast_window": settings.fast_window,
@@ -3776,6 +3906,42 @@ def _sample_rows(rows: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]
     return sampled
 
 
+def _build_live_profit_curve(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    points: List[Dict[str, Any]] = []
+    baseline_equity: float | None = None
+    for row in history:
+        timestamp_ms = _coerce_int(row.get("timestamp_ms") or row.get("generated_at_ms") or row.get("time_ms"))
+        if timestamp_ms <= 0:
+            continue
+        total_equity = _coerce_float(row.get("total_equity"), float("nan"))
+        net_pnl = _coerce_float(row.get("net_pnl"), float("nan"))
+        realized_pnl = _coerce_float(row.get("realized_pnl"), float("nan"))
+        unrealized_pnl = _coerce_float(row.get("unrealized_pnl"), float("nan"))
+        if not (total_equity == total_equity):
+            paper_state = row.get("paper_state") if isinstance(row.get("paper_state"), dict) else {}
+            total_equity = _coerce_float(paper_state.get("total_equity"), float("nan"))
+            if not (net_pnl == net_pnl):
+                net_pnl = _coerce_float(paper_state.get("net_pnl"), float("nan"))
+        if not (total_equity == total_equity) and not (net_pnl == net_pnl):
+            continue
+        if baseline_equity is None and total_equity == total_equity:
+            baseline_equity = total_equity - net_pnl if net_pnl == net_pnl else total_equity
+        if not (net_pnl == net_pnl):
+            net_pnl = total_equity - (baseline_equity or total_equity)
+        point = {
+            "timestamp_ms": timestamp_ms,
+            "net_pnl": net_pnl,
+        }
+        if total_equity == total_equity:
+            point["total_equity"] = total_equity
+        if realized_pnl == realized_pnl:
+            point["realized_pnl"] = realized_pnl
+        if unrealized_pnl == unrealized_pnl:
+            point["unrealized_pnl"] = unrealized_pnl
+        points.append(point)
+    return _sample_rows(points, 800)
+
+
 def _dashboard_chart_symbol(latest_report: Dict[str, Any]) -> str:
     if latest_report.get("decisions"):
         return latest_report["decisions"][0].get("symbol", "")
@@ -3886,6 +4052,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
     history = _read_history(history_path, limit=800 if include_chart else 300)
+    profit_history = _read_history(history_path, limit=6000)
     backtest_payload = _load_backtest_payload(runtime_dir)
     quote_asset = paper_state.get("quote_asset", "JPY")
     fee_rate = _dashboard_fee_rate()
@@ -3937,6 +4104,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "paper_state": paper_state,
         "history": history[-80:] if include_chart else [],
         "history_count": len(history),
+        "live_profit_curve": _build_live_profit_curve(profit_history),
         "recent_fills": recent_fills,
         "open_orders": open_orders,
         "order_lifecycle_events": order_lifecycle_events,

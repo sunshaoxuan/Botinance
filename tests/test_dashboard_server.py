@@ -63,6 +63,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("insight-drawer", INDEX_HTML)
         self.assertIn("chartIntervalSelect", INDEX_HTML)
         self.assertIn("chartLoading", INDEX_HTML)
+        self.assertIn("profitCurveChart", INDEX_HTML)
+        self.assertIn("全时间总利润线", INDEX_HTML)
+        self.assertIn("drawProfitCurve", INDEX_HTML)
         self.assertIn("图表后台加载", INDEX_HTML)
         self.assertIn("后台读取 ${chartInterval} K 线", INDEX_HTML)
         self.assertNotIn("chart-loading active", INDEX_HTML)
@@ -218,6 +221,8 @@ class DashboardServerTests(unittest.TestCase):
                                     }
                                 ],
                                 "market_prices": {"XRPJPY": 221.0},
+                                "total_equity": 1000.0,
+                                "net_pnl": 0.0,
                             }
                         ),
                         json.dumps(
@@ -225,6 +230,8 @@ class DashboardServerTests(unittest.TestCase):
                                 "timestamp_ms": 2_000,
                                 "decisions": [],
                                 "market_prices": {"XRPJPY": 222.0},
+                                "total_equity": 1003.0,
+                                "net_pnl": 3.0,
                             }
                         ),
                         json.dumps(
@@ -232,6 +239,8 @@ class DashboardServerTests(unittest.TestCase):
                                 "timestamp_ms": 3_000,
                                 "decisions": [],
                                 "market_prices": {"XRPJPY": 223.0},
+                                "total_equity": 1002.0,
+                                "net_pnl": 2.0,
                             }
                         ),
                     ]
@@ -264,6 +273,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertTrue(payload["chart_interval_options"])
         self.assertEqual(payload["history_count"], 3)
         self.assertEqual(len(payload["history"]), 3)
+        self.assertEqual(len(payload["live_profit_curve"]), 3)
+        self.assertAlmostEqual(payload["live_profit_curve"][-1]["net_pnl"], 2.0)
         self.assertEqual(len(payload["live_main_interval_bars"]), 1)
         self.assertEqual(payload["live_refresh_interval"], "1m")
         self.assertEqual(len(payload["live_refresh_bars"]), 1)

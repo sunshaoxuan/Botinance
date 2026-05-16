@@ -152,6 +152,66 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertEqual(decision.trigger, "grid_buyback")
         self.assertAlmostEqual(decision.state_update["last_net_edge_pct"], (101.0 - 100.69) / 101.0)
 
+    def test_buyback_tiers_release_quantity_in_layers(self) -> None:
+        settings = replace(
+            _settings(),
+            trading_fee_rate=0.001,
+            grid_buyback_tiers="0.0003:0.25,0.0010:0.25,0.0020:0.25,0.0030:0.25",
+        )
+        engine = PositionActivationEngine(settings, _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=5000.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=60.0, average_entry_price=100.0, highest_price=101.0)},
+            activation_state={
+                "XRPJPY": {
+                    "pending_buyback_quantity": 40.0,
+                    "buyback_plan_total_quantity": 40.0,
+                    "last_grid_sell_price": 101.0,
+                    "daily_trade_day": "2026-05-09",
+                    "daily_trade_count": 1,
+                }
+            },
+        )
+
+        first = engine.evaluate(
+            symbol="XRPJPY",
+            price=100.76,
+            account=AccountSnapshot({"JPY": 5000.0, "XRP": 60.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            snapshot=snapshot,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        self.assertEqual(first.action, "BUY")
+        self.assertEqual(first.trigger, "grid_buyback")
+        self.assertAlmostEqual(first.quantity, 10.0)
+        self.assertAlmostEqual(first.state_update["buyback_tier_net_edge_pct"], 0.0003)
+
+        updated = engine.apply_success(
+            snapshot=snapshot,
+            symbol="XRPJPY",
+            decision=first,
+            fill_price=100.76,
+            timestamp_ms=1_778_300_000_000,
+        )
+        state = updated.activation_state["XRPJPY"]
+        self.assertAlmostEqual(state["pending_buyback_quantity"], 30.0)
+        self.assertEqual(state["buyback_tier_index"], 1)
+
+        second = engine.evaluate(
+            symbol="XRPJPY",
+            price=100.69,
+            account=AccountSnapshot({"JPY": 5000.0, "XRP": 70.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            snapshot=updated,
+            timestamp_ms=1_778_300_060_000,
+        )
+        self.assertEqual(second.action, "BUY")
+        self.assertAlmostEqual(second.quantity, 10.0)
+        self.assertAlmostEqual(second.state_update["buyback_tier_net_edge_pct"], 0.0010)
+
     def test_strategy_release_sell_registers_pending_buyback(self) -> None:
         engine = PositionActivationEngine(_settings(), _Client())
         snapshot = PortfolioSnapshot(

@@ -50,9 +50,18 @@ class PositionActivationEngine:
         last_sell_price = float(state["last_grid_sell_price"])
         if pending_qty > 0 and last_sell_price > 0:
             state["decision_state"] = "RELEASED_WAIT_BUYBACK"
-            buyback_price = self._effective_buyback_price(last_sell_price)
+            tier_index, tier_net_edge_pct, tier_fraction = self._active_buyback_tier(state)
+            buyback_price = self._effective_buyback_price(last_sell_price, tier_net_edge_pct)
+            state["buyback_tier_index"] = tier_index
+            state["buyback_tier_net_edge_pct"] = tier_net_edge_pct
+            state["buyback_tier_fraction"] = tier_fraction
+            state["buyback_trigger_price"] = buyback_price
             if price <= buyback_price:
-                guard = self.profitability_guard.inspect_buyback(last_sell_price, price)
+                guard = self.profitability_guard.inspect_buyback(
+                    last_sell_price,
+                    price,
+                    min_net_edge_pct=tier_net_edge_pct,
+                )
                 state["last_net_edge_pct"] = guard.net_edge_pct
                 state["last_release_fee_adjusted_price"] = last_sell_price * (1.0 - self.settings.trading_fee_rate)
                 if not guard.allowed:
@@ -62,11 +71,20 @@ class PositionActivationEngine:
                         f"要求 {guard.required_edge_pct:.4%}"
                     )
                     return PositionActivationDecision("HOLD", "", "net_edge_too_small", state_update=state)
-                quantity = self.client.quantize_quantity(pending_qty, filters.step_size)
+                quantity = self._tier_buyback_quantity(
+                    pending_qty=pending_qty,
+                    price=price,
+                    filters=filters,
+                    state=state,
+                    tier_fraction=tier_fraction,
+                )
                 decision = self._build_buyback(symbol, price, quantity, account, filters, state)
                 return decision
             state["last_trigger"] = "grid_wait_buyback"
-            state["last_reason"] = f"等待回补：当前价 {price:.8f} 高于回补价 {buyback_price:.8f}"
+            state["last_reason"] = (
+                f"等待回补第 {tier_index + 1} 层：当前价 {price:.8f} 高于回补价 {buyback_price:.8f}，"
+                f"净收益目标 {tier_net_edge_pct:.4%}"
+            )
             return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
 
         position = snapshot.positions.get(symbol)
@@ -132,11 +150,25 @@ class PositionActivationEngine:
         state["last_trade_timestamp_ms"] = timestamp_ms
 
         if decision.trigger in self.release_sell_triggers():
+            previous_pending = float(state["pending_buyback_quantity"])
             state["last_grid_sell_price"] = fill_price
-            state["pending_buyback_quantity"] = float(state["pending_buyback_quantity"]) + decision.quantity
+            state["pending_buyback_quantity"] = previous_pending + decision.quantity
+            if previous_pending <= 0:
+                state["buyback_tier_index"] = 0
+                state["buyback_plan_total_quantity"] = decision.quantity
+            else:
+                state["buyback_plan_total_quantity"] = float(state.get("buyback_plan_total_quantity") or previous_pending) + decision.quantity
             state["last_release_fee_adjusted_price"] = fill_price * (1.0 - self.settings.trading_fee_rate)
-            expected_buyback_price = self._effective_buyback_price(fill_price)
-            guard = self.profitability_guard.inspect_release(fill_price, expected_buyback_price)
+            _, tier_net_edge_pct, tier_fraction = self._active_buyback_tier(state)
+            expected_buyback_price = self._effective_buyback_price(fill_price, tier_net_edge_pct)
+            guard = self.profitability_guard.inspect_release(
+                fill_price,
+                expected_buyback_price,
+                min_net_edge_pct=tier_net_edge_pct,
+            )
+            state["buyback_tier_net_edge_pct"] = tier_net_edge_pct
+            state["buyback_tier_fraction"] = tier_fraction
+            state["buyback_trigger_price"] = expected_buyback_price
             state["last_net_edge_pct"] = guard.net_edge_pct
             state["decision_state"] = "RELEASED_WAIT_BUYBACK"
         elif decision.trigger == "grid_buyback":
@@ -144,6 +176,18 @@ class PositionActivationEngine:
             state["pending_buyback_quantity"] = remaining
             if remaining <= 0:
                 state["last_grid_sell_price"] = 0.0
+                state["buyback_plan_total_quantity"] = 0.0
+                state["buyback_tier_index"] = 0
+                state["buyback_trigger_price"] = 0.0
+                state["buyback_tier_net_edge_pct"] = 0.0
+                state["buyback_tier_fraction"] = 0.0
+            else:
+                next_index = min(int(state.get("buyback_tier_index", 0)) + 1, len(self._buyback_tiers()) - 1)
+                tier_net_edge_pct, tier_fraction = self._buyback_tiers()[next_index]
+                state["buyback_tier_index"] = next_index
+                state["buyback_tier_net_edge_pct"] = tier_net_edge_pct
+                state["buyback_tier_fraction"] = tier_fraction
+                state["buyback_trigger_price"] = self._effective_buyback_price(float(state["last_grid_sell_price"]), tier_net_edge_pct)
             state["buyback_cooldown_until_candle"] = timestamp_ms + self._interval_ms() * max(0, self.settings.buyback_cooldown_bars)
             state["decision_state"] = "BUYBACK_COOLDOWN"
         elif decision.trigger == "stop_loss":
@@ -217,8 +261,16 @@ class PositionActivationEngine:
             state["last_trigger"] = "grid_sell_blocked"
             state["last_reason"] = f"网格卖出金额低于最小成交额：{notional:.8f}"
             return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
-        expected_buyback_price = self._effective_buyback_price(price)
-        guard = self.profitability_guard.inspect_release(price, expected_buyback_price)
+        _, tier_net_edge_pct, tier_fraction = self._active_buyback_tier(state)
+        expected_buyback_price = self._effective_buyback_price(price, tier_net_edge_pct)
+        guard = self.profitability_guard.inspect_release(
+            price,
+            expected_buyback_price,
+            min_net_edge_pct=tier_net_edge_pct,
+        )
+        state["buyback_tier_net_edge_pct"] = tier_net_edge_pct
+        state["buyback_tier_fraction"] = tier_fraction
+        state["buyback_trigger_price"] = expected_buyback_price
         state["last_net_edge_pct"] = guard.net_edge_pct
         state["last_release_fee_adjusted_price"] = price * (1.0 - self.settings.trading_fee_rate)
         if not guard.allowed:
@@ -292,6 +344,11 @@ class PositionActivationEngine:
         state.setdefault("last_release_fee_adjusted_price", 0.0)
         state.setdefault("last_net_edge_pct", 0.0)
         state.setdefault("partial_stop_count", 0)
+        state.setdefault("buyback_plan_total_quantity", float(state.get("pending_buyback_quantity", 0.0) or 0.0))
+        state.setdefault("buyback_tier_index", 0)
+        state.setdefault("buyback_tier_net_edge_pct", 0.0)
+        state.setdefault("buyback_tier_fraction", 0.0)
+        state.setdefault("buyback_trigger_price", 0.0)
         return state
 
     def _interval_ms(self) -> int:
@@ -308,15 +365,65 @@ class PositionActivationEngine:
             return value * 24 * 60 * 60 * 1000
         return 60 * 60 * 1000
 
-    def _effective_buyback_step_pct(self) -> float:
+    def _single_buyback_net_edge_pct(self) -> float:
         return max(
             0.0,
-            self.settings.grid_buyback_step_pct,
-            self.profitability_guard.required_edge_pct,
+            self.settings.min_net_edge_pct,
+            self.settings.grid_buyback_step_pct - self.settings.trading_fee_rate * 2.0,
         )
 
-    def _effective_buyback_price(self, release_price: float) -> float:
-        return release_price * (1.0 - self._effective_buyback_step_pct())
+    def _buyback_tiers(self) -> list[tuple[float, float]]:
+        raw = str(getattr(self.settings, "grid_buyback_tiers", "") or "").strip()
+        tiers: list[tuple[float, float]] = []
+        for item in raw.split(","):
+            item = item.strip()
+            if not item or ":" not in item:
+                continue
+            edge_raw, fraction_raw = item.split(":", 1)
+            try:
+                net_edge_pct = max(0.0, float(edge_raw.strip()))
+                fraction = max(0.0, float(fraction_raw.strip()))
+            except ValueError:
+                continue
+            if fraction > 0:
+                tiers.append((net_edge_pct, fraction))
+        if tiers:
+            return tiers
+        return [(self._single_buyback_net_edge_pct(), 1.0)]
+
+    def _active_buyback_tier(self, state: Dict[str, object]) -> tuple[int, float, float]:
+        tiers = self._buyback_tiers()
+        try:
+            raw_index = int(state.get("buyback_tier_index", 0))
+        except (TypeError, ValueError):
+            raw_index = 0
+        index = min(max(0, raw_index), len(tiers) - 1)
+        net_edge_pct, fraction = tiers[index]
+        return index, net_edge_pct, fraction
+
+    def _effective_buyback_step_pct(self, net_edge_pct: float | None = None) -> float:
+        if net_edge_pct is None:
+            net_edge_pct = self._buyback_tiers()[0][0]
+        return self.profitability_guard.required_edge_pct_for_net(net_edge_pct)
+
+    def _effective_buyback_price(self, release_price: float, net_edge_pct: float | None = None) -> float:
+        return release_price * (1.0 - self._effective_buyback_step_pct(net_edge_pct))
+
+    def _tier_buyback_quantity(
+        self,
+        *,
+        pending_qty: float,
+        price: float,
+        filters: SymbolFilters,
+        state: Dict[str, object],
+        tier_fraction: float,
+    ) -> float:
+        plan_total = float(state.get("buyback_plan_total_quantity") or pending_qty)
+        desired_quantity = min(pending_qty, max(0.0, plan_total * tier_fraction))
+        min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        if price > 0 and desired_quantity * price < min_notional <= pending_qty * price:
+            desired_quantity = min(pending_qty, min_notional / price)
+        return self.client.quantize_quantity(desired_quantity, filters.step_size)
 
     @staticmethod
     def release_sell_triggers() -> set[str]:
