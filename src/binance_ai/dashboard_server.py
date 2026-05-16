@@ -2268,23 +2268,35 @@ INDEX_HTML = """<!doctype html>
       const state = Number.isFinite(item.fastValue) && Number.isFinite(item.slowValue)
         ? (item.fastValue >= item.slowValue ? "快线在上" : "快线在下")
         : "均线计算中";
+      const segments = [
+        { text: item.label, color: "#536176" },
+        { text: fastText, color: "#2563eb" },
+        { text: slowText, color: "#f59e0b" },
+        { text: state, color: state === "快线在上" ? "#15803d" : state === "快线在下" ? "#b4232a" : "#66758a" },
+      ];
       ctx.save();
-      ctx.font = "700 10px Hiragino Sans, PingFang SC, sans-serif";
+      ctx.font = "560 10px Hiragino Sans, PingFang SC, sans-serif";
+      const gap = 10;
+      const paddingX = 8;
+      const measured = segments.map((segment) => ({
+        ...segment,
+        width: Math.ceil(ctx.measureText(segment.text).width),
+      }));
+      const contentW = measured.reduce((sum, segment) => sum + segment.width, 0) + gap * (measured.length - 1);
+      const boxW = contentW + paddingX * 2;
       ctx.fillStyle = "rgba(255, 255, 255, 0.88)";
       ctx.strokeStyle = "rgba(150, 164, 184, 0.48)";
       ctx.beginPath();
-      ctx.roundRect(item.x - 6, item.y - 11, 226, 24, 6);
+      ctx.roundRect(item.x - paddingX, item.y - 11, boxW, 24, 6);
       ctx.fill();
       ctx.stroke();
-      ctx.fillStyle = "#536176";
       ctx.textAlign = "left";
-      ctx.fillText(item.label, item.x, item.y + 3);
-      ctx.fillStyle = "#2563eb";
-      ctx.fillText(fastText, item.x + 64, item.y + 3);
-      ctx.fillStyle = "#f59e0b";
-      ctx.fillText(slowText, item.x + 124, item.y + 3);
-      ctx.fillStyle = state === "快线在上" ? "#15803d" : state === "快线在下" ? "#b4232a" : "#66758a";
-      ctx.fillText(state, item.x + 184, item.y + 3);
+      let cursorX = item.x;
+      measured.forEach((segment) => {
+        ctx.fillStyle = segment.color;
+        ctx.fillText(segment.text, cursorX, item.y + 3);
+        cursorX += segment.width + gap;
+      });
       ctx.restore();
     }
 
