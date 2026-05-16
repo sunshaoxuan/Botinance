@@ -177,6 +177,14 @@ Windows PowerShell uses the same Python service manager:
 .\stop_visual_dashboard.ps1
 ```
 
+Production Windows hosts should sync code through Git instead of file copy:
+
+```powershell
+.\Update-Botinance.ps1
+```
+
+`Update-Botinance.ps1` fetches `origin/main`, compares it with local `HEAD`, resets to the new commit when needed, and restarts Botinance through `Start-Botinance.ps1`. If there is no code update, it still runs a health check and restarts the local service when the monitor or dashboard is stale.
+
 Linux/macOS can call the manager directly:
 
 ```bash

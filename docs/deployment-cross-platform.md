@@ -39,6 +39,25 @@ Manual status and health:
 .\boti_health.ps1
 ```
 
+Git-based production sync:
+
+```powershell
+.\Update-Botinance.ps1
+```
+
+Recommended scheduled task command:
+
+```powershell
+pwsh.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File C:\workspace\Botinance\Update-Botinance.ps1
+```
+
+The updater is intentionally conservative:
+
+- Fetches `origin/main`.
+- Restarts only when local `HEAD` differs from `origin/main`.
+- Uses `Start-Botinance.ps1` / `Stop-Botinance.ps1` when present, so host-specific secret loading stays outside Git.
+- If no update exists, checks service health and restarts only when unhealthy.
+
 Recommended 24-hour mode:
 
 - Use Windows Task Scheduler, NSSM, or WinSW.
