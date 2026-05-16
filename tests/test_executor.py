@@ -6,7 +6,7 @@ from pathlib import Path
 
 from binance_ai.config import Settings
 from binance_ai.execution.executor import OrderExecutor
-from binance_ai.models import Candle, OrderRequest, SymbolFilters
+from binance_ai.models import Candle, ManagedOrder, OrderRequest, SymbolFilters
 from binance_ai.paper.portfolio import PaperPortfolio
 
 
@@ -271,7 +271,7 @@ class OrderExecutorTests(unittest.TestCase):
             self.assertEqual(events[0].status, "FILLED")
             self.assertEqual(portfolio.open_orders(), {})
 
-    def test_process_open_limit_order_timeout_cancels_and_releases_cash(self) -> None:
+    def test_process_open_limit_order_stale_keeps_order_and_reservation(self) -> None:
         settings = Settings(
             api_key="",
             api_secret="",
@@ -326,10 +326,24 @@ class OrderExecutorTests(unittest.TestCase):
                 timestamp_ms=1_600,
             )
 
-            self.assertEqual(events[0].status, "CANCELED")
-            self.assertEqual(events[0].reason, "order_timeout_canceled")
+            self.assertEqual(events[0].event_type, "STALE")
+            self.assertEqual(events[0].status, "OPEN")
+            self.assertEqual(events[0].reason, "order_stale_observed")
+            self.assertEqual(len(portfolio.open_orders()), 1)
+            self.assertAlmostEqual(portfolio.account_snapshot().balance_of("JPY"), 800.0)
+
+            results, fill_events = executor.process_open_orders(
+                symbol="XRPJPY",
+                candles=[
+                    Candle(open_time=1_600, open=201.0, high=202.0, low=199.9, close=200.5, volume=1.0, close_time=2_000)
+                ],
+                current_price=200.5,
+                timestamp_ms=2_100,
+            )
+
+            self.assertEqual(results[0]["status"], "PAPER_FILLED")
+            self.assertEqual(fill_events[0].status, "FILLED")
             self.assertEqual(portfolio.open_orders(), {})
-            self.assertAlmostEqual(portfolio.account_snapshot().balance_of("JPY"), 1000.0)
 
     def test_existing_open_order_blocks_duplicate_symbol_order(self) -> None:
         settings = Settings(
@@ -507,7 +521,7 @@ class OrderExecutorTests(unittest.TestCase):
         self.assertEqual(events[0].status, "CANCELED")
         self.assertEqual(executor.all_open_orders(), [])
 
-    def test_live_open_order_cancels_when_price_deviates(self) -> None:
+    def test_live_open_order_price_deviation_is_reprice_classification(self) -> None:
         settings = Settings(
             api_key="key",
             api_secret="secret",
@@ -535,7 +549,7 @@ class OrderExecutorTests(unittest.TestCase):
             trailing_stop_pct=0.0075,
             max_hold_bars=24,
             live_order_execution_enabled=True,
-            order_cancel_deviation_pct=0.003,
+            order_reprice_deviation_pct=0.003,
         )
         executor = OrderExecutor(settings, _LiveClientStub())
         executor.submit_limit_order(
@@ -558,11 +572,19 @@ class OrderExecutorTests(unittest.TestCase):
             timestamp_ms=2_000,
         )
 
-        self.assertEqual(events[-1].status, "CANCELED")
-        self.assertEqual(events[-1].reason, "order_price_deviation_exceeded")
-        self.assertEqual(executor.all_open_orders(), [])
+        self.assertEqual(events[-1].status, "OPEN")
+        self.assertEqual(len(executor.all_open_orders()), 1)
+        action = executor.classify_open_order_action(
+            executor.all_open_orders()[0],
+            current_price=201.0,
+            timestamp_ms=2_000,
+            signal_action="HOLD",
+            ai_allow_entry=True,
+        )
+        self.assertEqual(action["action"], "REPRICE")
+        self.assertEqual(action["reason"], "order_reprice_deviation_requested")
 
-    def test_live_open_order_timeout_is_boti_cancel_not_exchange_expiry(self) -> None:
+    def test_live_open_order_stale_is_observed_not_canceled(self) -> None:
         settings = Settings(
             api_key="key",
             api_secret="secret",
@@ -591,6 +613,7 @@ class OrderExecutorTests(unittest.TestCase):
             max_hold_bars=24,
             live_order_execution_enabled=True,
             order_cancel_deviation_pct=0.0,
+            order_reprice_deviation_pct=0.0,
         )
         executor = OrderExecutor(settings, _LiveClientStub())
         executor.submit_limit_order(
@@ -614,9 +637,10 @@ class OrderExecutorTests(unittest.TestCase):
             timestamp_ms=1_600,
         )
 
-        self.assertEqual(events[-1].status, "CANCELED")
-        self.assertEqual(events[-1].reason, "order_timeout_canceled")
-        self.assertEqual(executor.all_open_orders(), [])
+        self.assertEqual(events[-1].event_type, "STALE")
+        self.assertEqual(events[-1].status, "OPEN")
+        self.assertEqual(events[-1].reason, "order_stale_observed")
+        self.assertEqual(len(executor.all_open_orders()), 1)
 
     def test_live_submit_timeout_is_unknown_then_queried_next_cycle(self) -> None:
         settings = Settings(
@@ -675,6 +699,103 @@ class OrderExecutorTests(unittest.TestCase):
         self.assertEqual(events[0].event_type, "SYNC")
         self.assertEqual(events[0].status, "OPEN")
         self.assertEqual(executor.all_open_orders()[0].status, "OPEN")
+
+    def test_classify_open_order_cancels_only_for_risk_or_signal_reversal(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+        )
+        executor = OrderExecutor(settings, _ClientStub())
+        buy_order = ManagedOrder(
+            client_order_id="buy",
+            symbol="XRPJPY",
+            side="BUY",
+            order_type="LIMIT",
+            quantity=1.0,
+            limit_price=200.0,
+            time_in_force="GTC",
+            status="OPEN",
+            created_at_ms=1_000,
+            updated_at_ms=1_000,
+            expires_at_ms=1_500,
+        )
+        sell_order = ManagedOrder(
+            client_order_id="sell",
+            symbol="XRPJPY",
+            side="SELL",
+            order_type="LIMIT",
+            quantity=1.0,
+            limit_price=200.0,
+            time_in_force="GTC",
+            status="OPEN",
+            created_at_ms=1_000,
+            updated_at_ms=1_000,
+            expires_at_ms=1_500,
+        )
+
+        self.assertEqual(
+            executor.classify_open_order_action(
+                buy_order,
+                current_price=200.0,
+                timestamp_ms=2_000,
+                signal_action="HOLD",
+                ai_allow_entry=True,
+            )["reason"],
+            "order_stale_observed",
+        )
+        self.assertEqual(
+            executor.classify_open_order_action(
+                buy_order,
+                current_price=200.0,
+                timestamp_ms=2_000,
+                signal_action="HOLD",
+                ai_allow_entry=False,
+            )["reason"],
+            "ai_risk_worsened_cancel_open_buy",
+        )
+        self.assertEqual(
+            executor.classify_open_order_action(
+                buy_order,
+                current_price=200.0,
+                timestamp_ms=2_000,
+                signal_action="SELL",
+                ai_allow_entry=True,
+            )["reason"],
+            "signal_reversed_cancel_open_buy",
+        )
+        self.assertEqual(
+            executor.classify_open_order_action(
+                sell_order,
+                current_price=200.0,
+                timestamp_ms=2_000,
+                signal_action="BUY",
+                ai_allow_entry=True,
+            )["reason"],
+            "signal_reversed_cancel_open_sell",
+        )
 
 
 if __name__ == "__main__":

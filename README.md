@@ -333,11 +333,14 @@ GRID_SELL_STEP_PCT=0.0015
 GRID_BUYBACK_STEP_PCT=0.0012
 GRID_SELL_FRACTION=0.15
 GRID_MAX_DAILY_TRADES=30
-ORDER_TTL_SECONDS=45
+ORDER_STALE_SECONDS=45
+ORDER_STALE_ACTION=observe
+ORDER_REPRICE_ENABLED=true
+ORDER_REPRICE_DEVIATION_PCT=0.0015
 ORDER_CANCEL_DEVIATION_PCT=0.0015
 ```
 
-`ORDER_TTL_SECONDS` 是 Boti 托管限价单的最大等待时间。Binance `GTC` 限价单不会自然过期；超过该时间后，Boti 会主动撤单并记录为 `order_timeout_canceled`，不是交易所 `EXPIRED`。
+`ORDER_STALE_SECONDS` 是 Boti 对托管限价单的陈旧检查时间。Binance `GTC` 限价单不会自然过期；订单陈旧后默认只记录 `order_stale_observed` 并继续等待触价，只有风险变差、信号反转或满足重定价条件时才撤单。
 
 Stop the monitor and dashboard cleanly:
 

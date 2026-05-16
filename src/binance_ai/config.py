@@ -87,6 +87,9 @@ class Settings:
     order_execution_mode: str = "limit_lifecycle"
     order_time_in_force: str = "GTC"
     order_ttl_seconds: int = 180
+    order_stale_action: str = "observe"
+    order_reprice_enabled: bool = True
+    order_reprice_deviation_pct: float = 0.003
     order_cancel_deviation_pct: float = 0.003
     order_passive_offset_pct: float = 0.0002
     order_urgent_cross_pct: float = 0.001
@@ -176,7 +179,10 @@ def load_settings() -> Settings:
         grid_loss_recovery_sell_step_pct=float(os.getenv("GRID_LOSS_RECOVERY_SELL_STEP_PCT", "0.003")),
         order_execution_mode=os.getenv("ORDER_EXECUTION_MODE", "limit_lifecycle").strip(),
         order_time_in_force=os.getenv("ORDER_TIME_IN_FORCE", "GTC").strip().upper(),
-        order_ttl_seconds=int(os.getenv("ORDER_TTL_SECONDS", "180")),
+        order_ttl_seconds=int(os.getenv("ORDER_STALE_SECONDS", os.getenv("ORDER_TTL_SECONDS", "180"))),
+        order_stale_action=os.getenv("ORDER_STALE_ACTION", "observe").strip().lower(),
+        order_reprice_enabled=_parse_bool(os.getenv("ORDER_REPRICE_ENABLED"), True),
+        order_reprice_deviation_pct=float(os.getenv("ORDER_REPRICE_DEVIATION_PCT", os.getenv("ORDER_CANCEL_DEVIATION_PCT", "0.003"))),
         order_cancel_deviation_pct=float(os.getenv("ORDER_CANCEL_DEVIATION_PCT", "0.003")),
         order_passive_offset_pct=float(os.getenv("ORDER_PASSIVE_OFFSET_PCT", "0.0002")),
         order_urgent_cross_pct=float(os.getenv("ORDER_URGENT_CROSS_PCT", "0.001")),

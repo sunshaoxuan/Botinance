@@ -296,31 +296,46 @@ class TradingEngine:
                 activation_decision=activation_decision,
             )
 
-            if not scheduling.should_run_decision:
-                execution_result = {
-                    "status": "SKIPPED_REFRESH_ONLY",
-                    "reason": scheduling.decision_reason,
-                }
-                buy_diagnostic = self._mark_refresh_only_diagnostic(buy_diagnostic, scheduling.decision_reason)
-            elif open_orders:
-                cancel_reason = self._open_order_cancel_reason(open_orders[0], signal, ai_assessment)
-                if cancel_reason:
+            if open_orders:
+                open_order_action = self.executor.classify_open_order_action(
+                    open_orders[0],
+                    current_price=price,
+                    timestamp_ms=cycle_timestamp_ms,
+                    signal_action=signal.action.value,
+                    ai_allow_entry=ai_assessment.allow_entry,
+                )
+                action = str(open_order_action.get("action", "KEEP"))
+                reason = str(open_order_action.get("reason", "open_order_waiting_for_touch"))
+                if action in {"CANCEL", "REPRICE"}:
                     events = self.executor.cancel_open_orders_for_symbol(
                         symbol=symbol,
-                        reason=cancel_reason,
+                        reason=reason,
                         timestamp_ms=cycle_timestamp_ms,
                     )
                     order_lifecycle_events.extend(events)
-                    execution_result = {"status": "CANCELED", "reason": cancel_reason}
+                    execution_result = {
+                        "status": "CANCELED",
+                        "reason": reason,
+                        "open_order_action": action,
+                        "is_stale": bool(open_order_action.get("is_stale", False)),
+                    }
                 else:
                     execution_result = {
                         "status": "ORDER_OPEN",
-                        "reason": "existing_open_order",
+                        "reason": reason,
+                        "open_order_action": action,
+                        "is_stale": bool(open_order_action.get("is_stale", False)),
                         "client_order_id": open_orders[0].client_order_id,
                         "limit_price": open_orders[0].limit_price,
                         "side": open_orders[0].side,
                         "trigger": open_orders[0].trigger,
                     }
+            elif not scheduling.should_run_decision:
+                execution_result = {
+                    "status": "SKIPPED_REFRESH_ONLY",
+                    "reason": scheduling.decision_reason,
+                }
+                buy_diagnostic = self._mark_refresh_only_diagnostic(buy_diagnostic, scheduling.decision_reason)
             elif exit_reason is not None and has_position:
                 decision = self.risk.build_sell_order(
                     symbol,
@@ -549,17 +564,6 @@ class TradingEngine:
             trigger=trigger,
             expires_at_ms=timestamp_ms + self.settings.order_ttl_seconds * 1000,
         )
-
-    @staticmethod
-    def _open_order_cancel_reason(open_order, signal, ai_assessment: AiRiskAssessment) -> str:
-        side = str(open_order.side).upper()
-        if side == "BUY" and not ai_assessment.allow_entry:
-            return "ai_risk_worsened_cancel_open_buy"
-        if side == "BUY" and signal.action == SignalAction.SELL:
-            return "signal_reversed_cancel_open_buy"
-        if side == "SELL" and signal.action == SignalAction.BUY:
-            return "signal_reversed_cancel_open_sell"
-        return ""
 
     def _evaluate_position_activation(
         self,

@@ -352,24 +352,15 @@ class OrderExecutor:
                     events.append(event)
                 continue
 
-            if managed.expires_at_ms and timestamp_ms >= managed.expires_at_ms:
-                event = self.paper_portfolio.cancel_open_order(
-                    managed.client_order_id,
-                    "order_timeout_canceled",
-                    timestamp_ms,
+            if self._is_stale(managed, timestamp_ms):
+                events.append(
+                    self._event_from_managed(
+                        managed,
+                        timestamp_ms,
+                        event_type="STALE",
+                        reason="order_stale_observed",
+                    )
                 )
-                if event is not None:
-                    events.append(event)
-                continue
-
-            if self._should_cancel_for_deviation(managed, current_price):
-                event = self.paper_portfolio.cancel_open_order(
-                    managed.client_order_id,
-                    "order_price_deviation_exceeded",
-                    timestamp_ms,
-                )
-                if event is not None:
-                    events.append(event)
         return results, events
 
     def _process_live_open_orders(
@@ -420,17 +411,15 @@ class OrderExecutor:
                         }
                     )
                 else:
-                    cancel_reason = self._live_cancel_reason(updated, current_price, timestamp_ms)
-                    if cancel_reason:
-                        self.live_open_orders[updated.client_order_id] = updated
-                        events.extend(
-                            self.cancel_open_orders_for_symbol(
-                                symbol=symbol,
-                                reason=cancel_reason,
-                                timestamp_ms=timestamp_ms,
+                    if self._is_stale(updated, timestamp_ms):
+                        events.append(
+                            self._event_from_managed(
+                                updated,
+                                timestamp_ms,
+                                event_type="STALE",
+                                reason="order_stale_observed",
                             )
                         )
-                        continue
                     self.live_open_orders[updated.client_order_id] = updated
             except Exception as exc:  # noqa: BLE001
                 unknown = self._replace_managed_order(
@@ -490,20 +479,44 @@ class OrderExecutor:
                 return candle
         return None
 
-    def _should_cancel_for_deviation(self, order: ManagedOrder, current_price: float) -> bool:
-        threshold = max(0.0, self.settings.order_cancel_deviation_pct)
+    def classify_open_order_action(
+        self,
+        order: ManagedOrder,
+        *,
+        current_price: float,
+        timestamp_ms: int,
+        signal_action: str = "",
+        ai_allow_entry: bool = True,
+    ) -> Dict[str, object]:
+        side = order.side.upper()
+        signal = signal_action.upper()
+        stale = self._is_stale(order, timestamp_ms)
+        if order.status == "UNKNOWN":
+            return {"action": "UNKNOWN_WAIT", "reason": "order_status_unknown_wait", "is_stale": stale}
+        if side == "BUY" and not ai_allow_entry:
+            return {"action": "CANCEL", "reason": "ai_risk_worsened_cancel_open_buy", "is_stale": stale}
+        if side == "BUY" and signal == "SELL":
+            return {"action": "CANCEL", "reason": "signal_reversed_cancel_open_buy", "is_stale": stale}
+        if side == "SELL" and signal == "BUY":
+            return {"action": "CANCEL", "reason": "signal_reversed_cancel_open_sell", "is_stale": stale}
+        if self.settings.order_reprice_enabled and self._should_reprice_for_deviation(order, current_price):
+            reason = "order_stale_reprice_requested" if stale else "order_reprice_deviation_requested"
+            return {"action": "REPRICE", "reason": reason, "is_stale": stale}
+        if stale:
+            return {"action": "KEEP", "reason": "order_stale_observed", "is_stale": stale}
+        return {"action": "KEEP", "reason": "open_order_waiting_for_touch", "is_stale": stale}
+
+    def _should_reprice_for_deviation(self, order: ManagedOrder, current_price: float) -> bool:
+        threshold = max(0.0, self.settings.order_reprice_deviation_pct)
         if threshold <= 0 or order.limit_price <= 0 or current_price <= 0:
             return False
         if order.side == "BUY":
             return current_price > order.limit_price * (1.0 + threshold)
         return current_price < order.limit_price * (1.0 - threshold)
 
-    def _live_cancel_reason(self, order: ManagedOrder, current_price: float, timestamp_ms: int) -> str:
-        if order.expires_at_ms and timestamp_ms >= order.expires_at_ms:
-            return "order_timeout_canceled"
-        if self._should_cancel_for_deviation(order, current_price):
-            return "order_price_deviation_exceeded"
-        return ""
+    @staticmethod
+    def _is_stale(order: ManagedOrder, timestamp_ms: int) -> bool:
+        return bool(order.expires_at_ms and timestamp_ms >= order.expires_at_ms)
 
     @staticmethod
     def _normalize_live_status(status: str) -> str:
