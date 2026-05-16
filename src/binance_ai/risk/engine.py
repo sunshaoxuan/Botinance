@@ -186,6 +186,8 @@ class RiskEngine:
     def exit_sell_fraction(self, exit_reason: str | None, *, strategy_sell: bool = False) -> float:
         if exit_reason == "stop_loss":
             return self._normalized_fraction(self.settings.exit_stop_loss_fraction)
+        if exit_reason == "emergency_stop":
+            return self._normalized_fraction(self.settings.exit_emergency_stop_fraction)
         if exit_reason == "trailing_stop":
             return self._normalized_fraction(self.settings.exit_trailing_stop_fraction)
         if exit_reason == "take_profit":
@@ -333,6 +335,29 @@ class RiskEngine:
         if self.settings.max_hold_bars > 0 and bars_held >= self.settings.max_hold_bars:
             return "max_hold_exit"
         return None
+
+    def is_emergency_stop(
+        self,
+        price: float,
+        position: PositionSnapshot,
+        candles: Sequence[Candle],
+    ) -> bool:
+        if not self.settings.emergency_stop_confirmation_enabled:
+            return False
+        entry_price = position.average_entry_price
+        if entry_price <= 0:
+            return False
+        highest_price = max(position.highest_price or entry_price, price)
+        stop_loss_price, _, _ = self._fee_adjusted_exit_prices(entry_price, highest_price, candles=candles)
+        profile = self.dynamic_exit_profile(candles)
+        emergency_price = entry_price * (1.0 - max(profile.stop_loss_pct * 1.65, profile.stop_loss_pct + 0.006))
+        severe_price_break = price <= emergency_price
+        confirmed_deterioration = (
+            price <= stop_loss_price
+            and profile.trend_score <= -0.55
+            and profile.volatility_ratio >= 1.05
+        )
+        return severe_price_break or confirmed_deterioration
 
     def _fee_adjusted_exit_prices(
         self,

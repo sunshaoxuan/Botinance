@@ -7,6 +7,7 @@ from typing import Dict
 from binance_ai.config import Settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.models import AccountSnapshot, OrderRequest, PortfolioSnapshot, PositionSnapshot, SymbolFilters
+from binance_ai.trade_guard import TradeProfitabilityGuard
 
 
 @dataclass(frozen=True)
@@ -23,6 +24,7 @@ class PositionActivationEngine:
     def __init__(self, settings: Settings, client: BinanceSpotClient) -> None:
         self.settings = settings
         self.client = client
+        self.profitability_guard = TradeProfitabilityGuard(settings)
 
     def evaluate(
         self,
@@ -41,13 +43,25 @@ class PositionActivationEngine:
 
         state = self._normalized_state(snapshot.activation_state.get(symbol), timestamp_ms)
         if int(state["daily_trade_count"]) >= self.settings.grid_max_daily_trades:
+            state["decision_state"] = "RELEASED_WAIT_BUYBACK" if float(state["pending_buyback_quantity"]) > 0 else "NORMAL"
             return PositionActivationDecision("HOLD", "", "grid_daily_trade_limit_reached", state_update=state)
 
         pending_qty = float(state["pending_buyback_quantity"])
         last_sell_price = float(state["last_grid_sell_price"])
         if pending_qty > 0 and last_sell_price > 0:
+            state["decision_state"] = "RELEASED_WAIT_BUYBACK"
             buyback_price = last_sell_price * (1.0 - self.settings.grid_buyback_step_pct)
             if price <= buyback_price:
+                guard = self.profitability_guard.inspect_buyback(last_sell_price, price)
+                state["last_net_edge_pct"] = guard.net_edge_pct
+                state["last_release_fee_adjusted_price"] = last_sell_price * (1.0 - self.settings.trading_fee_rate)
+                if not guard.allowed:
+                    state["last_trigger"] = "grid_buyback_blocked"
+                    state["last_reason"] = (
+                        f"回补净边际不足：当前 {guard.net_edge_pct:.4%}，"
+                        f"要求 {guard.required_edge_pct:.4%}"
+                    )
+                    return PositionActivationDecision("HOLD", "", "net_edge_too_small", state_update=state)
                 quantity = self.client.quantize_quantity(pending_qty, filters.step_size)
                 decision = self._build_buyback(symbol, price, quantity, account, filters, state)
                 return decision
@@ -57,6 +71,7 @@ class PositionActivationEngine:
 
         position = snapshot.positions.get(symbol)
         if position is None or position.quantity <= 0:
+            state["decision_state"] = "NORMAL"
             state["last_trigger"] = "grid_no_position"
             state["last_reason"] = "无持仓，仓位激活不卖出"
             return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
@@ -98,6 +113,7 @@ class PositionActivationEngine:
 
         state["last_trigger"] = "grid_hold"
         state["last_reason"] = f"浮盈 {unrealized_pct:.4%} 未达到网格卖出阈值"
+        state["decision_state"] = "NORMAL"
         return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
 
     def apply_success(
@@ -118,11 +134,23 @@ class PositionActivationEngine:
         if decision.trigger in self.release_sell_triggers():
             state["last_grid_sell_price"] = fill_price
             state["pending_buyback_quantity"] = float(state["pending_buyback_quantity"]) + decision.quantity
+            state["last_release_fee_adjusted_price"] = fill_price * (1.0 - self.settings.trading_fee_rate)
+            expected_buyback_price = fill_price * (1.0 - self.settings.grid_buyback_step_pct)
+            guard = self.profitability_guard.inspect_release(fill_price, expected_buyback_price)
+            state["last_net_edge_pct"] = guard.net_edge_pct
+            state["decision_state"] = "RELEASED_WAIT_BUYBACK"
         elif decision.trigger == "grid_buyback":
             remaining = max(0.0, float(state["pending_buyback_quantity"]) - decision.quantity)
             state["pending_buyback_quantity"] = remaining
             if remaining <= 0:
                 state["last_grid_sell_price"] = 0.0
+            state["buyback_cooldown_until_candle"] = timestamp_ms + self._interval_ms() * max(0, self.settings.buyback_cooldown_bars)
+            state["decision_state"] = "BUYBACK_COOLDOWN"
+        elif decision.trigger == "stop_loss":
+            state["partial_stop_count"] = int(state.get("partial_stop_count", 0)) + 1
+            state["decision_state"] = "PARTIAL_STOP_ACTIVE"
+        elif decision.trigger == "emergency_stop":
+            state["decision_state"] = "EMERGENCY_EXIT"
 
         activation_state = dict(snapshot.activation_state)
         activation_state[symbol] = state
@@ -189,6 +217,18 @@ class PositionActivationEngine:
             state["last_trigger"] = "grid_sell_blocked"
             state["last_reason"] = f"网格卖出金额低于最小成交额：{notional:.8f}"
             return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
+        expected_buyback_price = price * (1.0 - self.settings.grid_buyback_step_pct)
+        guard = self.profitability_guard.inspect_release(price, expected_buyback_price)
+        state["last_net_edge_pct"] = guard.net_edge_pct
+        state["last_release_fee_adjusted_price"] = price * (1.0 - self.settings.trading_fee_rate)
+        if not guard.allowed:
+            state["last_trigger"] = "grid_sell_blocked"
+            state["last_reason"] = (
+                f"释放仓位净边际不足：预计 {guard.net_edge_pct:.4%}，"
+                f"要求 {guard.required_edge_pct:.4%}"
+            )
+            return PositionActivationDecision("HOLD", "net_edge_too_small", str(state["last_reason"]), state_update=state)
+        state["decision_state"] = "NORMAL"
 
         return PositionActivationDecision(
             action="SELL",
@@ -222,6 +262,7 @@ class PositionActivationEngine:
             state["last_trigger"] = "grid_buyback_blocked"
             state["last_reason"] = "回补资金不足"
             return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
+        state["decision_state"] = "BUYBACK_ORDER_OPEN"
         return PositionActivationDecision(
             action="BUY",
             trigger="grid_buyback",
@@ -246,7 +287,26 @@ class PositionActivationEngine:
         state.setdefault("last_trigger", "")
         state.setdefault("last_reason", "")
         state.setdefault("last_trade_timestamp_ms", 0)
+        state.setdefault("decision_state", "NORMAL")
+        state.setdefault("buyback_cooldown_until_candle", 0)
+        state.setdefault("last_release_fee_adjusted_price", 0.0)
+        state.setdefault("last_net_edge_pct", 0.0)
+        state.setdefault("partial_stop_count", 0)
         return state
+
+    def _interval_ms(self) -> int:
+        raw = str(self.settings.kline_interval).strip().lower()
+        try:
+            value = int(raw[:-1])
+        except (TypeError, ValueError):
+            return 60 * 60 * 1000
+        if raw.endswith("m"):
+            return value * 60 * 1000
+        if raw.endswith("h"):
+            return value * 60 * 60 * 1000
+        if raw.endswith("d"):
+            return value * 24 * 60 * 60 * 1000
+        return 60 * 60 * 1000
 
     @staticmethod
     def release_sell_triggers() -> set[str]:

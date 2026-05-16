@@ -16,6 +16,7 @@ from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
 from binance_ai.risk.engine import RiskEngine
 from binance_ai.strategy.base import Strategy
+from binance_ai.trade_guard import TradeProfitabilityGuard
 
 
 class TradingEngine:
@@ -43,6 +44,7 @@ class TradingEngine:
         self.market_analyst = market_analyst
         self.news_service = news_service
         self.position_activation = PositionActivationEngine(settings, client)
+        self.profitability_guard = TradeProfitabilityGuard(settings)
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -139,6 +141,12 @@ class TradingEngine:
                 if has_position and position is not None
                 else None
             )
+            if exit_reason == "stop_loss" and position is not None and self.risk.is_emergency_stop(
+                price=price,
+                position=position,
+                candles=candles,
+            ):
+                exit_reason = "emergency_stop"
             activation_decision = self._evaluate_position_activation(
                 symbol=symbol,
                 price=price,
@@ -146,6 +154,39 @@ class TradingEngine:
                 filters=filters,
                 timestamp_ms=cycle_timestamp_ms,
             )
+            cooldown_remaining_bars = self._buyback_cooldown_remaining_bars(
+                symbol=symbol,
+                timestamp_ms=cycle_timestamp_ms,
+            )
+            if cooldown_remaining_bars > 0:
+                if exit_reason == "stop_loss" and position is not None and self.settings.buyback_cooldown_allow_emergency_stop and self.risk.is_emergency_stop(
+                    price=price,
+                    position=position,
+                    candles=candles,
+                ):
+                    exit_reason = "emergency_stop"
+                elif exit_reason in {"stop_loss", "trailing_stop", "take_profit", "max_hold_exit"}:
+                    exit_reason = None
+                    signal = replace(
+                        signal,
+                        action=SignalAction.HOLD,
+                        confidence=min(signal.confidence, 0.5),
+                        reason=f"回补冷却保护剩余 {cooldown_remaining_bars} 根K线，暂停普通退出",
+                    )
+                if signal.action == SignalAction.SELL:
+                    signal = replace(
+                        signal,
+                        action=SignalAction.HOLD,
+                        confidence=min(signal.confidence, 0.5),
+                        reason=f"回补冷却保护剩余 {cooldown_remaining_bars} 根K线，暂停策略卖出",
+                    )
+                if activation_decision.trigger == "grid_loss_recovery_sell":
+                    activation_decision = PositionActivationDecision(
+                        "HOLD",
+                        "buyback_cooldown_blocks_loss_recovery",
+                        f"回补冷却保护剩余 {cooldown_remaining_bars} 根K线，暂停亏损修复卖出",
+                        state_update=activation_decision.state_update,
+                    )
             release_exit_block_reason = self._release_exit_buyback_block_reason(
                 symbol=symbol,
                 exit_reason=exit_reason,
@@ -272,6 +313,10 @@ class TradingEngine:
             )
             applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY and not has_position else None
             open_orders = list(context.get("open_orders", []))
+            cooldown_remaining_bars = self._buyback_cooldown_remaining_bars(
+                symbol=symbol,
+                timestamp_ms=cycle_timestamp_ms,
+            )
 
             order = None
             execution_result: Dict[str, object] = {"status": "NO_ACTION"}
@@ -297,12 +342,16 @@ class TradingEngine:
             )
 
             if open_orders:
+                open_order = open_orders[0]
+                ai_allow_open_order = ai_assessment.allow_entry
+                if str(open_order.trigger) == "grid_buyback" and not self.settings.ai_can_cancel_buyback:
+                    ai_allow_open_order = not self._ai_extreme_risk(ai_assessment)
                 open_order_action = self.executor.classify_open_order_action(
-                    open_orders[0],
+                    open_order,
                     current_price=price,
                     timestamp_ms=cycle_timestamp_ms,
                     signal_action=signal.action.value,
-                    ai_allow_entry=ai_assessment.allow_entry,
+                    ai_allow_entry=ai_allow_open_order,
                 )
                 action = str(open_order_action.get("action", "KEEP"))
                 reason = str(open_order_action.get("reason", "open_order_waiting_for_touch"))
@@ -318,6 +367,8 @@ class TradingEngine:
                         "reason": reason,
                         "open_order_action": action,
                         "is_stale": bool(open_order_action.get("is_stale", False)),
+                        "decision_state": self._decision_state_for_symbol(symbol),
+                        "cooldown_remaining_bars": cooldown_remaining_bars,
                     }
                 else:
                     execution_result = {
@@ -325,10 +376,12 @@ class TradingEngine:
                         "reason": reason,
                         "open_order_action": action,
                         "is_stale": bool(open_order_action.get("is_stale", False)),
-                        "client_order_id": open_orders[0].client_order_id,
-                        "limit_price": open_orders[0].limit_price,
-                        "side": open_orders[0].side,
-                        "trigger": open_orders[0].trigger,
+                        "client_order_id": open_order.client_order_id,
+                        "limit_price": open_order.limit_price,
+                        "side": open_order.side,
+                        "trigger": open_order.trigger,
+                        "decision_state": self._decision_state_for_symbol(symbol),
+                        "cooldown_remaining_bars": cooldown_remaining_bars,
                     }
             elif not scheduling.should_run_decision:
                 execution_result = {
@@ -408,23 +461,42 @@ class TradingEngine:
                     sell_fraction=self.risk.exit_sell_fraction(None, strategy_sell=True),
                 )
                 if decision.order is not None:
-                    order = self._as_limit_order(
-                        decision.order,
-                        price=price,
-                        filters=filters,
-                        timestamp_ms=cycle_timestamp_ms,
-                        trigger="strategy_sell",
-                        urgent=False,
+                    guard = self.profitability_guard.inspect_release(
+                        price,
+                        price * (1.0 - self.settings.grid_buyback_step_pct),
                     )
-                    execution_result, event = self.executor.submit_limit_order(
-                        order,
-                        current_price=price,
-                        filters=filters,
-                        timestamp_ms=cycle_timestamp_ms,
-                        entry_candle_close_time_ms=latest_closed_candle_close_time,
-                    )
-                    if event is not None:
-                        order_lifecycle_events.append(event)
+                    if not guard.allowed:
+                        execution_result = {
+                            "status": "BLOCKED",
+                            "reason": "net_edge_too_small",
+                            "trigger": "strategy_sell",
+                            "guard_result": guard.reason,
+                            "net_edge_pct": guard.net_edge_pct,
+                            "required_edge_pct": guard.required_edge_pct,
+                            "decision_state": self._decision_state_for_symbol(symbol),
+                            "cooldown_remaining_bars": cooldown_remaining_bars,
+                        }
+                    else:
+                        order = self._as_limit_order(
+                            decision.order,
+                            price=price,
+                            filters=filters,
+                            timestamp_ms=cycle_timestamp_ms,
+                            trigger="strategy_sell",
+                            urgent=False,
+                        )
+                        execution_result, event = self.executor.submit_limit_order(
+                            order,
+                            current_price=price,
+                            filters=filters,
+                            timestamp_ms=cycle_timestamp_ms,
+                            entry_candle_close_time_ms=latest_closed_candle_close_time,
+                        )
+                        execution_result["guard_result"] = guard.reason
+                        execution_result["net_edge_pct"] = guard.net_edge_pct
+                        execution_result["required_edge_pct"] = guard.required_edge_pct
+                        if event is not None:
+                            order_lifecycle_events.append(event)
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason}
             elif activation_decision.order is not None:
@@ -445,6 +517,8 @@ class TradingEngine:
                 )
                 if event is not None:
                     order_lifecycle_events.append(event)
+                execution_result["decision_state"] = self._decision_state_for_symbol(symbol)
+                execution_result["cooldown_remaining_bars"] = cooldown_remaining_bars
                 self._record_position_activation_state(
                     symbol=symbol,
                     decision=activation_decision,
@@ -456,6 +530,8 @@ class TradingEngine:
                     decision=activation_decision,
                     timestamp_ms=cycle_timestamp_ms,
                 )
+                execution_result.setdefault("decision_state", self._decision_state_for_symbol(symbol))
+                execution_result.setdefault("cooldown_remaining_bars", cooldown_remaining_bars)
 
             if scheduling.should_run_decision:
                 self.scheduler.record_decision(
@@ -465,6 +541,8 @@ class TradingEngine:
                     timestamp_ms=cycle_timestamp_ms,
                 )
 
+            execution_result.setdefault("decision_state", self._decision_state_for_symbol(symbol))
+            execution_result.setdefault("cooldown_remaining_bars", cooldown_remaining_bars)
             buy_diagnostics.append(buy_diagnostic)
             sell_diagnostics.append(sell_diagnostic)
             decisions.append(
@@ -586,6 +664,49 @@ class TradingEngine:
             timestamp_ms=timestamp_ms,
         )
 
+    def _activation_state_for_symbol(self, symbol: str) -> Dict[str, object]:
+        if self.paper_portfolio is None:
+            return {}
+        raw = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
+        return raw if isinstance(raw, dict) else {}
+
+    def _decision_state_for_symbol(self, symbol: str) -> str:
+        state = self._activation_state_for_symbol(symbol)
+        decision_state = str(state.get("decision_state", "NORMAL"))
+        if self._buyback_cooldown_remaining_bars(symbol=symbol, timestamp_ms=int(time.time() * 1000)) > 0:
+            return "BUYBACK_COOLDOWN"
+        if float(state.get("pending_buyback_quantity", 0.0) or 0.0) > 0:
+            return decision_state if decision_state else "RELEASED_WAIT_BUYBACK"
+        return decision_state or "NORMAL"
+
+    def _buyback_cooldown_remaining_bars(self, *, symbol: str, timestamp_ms: int) -> int:
+        state = self._activation_state_for_symbol(symbol)
+        cooldown_until = int(float(state.get("buyback_cooldown_until_candle", 0) or 0))
+        if cooldown_until <= timestamp_ms:
+            return 0
+        interval_ms = max(1, self._settings_interval_ms())
+        return int((cooldown_until - timestamp_ms + interval_ms - 1) // interval_ms)
+
+    def _settings_interval_ms(self) -> int:
+        raw = str(self.settings.kline_interval).strip().lower()
+        try:
+            value = int(raw[:-1])
+        except (TypeError, ValueError):
+            return 60 * 60 * 1000
+        if raw.endswith("m"):
+            return value * 60 * 1000
+        if raw.endswith("h"):
+            return value * 60 * 60 * 1000
+        if raw.endswith("d"):
+            return value * 24 * 60 * 60 * 1000
+        return 60 * 60 * 1000
+
+    def _ai_extreme_risk(self, assessment: AiRiskAssessment) -> bool:
+        if not self.settings.ai_extreme_risk_cancel_buyback:
+            return False
+        text = f"{assessment.status} {assessment.veto_reason}".lower()
+        return assessment.risk_score >= 0.9 or "extreme" in text or "极端" in text
+
     def _strategy_sell_buyback_block_reason(
         self,
         *,
@@ -678,6 +799,13 @@ class TradingEngine:
             )
         if side != "SELL":
             return None
+        if trigger in {"stop_loss", "emergency_stop"}:
+            return PositionActivationDecision(
+                action="SELL",
+                trigger=trigger,
+                reason="止损成交后更新分层退出状态" if trigger == "stop_loss" else "极端风险退出成交后更新状态",
+                quantity=quantity,
+            )
 
         release_trigger = self._release_trigger_for_sell_fill(symbol=symbol, trigger=trigger)
         if not release_trigger:
@@ -793,6 +921,10 @@ class TradingEngine:
                     execution_status=execution_status,
                     execution_reason=execution_reason,
                     news_refresh_status=news_refresh_status,
+                    decision_state=str(execution.get("decision_state", "")),
+                    guard_result=str(execution.get("guard_result", "")),
+                    net_edge_pct=float(execution.get("net_edge_pct", 0.0) or 0.0),
+                    cooldown_remaining_bars=int(execution.get("cooldown_remaining_bars", 0) or 0),
                 )
             )
         return ledger

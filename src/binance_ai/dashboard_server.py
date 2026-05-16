@@ -1288,6 +1288,7 @@ INDEX_HTML = """<!doctype html>
         strategy_buy: "策略买入",
         strategy_sell: "策略卖出",
         stop_loss: "硬止损",
+        emergency_stop: "极端风险退出",
         take_profit: "止盈",
         trailing_stop: "跟踪止损",
         max_hold_exit: "超时退出",
@@ -1299,6 +1300,9 @@ INDEX_HTML = """<!doctype html>
         max_hold_release_sell: "超时释放待回补",
         grid_buyback: "网格回补",
         grid_wait_buyback: "等待回补",
+        grid_buyback_blocked: "回补受阻",
+        grid_sell_blocked: "释放受阻",
+        buyback_cooldown_blocks_loss_recovery: "冷却保护中",
         refresh_only: "仅刷新",
       };
       return labels[key] || raw || "--";
@@ -1325,6 +1329,9 @@ INDEX_HTML = """<!doctype html>
         signal_reversed_cancel_open_sell: "信号反转，撤卖单",
         paper_limit_order_expired: "交易所过期",
         ai_entry_veto: "AI 风险闸门否决入场",
+        net_edge_too_small: "手续费后净边际不足",
+        profitability_guard_passed: "交易收益闸门通过",
+        buyback_cooldown_blocks_loss_recovery: "回补冷却期内禁止亏损修复卖出",
         sell_order_approved: "卖出订单已通过风控",
         buy_order_approved: "买入订单已通过风控",
       };
@@ -2894,6 +2901,12 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "mtf_trend_interval": settings.mtf_trend_interval,
         "mtf_trend_fast_window": settings.mtf_trend_fast_window,
         "mtf_trend_slow_window": settings.mtf_trend_slow_window,
+        "min_net_edge_pct": settings.min_net_edge_pct,
+        "required_roundtrip_edge_pct": settings.min_net_edge_pct + settings.trading_fee_rate * 2.0,
+        "buyback_cooldown_bars": settings.buyback_cooldown_bars,
+        "exit_stop_loss_fraction": settings.exit_stop_loss_fraction,
+        "exit_emergency_stop_fraction": settings.exit_emergency_stop_fraction,
+        "ai_can_cancel_buyback": settings.ai_can_cancel_buyback,
     }
 
 
@@ -3814,6 +3827,60 @@ def _build_dashboard_chart_payload(
     }
 
 
+def _build_decision_state_payload(
+    paper_state: Dict[str, Any],
+    latest_report: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    activation_state = paper_state.get("activation_state", {})
+    if not isinstance(activation_state, dict):
+        activation_state = {}
+    timestamp_ms = _latest_report_timestamp_ms(latest_report)
+    interval = str(runtime_config.get("kline_interval") or "1h")
+    interval_ms = INTERVAL_MS.get(interval, INTERVAL_MS["1h"])
+    required_edge_pct = _coerce_float(runtime_config.get("required_roundtrip_edge_pct"))
+    summary: Dict[str, Any] = {}
+    guard: Dict[str, Any] = {}
+    protection: Dict[str, Any] = {}
+    cooldowns: Dict[str, int] = {}
+    for symbol, raw_state in activation_state.items():
+        if not isinstance(raw_state, dict):
+            continue
+        cooldown_until = _coerce_int(raw_state.get("buyback_cooldown_until_candle"))
+        remaining = 0
+        if timestamp_ms > 0 and cooldown_until > timestamp_ms:
+            remaining = int((cooldown_until - timestamp_ms + interval_ms - 1) // interval_ms)
+        pending = _coerce_float(raw_state.get("pending_buyback_quantity"))
+        decision_state = str(raw_state.get("decision_state") or ("RELEASED_WAIT_BUYBACK" if pending > 0 else "NORMAL"))
+        if remaining > 0:
+            decision_state = "BUYBACK_COOLDOWN"
+        summary[str(symbol)] = {
+            "decision_state": decision_state,
+            "pending_buyback_quantity": pending,
+            "last_grid_sell_price": _coerce_float(raw_state.get("last_grid_sell_price")),
+            "partial_stop_count": _coerce_int(raw_state.get("partial_stop_count")),
+        }
+        guard[str(symbol)] = {
+            "last_net_edge_pct": _coerce_float(raw_state.get("last_net_edge_pct")),
+            "required_edge_pct": required_edge_pct,
+            "last_release_fee_adjusted_price": _coerce_float(raw_state.get("last_release_fee_adjusted_price")),
+            "last_trigger": raw_state.get("last_trigger", ""),
+            "last_reason": raw_state.get("last_reason", ""),
+        }
+        protection[str(symbol)] = {
+            "protected": remaining > 0,
+            "cooldown_until_candle": cooldown_until,
+            "cooldown_remaining_bars": remaining,
+        }
+        cooldowns[str(symbol)] = remaining
+    return {
+        "decision_state_summary": summary,
+        "profitability_guard": guard,
+        "buyback_protection": protection,
+        "cooldown_remaining_bars": cooldowns,
+    }
+
+
 def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
@@ -3862,6 +3929,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         all_order_lifecycle_events = order_lifecycle_events
     trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=None)
     real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
+    runtime_config = _dashboard_runtime_config()
+    decision_state_payload = _build_decision_state_payload(paper_state, latest_report, runtime_config)
 
     return {
         "latest_report": latest_report,
@@ -3876,7 +3945,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "decision_ledger": _extract_decision_ledger(history, latest_report),
         "position_activation_state": paper_state.get("activation_state", {}),
-        "runtime_config": _dashboard_runtime_config(),
+        "runtime_config": runtime_config,
+        **decision_state_payload,
         "live_main_interval_bars": main_bars,
         "live_refresh_interval": "1m",
         "live_refresh_bars": refresh_bars,

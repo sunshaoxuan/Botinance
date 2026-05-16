@@ -82,8 +82,8 @@ class SellDecisionDiagnosticTests(unittest.TestCase):
 
         self.assertTrue(diagnostic.eligible_to_sell)
         self.assertEqual(diagnostic.exit_reason, "stop_loss")
-        self.assertAlmostEqual(diagnostic.recommended_sell_quantity, 10.0)
-        self.assertIn("退出比例 100%", diagnostic.blocker_details)
+        self.assertAlmostEqual(diagnostic.recommended_sell_quantity, 5.0)
+        self.assertIn("退出比例 50%", diagnostic.blocker_details)
 
     def test_trailing_stop_recommends_partial_exit(self) -> None:
         risk = RiskEngine(_settings(), _Client())

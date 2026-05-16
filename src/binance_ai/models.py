@@ -218,6 +218,10 @@ class DecisionLedgerEntry:
     execution_status: str
     execution_reason: str
     news_refresh_status: str
+    decision_state: str = ""
+    guard_result: str = ""
+    net_edge_pct: float = 0.0
+    cooldown_remaining_bars: int = 0
 
 
 @dataclass(frozen=True)
