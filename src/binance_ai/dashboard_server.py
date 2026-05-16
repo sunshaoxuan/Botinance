@@ -1190,6 +1190,8 @@ INDEX_HTML = """<!doctype html>
     let dashboardRequestSeq = 0;
     let chartRenderSeq = 0;
     let drawerRequestSeq = 0;
+    let orderRequestSeq = 0;
+    let lastOrderRecordsLoadedAt = 0;
     let tickInFlight = false;
     const chartBarsCache = {};
     const SNAPSHOT_CACHE_KEY = "boti.lastDashboardSnapshot.v2";
@@ -2843,6 +2845,14 @@ INDEX_HTML = """<!doctype html>
       return payload;
     }
 
+    async function loadOrderRecords(requestSeq) {
+      const response = await fetch("/api/dashboard/orders", { cache: "no-store" });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const payload = await response.json();
+      payload.request_seq = requestSeq;
+      return payload;
+    }
+
     async function refreshDecisionDrawer() {
       if (activeDrawerKind !== "decision") return;
       const requestSeq = ++drawerRequestSeq;
@@ -2854,6 +2864,23 @@ INDEX_HTML = """<!doctype html>
         const mergedPayload = { ...lastPayloadSnapshot, ...drawerPayload };
         lastPayloadSnapshot = mergedPayload;
         els.insightDrawerBody.innerHTML = renderDecisionDrawer(mergedPayload);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    async function refreshOrderRecords(force = false) {
+      if (!lastPayloadSnapshot) return;
+      const now = Date.now();
+      if (!force && now - lastOrderRecordsLoadedAt < 15000) return;
+      const requestSeq = ++orderRequestSeq;
+      try {
+        const orderPayload = await loadOrderRecords(requestSeq);
+        if (requestSeq !== orderRequestSeq || !lastPayloadSnapshot) return;
+        lastOrderRecordsLoadedAt = Date.now();
+        lastPayloadSnapshot = { ...lastPayloadSnapshot, ...orderPayload };
+        const c = context(lastPayloadSnapshot);
+        renderFills(c.tradeRecords, c.quoteAsset);
       } catch (err) {
         console.error(err);
       }
@@ -2878,6 +2905,7 @@ INDEX_HTML = """<!doctype html>
         if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
         const hydratedPayload = preserveChartPayload(payload, previousPayload, chartInterval, cachedBars);
         updateDom(hydratedPayload, { renderChart: false });
+        refreshOrderRecords(!payload.trade_records?.length);
         if (cachedBars.length) {
           scheduleChartRender(hydratedPayload, { showLoading: false });
         }
@@ -3101,7 +3129,7 @@ def _extract_recent_fills(history: List[Dict[str, Any]], limit: int | None = 300
 
 
 def _extract_recent_fills_from_file(path: Path, limit: int | None = 300, scan_lines: int | None = 8000) -> List[Dict[str, Any]]:
-    matching_cycles = list(_iter_matching_cycles_from_file(path, ('"PAPER_FILLED"', '"order_lifecycle_events"'), scan_lines))
+    matching_cycles = list(_iter_matching_cycles_from_file(path, ('"PAPER_FILLED"', '"order_lifecycle_events": [{', '"order_lifecycle_events":[{'), scan_lines))
     return _extract_recent_fills(matching_cycles, limit=limit)
 
 
@@ -3124,7 +3152,7 @@ def _extract_order_lifecycle_events(
 
 def _extract_order_lifecycle_events_from_file(path: Path, limit: int | None = 200, scan_lines: int | None = 8000) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    for cycle in _iter_matching_cycles_from_file(path, ('"order_lifecycle_events"',), scan_lines):
+    for cycle in _iter_matching_cycles_from_file(path, ('"order_lifecycle_events": [{', '"order_lifecycle_events":[{'), scan_lines):
         for event in cycle.get("order_lifecycle_events", []):
             if isinstance(event, dict):
                 events.append(event)
@@ -4377,6 +4405,32 @@ def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
     }
 
 
+def build_order_records_payload(runtime_dir: Path) -> Dict[str, Any]:
+    latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    paper_state = _load_json(runtime_dir / "paper_state.json", {})
+    history_path = runtime_dir / "cycle_reports.jsonl"
+    quote_asset = paper_state.get("quote_asset", "JPY")
+    fee_rate = _dashboard_fee_rate()
+    open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
+    order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=1000, scan_lines=None)
+    if not order_lifecycle_events:
+        order_lifecycle_events = _extract_order_lifecycle_events([], latest_report, limit=1000)
+    recent_fills = _extract_recent_fills_from_file(history_path, limit=1000, scan_lines=None)
+    trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate, limit=None)
+    return {
+        "recent_fills": recent_fills,
+        "order_lifecycle_events": order_lifecycle_events,
+        "trade_records": trade_records,
+        "trade_records_complete": True,
+        "order_records_meta": {
+            "scan_lines": "all",
+            "recent_fill_count": len(recent_fills),
+            "order_lifecycle_event_count": len(order_lifecycle_events),
+            "trade_record_count": len(trade_records),
+        },
+    }
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     runtime_dir: Path
 
@@ -4398,6 +4452,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/dashboard/decision-drawer":
             self._send_json(build_decision_drawer_payload(self.runtime_dir))
+            return
+        if parsed.path == "/api/dashboard/orders":
+            self._send_json(build_order_records_payload(self.runtime_dir))
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 

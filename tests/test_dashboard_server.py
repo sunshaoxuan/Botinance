@@ -21,6 +21,7 @@ from binance_ai.dashboard_server import (
     _sample_rows,
     build_decision_drawer_payload,
     build_dashboard_payload,
+    build_order_records_payload,
 )
 
 
@@ -77,6 +78,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
         self.assertIn("chartRenderSeq", INDEX_HTML)
         self.assertIn("drawerRequestSeq", INDEX_HTML)
+        self.assertIn("orderRequestSeq", INDEX_HTML)
         self.assertIn("tickInFlight", INDEX_HTML)
         self.assertIn(".drawer-body .scroll-table", INDEX_HTML)
         self.assertIn("drawer-count", INDEX_HTML)
@@ -92,7 +94,9 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("include_chart", INDEX_HTML)
         self.assertIn("/api/dashboard/chart", INDEX_HTML)
         self.assertIn("/api/dashboard/decision-drawer", INDEX_HTML)
+        self.assertIn("/api/dashboard/orders", INDEX_HTML)
         self.assertIn("refreshDecisionDrawer", INDEX_HTML)
+        self.assertIn("refreshOrderRecords", INDEX_HTML)
         self.assertIn("scheduleChartRender", INDEX_HTML)
         self.assertIn("preserveChartPayload", INDEX_HTML)
         self.assertIn("previous.live_trade_markers", INDEX_HTML)
@@ -582,6 +586,7 @@ class DashboardServerTests(unittest.TestCase):
             )
 
             payload = build_dashboard_payload(runtime_dir)
+            orders_payload = build_order_records_payload(runtime_dir)
 
         self.assertEqual(payload["history_count"], 800)
         self.assertFalse(payload["trade_records_complete"])
@@ -591,6 +596,14 @@ class DashboardServerTests(unittest.TestCase):
         self.assertNotIn("CANCELED", statuses)
         self.assertNotIn("BUY", sides)
         self.assertNotIn("SELL", sides)
+        self.assertTrue(orders_payload["trade_records_complete"])
+        order_statuses = {record["status"] for record in orders_payload["trade_records"]}
+        order_sides = {record["side"] for record in orders_payload["trade_records"]}
+        self.assertIn("PAPER_FILLED", order_statuses)
+        self.assertIn("CANCELED", order_statuses)
+        self.assertIn("BUY", order_sides)
+        self.assertIn("SELL", order_sides)
+        self.assertEqual(orders_payload["order_records_meta"]["scan_lines"], "all")
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
