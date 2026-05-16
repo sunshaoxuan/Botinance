@@ -1056,6 +1056,7 @@ INDEX_HTML = """<!doctype html>
             <div class="card" id="sellDecisionCard"></div>
             <div class="card" id="riskGateCard"></div>
             <div class="card" id="openOrderCard"></div>
+            <div class="card" id="entryPlanCard"></div>
             <div class="card" id="executionCard"></div>
           </aside>
         </div>
@@ -1132,9 +1133,15 @@ INDEX_HTML = """<!doctype html>
             <div class="panel-body" id="buyDecisionFull"></div>
           </article>
           <article class="panel">
+            <div class="panel-header"><div><div class="panel-title">建仓 / 补仓计划</div><div class="panel-subtitle">目标仓位、现金保留和预估买入梯队</div></div></div>
+            <div class="panel-body" id="entryPlanFull"></div>
+          </article>
+          <article class="panel">
             <div class="panel-header"><div><div class="panel-title">退出风险线</div><div class="panel-subtitle">止损、止盈、跟踪止损、超时退出</div></div></div>
             <div class="panel-body" id="exitRiskCard"></div>
           </article>
+        </div>
+        <div class="page-grid-3" style="margin-top:14px;">
           <article class="panel">
             <div class="panel-header"><div><div class="panel-title">仓位激活</div><div class="panel-subtitle">主动网格、待回补和当日次数</div></div></div>
             <div class="panel-body" id="riskParametersCard"></div>
@@ -1200,10 +1207,10 @@ INDEX_HTML = """<!doctype html>
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
       "profitCurveLabel",
-      "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "executionCard", "tradeFillsTable",
+      "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "entryPlanCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
-      "buyDecisionFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
+      "buyDecisionFull", "entryPlanFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
       "cycleLedger", "insightDrawerBackdrop", "insightDrawer", "insightDrawerTitle", "insightDrawerSubtitle", "insightDrawerBody", "insightDrawerClose"
     ];
 
@@ -1426,6 +1433,77 @@ INDEX_HTML = """<!doctype html>
         refresh_only: "仅刷新",
       };
       return labels[key] || raw || "--";
+    }
+
+    function parseLadderTiers(raw) {
+      return String(raw || "").split(",").map((item) => {
+        const [offsetRaw, fractionRaw] = item.split(":");
+        return {
+          offset: Math.max(0, asNumber(offsetRaw, 0)),
+          fraction: Math.max(0, asNumber(fractionRaw, 0)),
+        };
+      }).filter((tier) => tier.fraction > 0);
+    }
+
+    function buildEntryPlan(c, payload) {
+      const cfg = payload.runtime_config || {};
+      const activation = c.activationState || {};
+      const price = asNumber(c.currentPrice, 0);
+      const quoteBalance = asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0);
+      const reservedQuote = asNumber(c.paper.reserved_quote_balance, 0);
+      const availableCash = Math.max(0, quoteBalance - reservedQuote);
+      const qty = asNumber((c.position || {}).quantity || c.positionDiag.quantity, 0);
+      const positionValue = price > 0 ? Math.max(0, qty * price) : 0;
+      const totalEquity = Math.max(0, availableCash + positionValue);
+      const targetFraction = Math.min(1, Math.max(0, asNumber(cfg.target_position_fraction, 0)));
+      const cashReserveFraction = Math.min(1, Math.max(0, asNumber(cfg.min_cash_reserve_fraction, 0)));
+      const aiMultiplier = Math.min(1, Math.max(0, asNumber(c.buyDiag.ai_position_multiplier, 1)));
+      const targetNotional = totalEquity * targetFraction * aiMultiplier;
+      const cashReserve = totalEquity * cashReserveFraction;
+      const maxSpend = Math.max(0, availableCash - cashReserve);
+      const plannedSpend = Math.min(maxSpend, Math.max(0, targetNotional - positionValue));
+      const baseQuantity = price > 0 ? plannedSpend / price : 0;
+      const tiers = parseLadderTiers(cfg.entry_ladder_tiers || "0.0015:0.25,0.0025:0.25,0.0040:0.25");
+      const tierRows = tiers.map((tier, index) => {
+        const tierPrice = price > 0 ? price * (1 - tier.offset) : 0;
+        const tierQuantity = baseQuantity * tier.fraction;
+        const tierNotional = tierPrice * tierQuantity;
+        return {
+          index: index + 1,
+          offset: tier.offset,
+          fraction: tier.fraction,
+          price: tierPrice,
+          quantity: tierQuantity,
+          notional: tierNotional,
+        };
+      });
+      const blockers = [];
+      if (!cfg.order_ladder_enabled) blockers.push("多级挂单未启用");
+      if (String(c.latest.cycle_mode || "").toUpperCase() === "REFRESH") blockers.push("当前为刷新轮，等待决策轮或关键阈值事件");
+      if (String(c.signal || "").toUpperCase() === "SELL") blockers.push("当前策略为卖出信号");
+      if (c.aiRisk.allow_entry === false) blockers.push("AI 风险闸门否决入场");
+      if (asNumber(activation.pending_buyback_quantity, 0) > 0) blockers.push("存在待回补仓位，优先回补");
+      if (asNumber(c.latest.cooldown_remaining_bars || c.executionResult.cooldown_remaining_bars, 0) > 0) blockers.push("回补冷却期内");
+      if (plannedSpend <= 0) blockers.push("目标仓位已满足或现金保留线不足");
+      const minNotional = asNumber(c.buyDiag.min_notional_required || c.buyDiag.min_notional, 0);
+      if (minNotional > 0 && tierRows.every((row) => row.notional < minNotional)) blockers.push("所有建仓梯队低于最小成交额");
+      return {
+        enabled: Boolean(cfg.order_ladder_enabled),
+        targetFraction,
+        cashReserveFraction,
+        aiMultiplier,
+        availableCash,
+        positionValue,
+        totalEquity,
+        targetNotional,
+        cashReserve,
+        maxSpend,
+        plannedSpend,
+        baseQuantity,
+        tiers: tierRows,
+        blockers,
+        status: blockers.length ? "等待条件" : "可在决策轮评估",
+      };
     }
 
     function reasonLabel(reason) {
@@ -1709,6 +1787,7 @@ INDEX_HTML = """<!doctype html>
       const orderSummary = c.openOrderGroups || {};
       const nearestBuy = asNumber(orderSummary.nearest_buy_price, 0);
       const nearestSell = asNumber(orderSummary.nearest_sell_price, 0);
+      const entryPlan = buildEntryPlan(c, payload);
       els.openOrderCard.innerHTML = asNumber(orderSummary.total_count, c.openOrders.length) > 0 ? `
         <div class="card-label"><span>当前挂单组</span>${statusChip(`${asNumber(orderSummary.total_count, c.openOrders.length)} 单`, "wait")}</div>
         <div class="card-value">${asNumber(orderSummary.buy_count, 0)} 买 / ${asNumber(orderSummary.sell_count, 0)} 卖</div>
@@ -1722,6 +1801,18 @@ INDEX_HTML = """<!doctype html>
         <div class="card-label"><span>当前挂单组</span>${statusChip("无挂单", "wait")}</div>
         <div class="card-value">--</div>
         <div class="card-note prose">当前没有等待成交的限价单。</div>
+      `;
+
+      const firstEntryTier = entryPlan.tiers[0] || {};
+      els.entryPlanCard.innerHTML = `
+        <div class="card-label"><span>建仓/补仓计划</span>${entryPlan.blockers.length ? statusChip("等待", "wait") : statusChip("可评估", "buy")}</div>
+        <div class="card-value">${firstEntryTier.price ? fmtCurrency(firstEntryTier.price, c.quoteAsset) : "--"}</div>
+        ${miniKvRows([
+          ["目标仓位", fmtPercent(entryPlan.targetFraction)],
+          ["计划投入", fmtCurrency(entryPlan.plannedSpend, c.quoteAsset)],
+          ["首档数量", firstEntryTier.quantity ? `${fmtNumber(firstEntryTier.quantity, 6)} XRP` : "--"],
+          ["时机", escapeHtml(entryPlan.status)],
+        ])}
       `;
 
       const cfg = lastPayloadSnapshot?.runtime_config || payload?.runtime_config || {};
@@ -1856,6 +1947,29 @@ INDEX_HTML = """<!doctype html>
         ["取整数量", escapeHtml(fmtNumber(buy.rounded_quantity || buy.order_quantity || buy.adjusted_quantity, 8))],
         ["是否可下单", escapeHtml(boolLabel(buy.can_place_order ?? buy.eligible_to_buy))]
       ]);
+
+      const entryPlan = buildEntryPlan(c, payload);
+      const entryRows = entryPlan.tiers.map((tier) => `<tr>
+        <td>${escapeHtml(String(tier.index))}</td>
+        <td>${escapeHtml(fmtPercent(tier.offset))}</td>
+        <td>${escapeHtml(fmtCurrency(tier.price, c.quoteAsset))}</td>
+        <td>${escapeHtml(fmtNumber(tier.quantity, 8))}</td>
+        <td>${escapeHtml(fmtCurrency(tier.notional, c.quoteAsset))}</td>
+      </tr>`);
+      els.entryPlanFull.innerHTML = `
+        ${kvRows([
+          ["当前状态", entryPlan.blockers.length ? statusChip("等待条件", "wait") : statusChip("可在决策轮评估", "buy")],
+          ["目标仓位", escapeHtml(fmtPercent(entryPlan.targetFraction))],
+          ["现金保留", escapeHtml(fmtPercent(entryPlan.cashReserveFraction))],
+          ["可用现金", escapeHtml(fmtCurrency(entryPlan.availableCash, c.quoteAsset))],
+          ["目标持仓额", escapeHtml(fmtCurrency(entryPlan.targetNotional, c.quoteAsset))],
+          ["计划投入", escapeHtml(fmtCurrency(entryPlan.plannedSpend, c.quoteAsset))],
+          ["预估总数量", escapeHtml(`${fmtNumber(entryPlan.baseQuantity, 8)} XRP`)],
+          ["阻塞/等待原因", escapeHtml(entryPlan.blockers.join("；") || "无，下一决策轮可评估建仓/补仓")]
+        ])}
+        <div style="height:10px"></div>
+        ${table(["档", "回落", "预估挂买价", "数量", "金额"], entryRows, "暂无建仓梯队")}
+      `;
 
       els.exitRiskCard.innerHTML = kvRows([
         ["是否适合卖出", sell.eligible_to_sell ? statusChip("可卖", "sell") : statusChip("持有", "wait")],
