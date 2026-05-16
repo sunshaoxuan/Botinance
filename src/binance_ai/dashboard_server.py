@@ -942,10 +942,10 @@ INDEX_HTML = """<!doctype html>
       <header class="top-bar">
         <div class="top-title">
           <div>
-            <div class="top-kicker">XRPJPY PAPER TRADING</div>
+            <div class="top-kicker">XRP/JPY PAPER TRADING</div>
             <div class="top-name">Botinance</div>
           </div>
-          <div class="market-pill"><span class="market-dot"></span><span id="topSymbol">XRPJPY</span></div>
+          <div class="market-pill"><span class="market-dot"></span><span id="topSymbol">XRP/JPY</span></div>
         </div>
         <div class="top-metrics">
           <div class="top-metric"><span>运行状态</span><strong id="topMode">读取中</strong></div>
@@ -1195,6 +1195,22 @@ INDEX_HTML = """<!doctype html>
       const n = Number(value);
       if (!Number.isFinite(n)) return "--";
       return `${n.toLocaleString("zh-CN", { maximumFractionDigits: 4 })}${asset ? " " + asset : ""}`;
+    }
+
+    function fmtSymbol(symbol, quoteAsset = "") {
+      const raw = String(symbol || "").trim().toUpperCase();
+      const quote = String(quoteAsset || "").trim().toUpperCase();
+      if (!raw) return "--";
+      if (raw.includes("/")) return raw;
+      if (quote && raw.endsWith(quote) && raw.length > quote.length) {
+        return `${raw.slice(0, -quote.length)}/${quote}`;
+      }
+      for (const candidate of ["USDT", "USDC", "BUSD", "JPY", "USD", "BTC", "ETH", "BNB"]) {
+        if (raw.endsWith(candidate) && raw.length > candidate.length) {
+          return `${raw.slice(0, -candidate.length)}/${candidate}`;
+        }
+      }
+      return raw;
     }
 
     function fmtPercent(value, digits = 2) {
@@ -1531,7 +1547,7 @@ INDEX_HTML = """<!doctype html>
     function updateTopBar(payload) {
       const c = context(payload);
       const availableCash = Math.max(0, asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0) - asNumber(c.paper.reserved_quote_balance, 0));
-      els.topSymbol.textContent = c.symbol;
+      els.topSymbol.textContent = fmtSymbol(c.symbol, c.quoteAsset);
       els.topMode.textContent = cycleModeLabel(c.latest.cycle_mode);
       els.topUpdated.textContent = fmtTime(c.latest.generated_at || c.latest.timestamp || c.latest.timestamp_ms || payload.generated_at);
       els.topPrice.textContent = c.currentPrice ? fmtCurrency(c.currentPrice, c.quoteAsset) : "--";
@@ -1565,7 +1581,7 @@ INDEX_HTML = """<!doctype html>
       const allowEntry = c.aiRisk.allow_entry;
       const executionResult = c.executionStatus || "无执行";
 
-      els.chartSubtitle.textContent = `${c.symbol} 实时观察 K 线、成交量、模拟成交点、AI 否决点、退出线`;
+      els.chartSubtitle.textContent = `${fmtSymbol(c.symbol, c.quoteAsset)} 实时观察 K 线、成交量、模拟成交点、AI 否决点、退出线`;
       const chartSource = payload.live_chart_source || "runtime";
       els.chartInterval.textContent = `图表 ${payload.live_chart_interval_label || payload.live_chart_interval || "1m"} / 策略 ${payload.live_main_interval || "--"} / ${chartSource}`;
       els.chartPointCount.textContent = `${c.bars.length} bars`;
@@ -1807,7 +1823,7 @@ INDEX_HTML = """<!doctype html>
       const rows = ledger.slice(0, 80).map((r) => `<tr>
         <td>${escapeHtml(fmtTime(r.timestamp_ms))}</td>
         <td>${escapeHtml(cycleModeLabel(r.cycle_mode))}</td>
-        <td>${escapeHtml(r.symbol || "--")}</td>
+        <td>${escapeHtml(fmtSymbol(r.symbol, c.quoteAsset))}</td>
         <td>${escapeHtml(fmtCurrency(r.price, c.quoteAsset))}</td>
         <td>${escapeHtml(r.position_quantity ? fmtNumber(r.position_quantity, 8) : "0")}</td>
         <td>${escapeHtml(r.buy_blocker || "--")}</td>
@@ -1858,7 +1874,7 @@ INDEX_HTML = """<!doctype html>
       const ledgerRows = ledger.slice(0, 40).map((r) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(r.timestamp_ms || r.time))}</td>
         <td>${labelWithRaw(cycleModeLabel(r.cycle_mode), r.cycle_mode)}</td>
-        <td>${escapeHtml(r.symbol || c.symbol)}</td>
+        <td>${escapeHtml(fmtSymbol(r.symbol || c.symbol, c.quoteAsset))}</td>
         <td>${escapeHtml(fmtCurrency(r.price, c.quoteAsset))}</td>
         <td>${labelWithRaw(signalLabel(r.buy_signal), r.buy_signal)}<br><span class="muted">${escapeHtml(reasonLabel(r.buy_blocker))}</span></td>
         <td>${labelWithRaw(signalLabel(r.sell_signal), r.sell_signal)}<br><span class="muted">${escapeHtml(reasonLabel(r.sell_blocker))}</span></td>
