@@ -1927,7 +1927,7 @@ INDEX_HTML = """<!doctype html>
       const c = context(payload);
       const ledger = payload.decision_ledger || [];
       const orderEvents = c.orderEvents || [];
-      const ledgerRows = ledger.slice(0, 40).map((r) => `<tr>
+      const ledgerRows = ledger.slice(0, 100).map((r) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(r.timestamp_ms || r.time))}</td>
         <td>${labelWithRaw(cycleModeLabel(r.cycle_mode), r.cycle_mode)}</td>
         <td>${escapeHtml(fmtSymbol(r.symbol || c.symbol, c.quoteAsset))}</td>
@@ -1936,7 +1936,7 @@ INDEX_HTML = """<!doctype html>
         <td>${labelWithRaw(signalLabel(r.sell_signal), r.sell_signal)}<br><span class="muted">${escapeHtml(reasonLabel(r.sell_blocker))}</span></td>
         <td>${labelWithRaw(signalLabel(r.final_action), r.final_action)}<br><span class="muted">${escapeHtml(executionLabel(r.execution_status))}</span></td>
       </tr>`);
-      const eventRows = orderEvents.slice(0, 40).map((e) => `<tr>
+      const eventRows = orderEvents.slice(0, 100).map((e) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(e.timestamp_ms || e.time))}</td>
         <td>${statusChip(signalLabel(e.status || e.event_type || "--"), signalClass(e.status || e.side))}<br><span class="muted code">${escapeHtml(e.status || e.event_type || "--")}</span></td>
         <td>${labelWithRaw(signalLabel(e.side), e.side)}</td>
@@ -3582,6 +3582,22 @@ def _extract_decision_ledger(history: List[Dict[str, Any]], latest_report: Dict[
     return entries[-limit:][::-1]
 
 
+def _extract_decision_ledger_from_file(
+    path: Path,
+    latest_report: Dict[str, Any],
+    limit: int = 200,
+    scan_lines: int | None = 800,
+) -> List[Dict[str, Any]]:
+    entries: List[Dict[str, Any]] = []
+    for cycle in _iter_matching_cycles_from_file(path, ('"decision_ledger"',), scan_lines):
+        ledger = cycle.get("decision_ledger", [])
+        if isinstance(ledger, list):
+            entries.extend(item for item in ledger if isinstance(item, dict))
+    if not entries:
+        return _extract_decision_ledger([], latest_report, limit=limit)
+    return entries[-limit:][::-1]
+
+
 def _detect_main_interval(latest_report: Dict[str, Any], backtest_manifest: Dict[str, Any]) -> str:
     decisions = latest_report.get("decisions", [])
     for decision in decisions:
@@ -4244,10 +4260,12 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     all_fills = _extract_recent_fills_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
     open_order_groups = _build_open_order_groups(open_orders, quote_asset)
-    order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report)
-    all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
+    drawer_scan_lines = 800 if not include_chart else 1200
+    all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=500, scan_lines=drawer_scan_lines)
     if not all_order_lifecycle_events:
-        all_order_lifecycle_events = order_lifecycle_events
+        all_order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report, limit=500)
+    order_lifecycle_events = all_order_lifecycle_events[:200]
+    decision_ledger = _extract_decision_ledger_from_file(history_path, latest_report, limit=200, scan_lines=drawer_scan_lines)
     trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=None)
     real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
     runtime_config = _dashboard_runtime_config()
@@ -4270,7 +4288,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "trade_records_complete": False,
         "real_cost_basis_summary": real_cost_basis_summary,
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
-        "decision_ledger": _extract_decision_ledger(history, latest_report),
+        "decision_ledger": decision_ledger,
         "position_activation_state": paper_state.get("activation_state", {}),
         "runtime_config": runtime_config,
         **decision_state_payload,

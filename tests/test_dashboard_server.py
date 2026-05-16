@@ -107,6 +107,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn('"订单状态", "方向", "数量", "挂单/成交价"', INDEX_HTML)
         self.assertIn("data-drawer=\"evidence\"", INDEX_HTML)
         self.assertIn("data-drawer=\"decision\"", INDEX_HTML)
+        self.assertIn("ledger.slice(0, 100)", INDEX_HTML)
+        self.assertIn("orderEvents.slice(0, 100)", INDEX_HTML)
         self.assertNotIn("bottom-insight-grid", INDEX_HTML)
         self.assertIn("实时交易", INDEX_HTML)
         self.assertIn("AI 决策", INDEX_HTML)
@@ -444,6 +446,62 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(len(markers), 1)
         self.assertEqual(len(chart_payload["live_trade_markers"]), 1)
         self.assertEqual(chart_payload["live_trade_markers"][0]["trigger"], "")
+
+    def test_deferred_dashboard_scans_decision_drawer_data_outside_light_history_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(
+                runtime_dir / "latest_report.json",
+                {
+                    "timestamp_ms": 500_000,
+                    "decisions": [{"symbol": "XRPJPY", "signal": {"action": "HOLD"}}],
+                    "market_prices": {"XRPJPY": 223.4},
+                },
+            )
+            lines = [
+                json.dumps(
+                    {
+                        "timestamp_ms": 1_000,
+                        "decision_ledger": [
+                            {
+                                "timestamp_ms": 1_000,
+                                "cycle_mode": "DECISION",
+                                "symbol": "XRPJPY",
+                                "price": 221.0,
+                                "buy_signal": "HOLD",
+                                "sell_signal": "HOLD",
+                                "final_action": "HOLD",
+                            }
+                        ],
+                        "order_lifecycle_events": [
+                            {
+                                "timestamp_ms": 1_000,
+                                "symbol": "XRPJPY",
+                                "client_order_id": "drawer-order-1",
+                                "event_type": "SUBMITTED",
+                                "status": "OPEN",
+                                "side": "BUY",
+                                "quantity": 1.0,
+                                "limit_price": 220.0,
+                            }
+                        ],
+                    }
+                )
+            ]
+            lines.extend(
+                json.dumps({"timestamp_ms": 2_000 + i, "market_prices": {"XRPJPY": 223.0}, "decisions": []})
+                for i in range(400)
+            )
+            _write_text(runtime_dir / "cycle_reports.jsonl", "\n".join(lines))
+
+            payload = build_dashboard_payload(runtime_dir, chart_interval="5m", include_chart=False)
+
+        self.assertEqual(payload["history_count"], 80)
+        self.assertEqual(payload["history"], [])
+        self.assertEqual(len(payload["decision_ledger"]), 1)
+        self.assertEqual(payload["decision_ledger"][0]["cycle_mode"], "DECISION")
+        self.assertEqual(len(payload["order_lifecycle_events"]), 1)
+        self.assertEqual(payload["order_lifecycle_events"][0]["client_order_id"], "drawer-order-1")
 
     def test_trade_records_scan_full_runtime_file_not_history_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
