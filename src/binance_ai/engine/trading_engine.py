@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 import time
-from typing import Dict, List
+from typing import Dict, List, Tuple
 
 from binance_ai.config import Settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
@@ -343,49 +343,22 @@ class TradingEngine:
                 activation_decision=activation_decision,
             )
 
-            if open_orders:
-                open_order = open_orders[0]
-                ai_allow_open_order = ai_assessment.allow_entry
-                if str(open_order.trigger) == "grid_buyback" and not self.settings.ai_can_cancel_buyback:
-                    ai_allow_open_order = not self._ai_extreme_risk(ai_assessment)
-                open_order_action = self.executor.classify_open_order_action(
-                    open_order,
-                    current_price=price,
-                    timestamp_ms=cycle_timestamp_ms,
-                    signal_action=signal.action.value,
-                    ai_allow_entry=ai_allow_open_order,
-                )
-                action = str(open_order_action.get("action", "KEEP"))
-                reason = str(open_order_action.get("reason", "open_order_waiting_for_touch"))
-                if action in {"CANCEL", "REPRICE"}:
-                    events = self.executor.cancel_open_orders_for_symbol(
-                        symbol=symbol,
-                        reason=reason,
-                        timestamp_ms=cycle_timestamp_ms,
-                    )
-                    order_lifecycle_events.extend(events)
-                    execution_result = {
-                        "status": "CANCELED",
-                        "reason": reason,
-                        "open_order_action": action,
-                        "is_stale": bool(open_order_action.get("is_stale", False)),
-                        "decision_state": self._decision_state_for_symbol(symbol),
-                        "cooldown_remaining_bars": cooldown_remaining_bars,
-                    }
-                else:
-                    execution_result = {
-                        "status": "ORDER_OPEN",
-                        "reason": reason,
-                        "open_order_action": action,
-                        "is_stale": bool(open_order_action.get("is_stale", False)),
-                        "client_order_id": open_order.client_order_id,
-                        "limit_price": open_order.limit_price,
-                        "side": open_order.side,
-                        "trigger": open_order.trigger,
-                        "decision_state": self._decision_state_for_symbol(symbol),
-                        "cooldown_remaining_bars": cooldown_remaining_bars,
-                    }
-            elif not scheduling.should_run_decision:
+            open_order_summary, open_order_events = self._manage_open_orders(
+                symbol=symbol,
+                open_orders=open_orders,
+                price=price,
+                timestamp_ms=cycle_timestamp_ms,
+                signal_action=signal.action.value,
+                ai_assessment=ai_assessment,
+                cooldown_remaining_bars=cooldown_remaining_bars,
+            )
+            order_lifecycle_events.extend(open_order_events)
+            if open_order_summary.get("status") != "NO_OPEN_ORDERS":
+                execution_result = open_order_summary
+
+            if open_order_summary.get("status") == "CANCELED":
+                pass
+            elif not scheduling.should_run_decision and open_order_summary.get("status") == "NO_OPEN_ORDERS":
                 execution_result = {
                     "status": "SKIPPED_REFRESH_ONLY",
                     "reason": scheduling.decision_reason,
@@ -400,23 +373,19 @@ class TradingEngine:
                     sell_fraction=self.risk.exit_sell_fraction(exit_reason),
                 )
                 if decision.order is not None:
-                    order = self._as_limit_order(
+                    execution_result, events, orders = self._submit_ladder_orders(
                         decision.order,
-                        price=price,
-                        filters=filters,
-                        timestamp_ms=cycle_timestamp_ms,
-                        trigger=exit_reason,
-                        urgent=True,
-                    )
-                    execution_result, event = self.executor.submit_limit_order(
-                        order,
                         current_price=price,
                         filters=filters,
                         timestamp_ms=cycle_timestamp_ms,
                         entry_candle_close_time_ms=latest_closed_candle_close_time,
+                        trigger=exit_reason,
+                        urgent=True,
+                        ladder_group="risk_exit",
+                        tiers_raw="",
                     )
-                    if event is not None:
-                        order_lifecycle_events.append(event)
+                    order_lifecycle_events.extend(events)
+                    order = orders[0] if orders else None
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason, "trigger": exit_reason}
             elif signal.action == SignalAction.BUY and (buy_diagnostic.eligible_to_buy or not ai_assessment.allow_entry):
@@ -427,6 +396,14 @@ class TradingEngine:
                         "ai_veto_reason": ai_assessment.veto_reason,
                     }
                 else:
+                    target_order, target_blocker = self._build_target_position_buy_order(
+                        symbol=symbol,
+                        price=price,
+                        account=account,
+                        base_balance=base_balance,
+                        filters=filters,
+                        position_multiplier=ai_assessment.position_multiplier,
+                    )
                     decision = self.risk.build_buy_order(
                         symbol,
                         price,
@@ -434,26 +411,27 @@ class TradingEngine:
                         filters,
                         position_multiplier=ai_assessment.position_multiplier,
                     )
-                    if decision.order is not None:
-                        order = self._as_limit_order(
-                            decision.order,
-                            price=price,
-                            filters=filters,
-                            timestamp_ms=cycle_timestamp_ms,
-                            trigger="strategy_buy",
-                            urgent=False,
-                        )
-                        execution_result, event = self.executor.submit_limit_order(
-                            order,
+                    target_budget_enabled = self.settings.order_ladder_enabled and self.settings.target_position_fraction > 0
+                    decision_order = target_order if target_budget_enabled else decision.order
+                    if decision_order is not None:
+                        execution_result, events, orders = self._submit_ladder_orders(
+                            decision_order,
                             current_price=price,
                             filters=filters,
                             timestamp_ms=cycle_timestamp_ms,
                             entry_candle_close_time_ms=latest_closed_candle_close_time,
+                            trigger="strategy_buy",
+                            urgent=False,
+                            ladder_group="entry",
+                            tiers_raw=self.settings.entry_ladder_tiers,
                         )
-                        if event is not None:
-                            order_lifecycle_events.append(event)
+                        order_lifecycle_events.extend(events)
+                        order = orders[0] if orders else None
+                        if target_order is not None:
+                            execution_result["target_position_fraction"] = self.settings.target_position_fraction
+                            execution_result["min_cash_reserve_fraction"] = self.settings.min_cash_reserve_fraction
                     else:
-                        execution_result = {"status": "BLOCKED", "reason": decision.reason}
+                        execution_result = {"status": "BLOCKED", "reason": target_blocker if target_budget_enabled else decision.reason}
             elif signal.action == SignalAction.BUY:
                 execution_result = {
                     "status": "BLOCKED",
@@ -486,46 +464,40 @@ class TradingEngine:
                             "cooldown_remaining_bars": cooldown_remaining_bars,
                         }
                     else:
-                        order = self._as_limit_order(
+                        execution_result, events, orders = self._submit_ladder_orders(
                             decision.order,
-                            price=price,
-                            filters=filters,
-                            timestamp_ms=cycle_timestamp_ms,
-                            trigger="strategy_sell",
-                            urgent=False,
-                        )
-                        execution_result, event = self.executor.submit_limit_order(
-                            order,
                             current_price=price,
                             filters=filters,
                             timestamp_ms=cycle_timestamp_ms,
                             entry_candle_close_time_ms=latest_closed_candle_close_time,
+                            trigger="strategy_sell",
+                            urgent=False,
+                            ladder_group="exit",
+                            tiers_raw=self.settings.exit_ladder_tiers,
                         )
+                        order_lifecycle_events.extend(events)
+                        order = orders[0] if orders else None
                         execution_result["guard_result"] = guard.reason
                         execution_result["net_edge_pct"] = guard.net_edge_pct
                         execution_result["required_edge_pct"] = guard.required_edge_pct
-                        if event is not None:
-                            order_lifecycle_events.append(event)
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason}
             elif activation_decision.order is not None:
-                order = self._as_limit_order(
+                tiers_raw = self.settings.grid_buyback_tiers if activation_decision.trigger == "grid_buyback" else ""
+                ladder_group = "buyback" if activation_decision.trigger == "grid_buyback" else "activation"
+                execution_result, events, orders = self._submit_ladder_orders(
                     activation_decision.order,
-                    price=price,
-                    filters=filters,
-                    timestamp_ms=cycle_timestamp_ms,
-                    trigger=activation_decision.trigger,
-                    urgent=False,
-                )
-                execution_result, event = self.executor.submit_limit_order(
-                    order,
                     current_price=price,
                     filters=filters,
                     timestamp_ms=cycle_timestamp_ms,
                     entry_candle_close_time_ms=latest_closed_candle_close_time,
+                    trigger=activation_decision.trigger,
+                    urgent=False,
+                    ladder_group=ladder_group,
+                    tiers_raw=tiers_raw,
                 )
-                if event is not None:
-                    order_lifecycle_events.append(event)
+                order_lifecycle_events.extend(events)
+                order = orders[0] if orders else None
                 execution_result["decision_state"] = self._decision_state_for_symbol(symbol)
                 execution_result["cooldown_remaining_bars"] = cooldown_remaining_bars
                 self._record_position_activation_state(
@@ -613,6 +585,10 @@ class TradingEngine:
         timestamp_ms: int,
         trigger: str,
         urgent: bool,
+        tier_index: int = 0,
+        ladder_group: str = "",
+        target_fraction: float = 0.0,
+        limit_offset_pct: float | None = None,
     ) -> OrderRequest:
         if self.settings.order_execution_mode != "limit_lifecycle":
             return order
@@ -626,12 +602,13 @@ class TradingEngine:
         except Exception:  # noqa: BLE001 - price fallback keeps paper mode and tests deterministic.
             pass
 
+        offset = self.settings.order_passive_offset_pct if limit_offset_pct is None else max(0.0, limit_offset_pct)
         if side == "BUY":
-            raw_limit = bid * (1.0 - self.settings.order_passive_offset_pct)
+            raw_limit = bid * (1.0 - offset)
         elif urgent:
             raw_limit = bid * (1.0 - self.settings.order_urgent_cross_pct)
         else:
-            raw_limit = ask * (1.0 + self.settings.order_passive_offset_pct)
+            raw_limit = ask * (1.0 + offset)
 
         quantize_price = getattr(self.client, "quantize_price", None)
         limit_price = (
@@ -639,7 +616,8 @@ class TradingEngine:
             if callable(quantize_price)
             else raw_limit
         )
-        client_order_id = f"boti_{order.symbol}_{side.lower()}_{timestamp_ms}"
+        group_part = ladder_group or trigger or "order"
+        client_order_id = f"boti_{order.symbol}_{side.lower()}_{group_part}_{tier_index}_{timestamp_ms}"
         return OrderRequest(
             symbol=order.symbol,
             side=order.side,
@@ -650,7 +628,221 @@ class TradingEngine:
             client_order_id=client_order_id,
             trigger=trigger,
             expires_at_ms=timestamp_ms + self.settings.order_ttl_seconds * 1000,
+            tier_index=tier_index,
+            ladder_group=ladder_group,
+            target_fraction=target_fraction,
         )
+
+    def _build_target_position_buy_order(
+        self,
+        *,
+        symbol: str,
+        price: float,
+        account: AccountSnapshot,
+        base_balance: float,
+        filters,
+        position_multiplier: float,
+    ) -> Tuple[OrderRequest | None, str]:
+        if not self.settings.order_ladder_enabled:
+            return None, ""
+        target_fraction = min(1.0, max(0.0, self.settings.target_position_fraction))
+        cash_reserve_fraction = min(1.0, max(0.0, self.settings.min_cash_reserve_fraction))
+        multiplier = min(1.0, max(0.0, position_multiplier))
+        if target_fraction <= 0 or multiplier <= 0 or price <= 0:
+            return None, "target_position_disabled"
+
+        quote_balance = account.balance_of(self.settings.quote_asset)
+        position_value = max(0.0, base_balance * price)
+        total_equity = max(0.0, quote_balance + position_value)
+        target_notional = total_equity * target_fraction * multiplier
+        max_spend = max(0.0, quote_balance - total_equity * cash_reserve_fraction)
+        spend = min(max_spend, max(0.0, target_notional - position_value))
+        min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        quantity = self.client.quantize_quantity(spend / price, filters.step_size)
+        final_notional = quantity * price
+        if spend <= 0:
+            return None, "target_position_reached_or_cash_reserved"
+        if quantity <= 0 or quantity < filters.min_qty:
+            return None, f"target_quantity_below_min_qty:{quantity}"
+        if final_notional < min_notional:
+            return None, f"target_notional_below_min_notional:{final_notional:.2f}"
+        return OrderRequest(symbol=symbol, side="BUY", order_type="MARKET", quantity=quantity), ""
+
+    def _submit_ladder_orders(
+        self,
+        order: OrderRequest,
+        *,
+        current_price: float,
+        filters,
+        timestamp_ms: int,
+        entry_candle_close_time_ms: int,
+        trigger: str,
+        urgent: bool,
+        ladder_group: str,
+        tiers_raw: str,
+    ) -> Tuple[Dict[str, object], List[OrderLifecycleEvent], List[OrderRequest]]:
+        tiers = self._ladder_tiers(tiers_raw)
+        if urgent or not self.settings.order_ladder_enabled or not tiers:
+            tiers = [(0.0, 1.0)]
+
+        results: List[Dict[str, object]] = []
+        events: List[OrderLifecycleEvent] = []
+        orders: List[OrderRequest] = []
+        min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        for index, (offset_pct, fraction) in enumerate(tiers):
+            quantity = order.quantity if len(tiers) == 1 else self.client.quantize_quantity(order.quantity * fraction, filters.step_size)
+            if quantity <= 0 or quantity < filters.min_qty or quantity * current_price < min_notional:
+                continue
+            tier_order = self._as_limit_order(
+                OrderRequest(
+                    symbol=order.symbol,
+                    side=order.side,
+                    order_type=order.order_type,
+                    quantity=quantity,
+                ),
+                price=current_price,
+                filters=filters,
+                timestamp_ms=timestamp_ms,
+                trigger=trigger,
+                urgent=urgent,
+                tier_index=index,
+                ladder_group=ladder_group,
+                target_fraction=fraction,
+                limit_offset_pct=offset_pct if len(tiers) > 1 else None,
+            )
+            result, event = self.executor.submit_limit_order(
+                tier_order,
+                current_price=current_price,
+                filters=filters,
+                timestamp_ms=timestamp_ms,
+                entry_candle_close_time_ms=entry_candle_close_time_ms,
+            )
+            results.append(result)
+            orders.append(tier_order)
+            if event is not None:
+                events.append(event)
+
+        accepted = [item for item in results if str(item.get("status")) in {"ORDER_OPEN", "UNKNOWN"}]
+        rejected = [item for item in results if str(item.get("status")) == "REJECTED"]
+        if not results:
+            return {
+                "status": "BLOCKED",
+                "reason": "ladder_orders_below_minimums",
+                "trigger": trigger,
+                "ladder_group": ladder_group,
+            }, events, orders
+        if len(accepted) == 1 and not rejected:
+            result = dict(accepted[0])
+            result["ladder_group"] = ladder_group
+            result["tier_index"] = orders[0].tier_index if orders else 0
+            return result, events, orders
+        return {
+            "status": "ORDER_LADDER_OPEN" if accepted else "REJECTED",
+            "reason": "order_ladder_submitted" if accepted else "order_ladder_rejected",
+            "trigger": trigger,
+            "ladder_group": ladder_group,
+            "submitted_count": len(accepted),
+            "rejected_count": len(rejected),
+            "orders": results,
+        }, events, orders
+
+    @staticmethod
+    def _ladder_tiers(raw: str) -> List[Tuple[float, float]]:
+        tiers: List[Tuple[float, float]] = []
+        for item in str(raw or "").split(","):
+            item = item.strip()
+            if not item or ":" not in item:
+                continue
+            offset_raw, fraction_raw = item.split(":", 1)
+            try:
+                offset = max(0.0, float(offset_raw.strip()))
+                fraction = max(0.0, float(fraction_raw.strip()))
+            except ValueError:
+                continue
+            if fraction > 0:
+                tiers.append((offset, fraction))
+        return tiers
+
+    def _manage_open_orders(
+        self,
+        *,
+        symbol: str,
+        open_orders: List[object],
+        price: float,
+        timestamp_ms: int,
+        signal_action: str,
+        ai_assessment: AiRiskAssessment,
+        cooldown_remaining_bars: int,
+    ) -> Tuple[Dict[str, object], List[OrderLifecycleEvent]]:
+        if not open_orders:
+            return {"status": "NO_OPEN_ORDERS"}, []
+
+        events: List[OrderLifecycleEvent] = []
+        actions: List[Dict[str, object]] = []
+        for open_order in open_orders:
+            ai_allow_open_order = ai_assessment.allow_entry
+            if str(getattr(open_order, "trigger", "")) == "grid_buyback" and not self.settings.ai_can_cancel_buyback:
+                ai_allow_open_order = not self._ai_extreme_risk(ai_assessment)
+            open_order_action = self.executor.classify_open_order_action(
+                open_order,
+                current_price=price,
+                timestamp_ms=timestamp_ms,
+                signal_action=signal_action,
+                ai_allow_entry=ai_allow_open_order,
+            )
+            action = str(open_order_action.get("action", "KEEP"))
+            reason = str(open_order_action.get("reason", "open_order_waiting_for_touch"))
+            actions.append(
+                {
+                    "client_order_id": getattr(open_order, "client_order_id", ""),
+                    "side": getattr(open_order, "side", ""),
+                    "trigger": getattr(open_order, "trigger", ""),
+                    "tier_index": getattr(open_order, "tier_index", 0),
+                    "ladder_group": getattr(open_order, "ladder_group", ""),
+                    "limit_price": getattr(open_order, "limit_price", 0.0),
+                    "action": action,
+                    "reason": reason,
+                    "is_stale": bool(open_order_action.get("is_stale", False)),
+                }
+            )
+            if action in {"CANCEL", "REPRICE"}:
+                event = self.executor.cancel_open_order(
+                    client_order_id=getattr(open_order, "client_order_id", ""),
+                    reason=reason,
+                    timestamp_ms=timestamp_ms,
+                )
+                if event is not None:
+                    events.append(event)
+
+        canceled_count = len(events)
+        kept = [item for item in actions if item["action"] not in {"CANCEL", "REPRICE"}]
+        if canceled_count > 0:
+            canceled_actions = [item for item in actions if item["action"] in {"CANCEL", "REPRICE"}]
+            return {
+                "status": "CANCELED",
+                "reason": str((canceled_actions[0] if canceled_actions else actions[0]).get("reason") or "open_order_canceled"),
+                "open_order_action": "CANCEL",
+                "canceled_count": canceled_count,
+                "kept_count": len(kept),
+                "open_order_actions": actions,
+                "decision_state": self._decision_state_for_symbol(symbol),
+                "cooldown_remaining_bars": cooldown_remaining_bars,
+            }, events
+
+        nearest = min(open_orders, key=lambda item: abs(float(getattr(item, "limit_price", 0.0) or 0.0) - price))
+        return {
+            "status": "ORDER_OPEN",
+            "reason": "open_order_group_waiting_for_touch",
+            "open_order_action": "KEEP",
+            "open_order_count": len(open_orders),
+            "open_order_actions": actions,
+            "client_order_id": getattr(nearest, "client_order_id", ""),
+            "limit_price": getattr(nearest, "limit_price", 0.0),
+            "side": getattr(nearest, "side", ""),
+            "trigger": getattr(nearest, "trigger", ""),
+            "decision_state": self._decision_state_for_symbol(symbol),
+            "cooldown_remaining_bars": cooldown_remaining_bars,
+        }, events
 
     def _evaluate_position_activation(
         self,
@@ -897,7 +1089,7 @@ class TradingEngine:
             final_action = "HOLD"
             if execution_status == "PAPER_FILLED":
                 final_action = str(execution.get("side", decision.order.side if decision.order else ""))
-            elif execution_status == "ORDER_OPEN":
+            elif execution_status in {"ORDER_OPEN", "ORDER_LADDER_OPEN"}:
                 final_action = f"OPEN_{execution.get('side', decision.order.side if decision.order else '')}"
             elif execution_status == "REJECTED":
                 final_action = "REJECTED"

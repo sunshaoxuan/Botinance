@@ -61,6 +61,9 @@ class PaperPortfolio:
                 reserved_base=float(item.get("reserved_base", 0.0)),
                 entry_candle_close_time=int(item.get("entry_candle_close_time", 0)),
                 last_reason=str(item.get("last_reason", "")),
+                tier_index=int(item.get("tier_index", 0)),
+                ladder_group=str(item.get("ladder_group", "")),
+                target_fraction=float(item.get("target_fraction", 0.0)),
             )
             for client_order_id, item in payload.get("open_orders", {}).items()
             if isinstance(item, dict)

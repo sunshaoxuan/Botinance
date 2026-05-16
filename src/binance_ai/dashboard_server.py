@@ -1291,6 +1291,7 @@ INDEX_HTML = """<!doctype html>
       if (s === "HOLD") return "观望";
       if (s === "PAPER_FILLED") return "模拟已成交";
       if (s === "ORDER_OPEN") return "挂单中";
+      if (s === "ORDER_LADDER_OPEN") return "挂单组";
       if (s === "OPEN") return "挂单中";
       if (s === "FILLED") return "已成交";
       if (s === "CANCELED") return "已撤单";
@@ -1314,6 +1315,7 @@ INDEX_HTML = """<!doctype html>
       if (s === "PASS") return "通过";
       if (s === "HOLD") return "持有";
       if (s === "ORDER_OPEN") return "挂单中";
+      if (s === "ORDER_LADDER_OPEN") return "挂单组";
       if (s === "FILLED") return "已成交";
       if (s === "CANCELED") return "已撤单";
       if (s === "EXPIRED") return "交易所过期";
@@ -1327,6 +1329,7 @@ INDEX_HTML = """<!doctype html>
       if (s === "SKIPPED_REFRESH_ONLY") return "本轮只刷新行情、持仓和风控线，不触发下单决策。";
       if (s === "PAPER_FILLED") return "本轮已产生成交，明细见 K 线下方成交记录。";
       if (s === "ORDER_OPEN") return "本轮已提交限价挂单，等待行情触价或撤单规则处理。";
+      if (s === "ORDER_LADDER_OPEN") return "本轮已提交多级限价挂单组，等待行情触价、风险反转或重定价规则处理。";
       if (s === "UNKNOWN") return "订单接口状态不确定，下一轮会先查询订单状态，不直接补单。";
       if (s === "CANCELED") return "挂单已撤销，锁定资产已释放。";
       if (s === "EXPIRED") return "交易所返回订单过期，锁定资产已释放。";
@@ -1506,10 +1509,11 @@ INDEX_HTML = """<!doctype html>
       const markers = payload.live_trade_markers || [];
       const vetoes = payload.live_ai_veto_markers || [];
       const openOrders = payload.open_orders || latest.open_orders || [];
+      const openOrderGroups = payload.open_order_groups || payload.order_ladder_summary || {};
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
       const profitCurve = payload.live_profit_curve || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, orderEvents, orderMarkers, profitCurve };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, orderEvents, orderMarkers, profitCurve };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1634,18 +1638,20 @@ INDEX_HTML = """<!doctype html>
         <div class="card-note prose">${escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "暂无 AI 风险闸门输出")}</div>
       `;
 
-      const openOrder = c.openOrders.find((item) => item.symbol === c.symbol) || c.openOrders[0] || null;
-      els.openOrderCard.innerHTML = openOrder ? `
-        <div class="card-label"><span>当前挂单</span>${statusChip(openOrder.side || "--", String(openOrder.side || "").toUpperCase() === "BUY" ? "buy" : "sell")}</div>
-        <div class="card-value">${fmtCurrency(openOrder.limit_price, c.quoteAsset)}</div>
+      const orderSummary = c.openOrderGroups || {};
+      const nearestBuy = asNumber(orderSummary.nearest_buy_price, 0);
+      const nearestSell = asNumber(orderSummary.nearest_sell_price, 0);
+      els.openOrderCard.innerHTML = asNumber(orderSummary.total_count, c.openOrders.length) > 0 ? `
+        <div class="card-label"><span>当前挂单组</span>${statusChip(`${asNumber(orderSummary.total_count, c.openOrders.length)} 单`, "wait")}</div>
+        <div class="card-value">${asNumber(orderSummary.buy_count, 0)} 买 / ${asNumber(orderSummary.sell_count, 0)} 卖</div>
         ${miniKvRows([
-          ["数量", fmtNumber(openOrder.quantity, 8)],
-          ["触发", escapeHtml(triggerLabel(openOrder.trigger || "--"))],
-          ["状态", escapeHtml(signalLabel(openOrder.status || "OPEN"))],
-          ["冻结现金", openOrder.reserved_quote ? fmtCurrency(openOrder.reserved_quote, c.quoteAsset) : "--"],
+          ["最近买价", nearestBuy > 0 ? fmtCurrency(nearestBuy, c.quoteAsset) : "--"],
+          ["最近卖价", nearestSell > 0 ? fmtCurrency(nearestSell, c.quoteAsset) : "--"],
+          ["冻结现金", fmtCurrency(orderSummary.reserved_quote, c.quoteAsset)],
+          ["冻结币数", orderSummary.reserved_base ? `${fmtNumber(orderSummary.reserved_base, 8)} XRP` : "--"],
         ])}
       ` : `
-        <div class="card-label"><span>当前挂单</span>${statusChip("无挂单", "wait")}</div>
+        <div class="card-label"><span>当前挂单组</span>${statusChip("无挂单", "wait")}</div>
         <div class="card-value">--</div>
         <div class="card-note prose">当前没有等待成交的限价单。</div>
       `;
@@ -3053,6 +3059,13 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "exit_stop_loss_fraction": settings.exit_stop_loss_fraction,
         "exit_emergency_stop_fraction": settings.exit_emergency_stop_fraction,
         "ai_can_cancel_buyback": settings.ai_can_cancel_buyback,
+        "order_max_open_per_symbol": settings.order_max_open_per_symbol,
+        "order_max_open_per_side": settings.order_max_open_per_side,
+        "order_ladder_enabled": settings.order_ladder_enabled,
+        "target_position_fraction": settings.target_position_fraction,
+        "min_cash_reserve_fraction": settings.min_cash_reserve_fraction,
+        "entry_ladder_tiers": settings.entry_ladder_tiers,
+        "exit_ladder_tiers": settings.exit_ladder_tiers,
     }
 
 
@@ -3150,6 +3163,74 @@ def _build_order_trade_record(order: Dict[str, Any], quote_asset: str, fee_rate:
         "trigger": order.get("trigger", ""),
         "reason": order.get("reason", ""),
         "client_order_id": order.get("client_order_id", ""),
+        "tier_index": _coerce_int(order.get("tier_index")),
+        "ladder_group": order.get("ladder_group", ""),
+        "target_fraction": _coerce_float(order.get("target_fraction")),
+    }
+
+
+def _build_open_order_groups(open_orders: List[Dict[str, Any]], quote_asset: str) -> Dict[str, Any]:
+    groups: Dict[str, Dict[str, Any]] = {}
+    buy_prices: List[float] = []
+    sell_prices: List[float] = []
+    total_reserved_quote = 0.0
+    total_reserved_base = 0.0
+    buy_count = 0
+    sell_count = 0
+    for order in open_orders:
+        if not isinstance(order, dict):
+            continue
+        symbol = str(order.get("symbol") or "")
+        side = str(order.get("side") or "").upper()
+        group = str(order.get("ladder_group") or order.get("trigger") or "order")
+        key = f"{symbol}:{group}:{side}"
+        quantity = _coerce_float(order.get("remaining_quantity"), _coerce_float(order.get("quantity")))
+        limit_price = _coerce_float(order.get("limit_price"), _coerce_float(order.get("price")))
+        reserved_quote = _coerce_float(order.get("reserved_quote"))
+        reserved_base = _coerce_float(order.get("reserved_base"))
+        total_reserved_quote += reserved_quote
+        total_reserved_base += reserved_base
+        if side == "BUY":
+            buy_count += 1
+            if limit_price > 0:
+                buy_prices.append(limit_price)
+        elif side == "SELL":
+            sell_count += 1
+            if limit_price > 0:
+                sell_prices.append(limit_price)
+        bucket = groups.setdefault(
+            key,
+            {
+                "symbol": symbol,
+                "side": side,
+                "ladder_group": group,
+                "count": 0,
+                "quantity": 0.0,
+                "reserved_quote": 0.0,
+                "reserved_base": 0.0,
+                "nearest_price": 0.0,
+                "orders": [],
+            },
+        )
+        bucket["count"] += 1
+        bucket["quantity"] += quantity
+        bucket["reserved_quote"] += reserved_quote
+        bucket["reserved_base"] += reserved_base
+        if limit_price > 0:
+            current_nearest = _coerce_float(bucket.get("nearest_price"))
+            if current_nearest <= 0 or (side == "BUY" and limit_price > current_nearest) or (side == "SELL" and limit_price < current_nearest):
+                bucket["nearest_price"] = limit_price
+        bucket["orders"].append(order)
+    return {
+        "groups": list(groups.values()),
+        "buy_count": buy_count,
+        "sell_count": sell_count,
+        "total_count": buy_count + sell_count,
+        "reserved_quote": total_reserved_quote,
+        "reserved_base": total_reserved_base,
+        "quote_asset": quote_asset,
+        "nearest_buy_price": max(buy_prices) if buy_prices else 0.0,
+        "nearest_sell_price": min(sell_prices) if sell_prices else 0.0,
     }
 
 
@@ -4106,6 +4187,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     recent_fills = _extract_recent_fills_from_file(history_path)
     all_fills = _extract_recent_fills_from_file(history_path, limit=None, scan_lines=None)
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
+    open_order_groups = _build_open_order_groups(open_orders, quote_asset)
     order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report)
     all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=None, scan_lines=None)
     if not all_order_lifecycle_events:
@@ -4123,6 +4205,10 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "live_profit_curve": _build_live_profit_curve(profit_history),
         "recent_fills": recent_fills,
         "open_orders": open_orders,
+        "open_order_groups": open_order_groups,
+        "order_ladder_summary": open_order_groups,
+        "reserved_quote_balance": _coerce_float(paper_state.get("reserved_quote_balance")),
+        "reserved_base_balances": paper_state.get("reserved_base_balances", {}),
         "order_lifecycle_events": order_lifecycle_events,
         "trade_records": trade_records,
         "real_cost_basis_summary": real_cost_basis_summary,

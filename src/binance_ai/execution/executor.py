@@ -89,8 +89,8 @@ class OrderExecutor:
             )
             return validation, event
 
-        max_open = max(0, self.settings.order_max_open_per_symbol)
-        if max_open and len(self.open_orders_for_symbol(order.symbol)) >= max_open:
+        limit_reason = self._open_order_limit_violation(order)
+        if limit_reason:
             event = OrderLifecycleEvent(
                 timestamp_ms=timestamp_ms,
                 symbol=order.symbol,
@@ -100,12 +100,12 @@ class OrderExecutor:
                 side=order.side,
                 quantity=order.quantity,
                 limit_price=order.limit_price,
-                reason="max_open_orders_per_symbol_reached",
+                reason=limit_reason,
                 trigger=order.trigger,
             )
             return {
                 "status": "REJECTED",
-                "reason": "max_open_orders_per_symbol_reached",
+                "reason": limit_reason,
                 "symbol": order.symbol,
                 "client_order_id": order.client_order_id,
             }, event
@@ -199,6 +199,9 @@ class OrderExecutor:
                     remaining_quantity=order.quantity,
                     entry_candle_close_time=entry_candle_close_time_ms or 0,
                     last_reason=str(exc),
+                    tier_index=order.tier_index,
+                    ladder_group=order.ladder_group,
+                    target_fraction=order.target_fraction,
                 )
             event = OrderLifecycleEvent(
                 timestamp_ms=timestamp_ms,
@@ -213,6 +216,28 @@ class OrderExecutor:
                 trigger=order.trigger,
             )
             return {"status": "UNKNOWN", "reason": str(exc), "client_order_id": order.client_order_id}, event
+
+    def _open_order_limit_violation(self, order: OrderRequest) -> str:
+        open_orders = self.open_orders_for_symbol(order.symbol)
+        max_open = max(0, self.settings.order_max_open_per_symbol)
+        if max_open and len(open_orders) >= max_open:
+            return "max_open_orders_per_symbol_reached"
+
+        max_side = max(0, getattr(self.settings, "order_max_open_per_side", 0))
+        if max_side:
+            side_count = sum(1 for existing in open_orders if existing.side.upper() == order.side.upper())
+            if side_count >= max_side:
+                return "max_open_orders_per_side_reached"
+
+        for existing in open_orders:
+            if (
+                existing.side.upper() == order.side.upper()
+                and existing.trigger == order.trigger
+                and existing.ladder_group == order.ladder_group
+                and existing.tier_index == order.tier_index
+            ):
+                return "duplicate_open_ladder_order"
+        return ""
 
     def process_open_orders(
         self,
@@ -284,6 +309,55 @@ class OrderExecutor:
                     )
                 )
         return events
+
+    def cancel_open_order(
+        self,
+        *,
+        client_order_id: str,
+        reason: str,
+        timestamp_ms: int,
+    ) -> OrderLifecycleEvent | None:
+        if self._use_paper_lifecycle() and self.paper_portfolio is not None:
+            return self.paper_portfolio.cancel_open_order(client_order_id, reason, timestamp_ms)
+        if not self.settings.live_order_execution_enabled:
+            return None
+
+        managed = self.live_open_orders.get(client_order_id)
+        if managed is None:
+            return None
+        try:
+            raw = self.client.cancel_order(
+                managed.symbol,
+                order_id=managed.external_order_id or None,
+                client_order_id=managed.client_order_id or None,
+            )
+            updated = self._managed_from_live_payload(raw, managed, timestamp_ms)
+            status = self._normalize_live_status(str(raw.get("status", updated.status)))
+            event = self._event_from_managed(
+                updated,
+                timestamp_ms,
+                event_type=status if status != "OPEN" else "CANCELED",
+                reason=reason,
+            )
+            if status in {"CANCELED", "EXPIRED", "REJECTED", "FILLED"}:
+                self.live_open_orders.pop(managed.client_order_id, None)
+            else:
+                self.live_open_orders[updated.client_order_id] = updated
+            return event
+        except Exception as exc:  # noqa: BLE001
+            unknown = self._replace_managed_order(
+                managed,
+                status="UNKNOWN",
+                updated_at_ms=timestamp_ms,
+                last_reason=str(exc),
+            )
+            self.live_open_orders[unknown.client_order_id] = unknown
+            return self._event_from_managed(
+                unknown,
+                timestamp_ms,
+                event_type="UNKNOWN",
+                reason=str(exc),
+            )
 
     def open_orders_for_symbol(self, symbol: str) -> List[ManagedOrder]:
         if self._use_paper_lifecycle() and self.paper_portfolio is not None:
@@ -542,6 +616,9 @@ class OrderExecutor:
         fallback_tif = fallback.time_in_force if fallback is not None else "GTC"
         fallback_trigger = fallback.trigger if fallback is not None else ""
         fallback_expires = fallback.expires_at_ms if fallback is not None else 0
+        fallback_tier_index = fallback.tier_index if fallback is not None else 0
+        fallback_ladder_group = fallback.ladder_group if fallback is not None else ""
+        fallback_target_fraction = fallback.target_fraction if fallback is not None else 0.0
         fallback_external = fallback.external_order_id if isinstance(fallback, ManagedOrder) else ""
         fallback_created = fallback.created_at_ms if isinstance(fallback, ManagedOrder) else timestamp_ms
         fallback_entry_close = fallback.entry_candle_close_time if isinstance(fallback, ManagedOrder) else 0
@@ -576,6 +653,9 @@ class OrderExecutor:
             average_fill_price=average_fill_price,
             entry_candle_close_time=entry_candle_close_time_ms or fallback_entry_close,
             last_reason="live_order_payload",
+            tier_index=fallback_tier_index,
+            ladder_group=fallback_ladder_group,
+            target_fraction=fallback_target_fraction,
         )
 
     @staticmethod
@@ -601,6 +681,9 @@ class OrderExecutor:
             "reserved_base": order.reserved_base,
             "entry_candle_close_time": order.entry_candle_close_time,
             "last_reason": order.last_reason,
+            "tier_index": order.tier_index,
+            "ladder_group": order.ladder_group,
+            "target_fraction": order.target_fraction,
         }
         fields.update(updates)
         return ManagedOrder(**fields)

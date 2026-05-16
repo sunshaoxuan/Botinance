@@ -80,6 +80,9 @@ class PortfolioStateEngine:
             reserved_quote=reserved_quote,
             reserved_base=reserved_base,
             entry_candle_close_time=entry_candle_close_time_ms,
+            tier_index=order.tier_index,
+            ladder_group=order.ladder_group,
+            target_fraction=order.target_fraction,
         )
         open_orders[managed.client_order_id] = managed
         reserved_base_balances = dict(snapshot.reserved_base_balances)
@@ -162,6 +165,9 @@ class PortfolioStateEngine:
             order_type="MARKET",
             quantity=managed.quantity,
             trigger=managed.trigger,
+            tier_index=managed.tier_index,
+            ladder_group=managed.ladder_group,
+            target_fraction=managed.target_fraction,
         )
         updated, result = self.apply_order(
             released,

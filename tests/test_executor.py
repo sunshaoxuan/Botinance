@@ -409,6 +409,102 @@ class OrderExecutorTests(unittest.TestCase):
             self.assertEqual(event.reason, "max_open_orders_per_symbol_reached")
             self.assertEqual(len(portfolio.open_orders("XRPJPY")), 1)
 
+    def test_multi_order_limits_allow_three_buy_and_three_sell_orders(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=5000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            order_max_open_per_symbol=6,
+            order_max_open_per_side=3,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio("JPY", 5000.0, Path(tmpdir) / "paper_state.json")
+            portfolio.apply_order(
+                OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=10.0),
+                fill_price=200.0,
+            )
+            executor = OrderExecutor(settings, _ClientStub(), portfolio)
+
+            accepted = []
+            for index in range(3):
+                result, _ = executor.submit_limit_order(
+                    OrderRequest(
+                        symbol="XRPJPY",
+                        side="BUY",
+                        order_type="LIMIT",
+                        quantity=1.0,
+                        limit_price=199.0 - index,
+                        client_order_id=f"buy-{index}",
+                        trigger="strategy_buy",
+                        ladder_group="entry",
+                        tier_index=index,
+                    ),
+                    current_price=200.0,
+                    filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+                    timestamp_ms=1_000 + index,
+                )
+                accepted.append(result["status"])
+            for index in range(3):
+                result, _ = executor.submit_limit_order(
+                    OrderRequest(
+                        symbol="XRPJPY",
+                        side="SELL",
+                        order_type="LIMIT",
+                        quantity=1.0,
+                        limit_price=201.0 + index,
+                        client_order_id=f"sell-{index}",
+                        trigger="strategy_sell",
+                        ladder_group="exit",
+                        tier_index=index,
+                    ),
+                    current_price=200.0,
+                    filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+                    timestamp_ms=2_000 + index,
+                )
+                accepted.append(result["status"])
+            seventh, event = executor.submit_limit_order(
+                OrderRequest(
+                    symbol="XRPJPY",
+                    side="BUY",
+                    order_type="LIMIT",
+                    quantity=1.0,
+                    limit_price=196.0,
+                    client_order_id="buy-3",
+                    trigger="strategy_buy",
+                    ladder_group="entry",
+                    tier_index=3,
+                ),
+                current_price=200.0,
+                filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+                timestamp_ms=3_000,
+            )
+
+        self.assertEqual(accepted, ["ORDER_OPEN"] * 6)
+        self.assertEqual(seventh["status"], "REJECTED")
+        self.assertEqual(event.reason, "max_open_orders_per_symbol_reached")
+
     def test_live_limit_order_is_tracked_and_synced_by_query(self) -> None:
         settings = Settings(
             api_key="key",

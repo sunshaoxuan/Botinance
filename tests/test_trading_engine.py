@@ -196,7 +196,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
 
         self.assertEqual(report.decisions[0].signal.action, SignalAction.BUY)
         self.assertEqual(report.buy_diagnostics[0].has_position, False)
-        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
         self.assertEqual(report.decisions[0].execution_result["trigger"], "strategy_buy")
 
     def test_refresh_cycle_skips_order_execution_until_new_trigger(self) -> None:
@@ -271,18 +271,18 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             second_report = engine.run_cycle()
 
         self.assertEqual(first_report.cycle_mode, "DECISION")
-        self.assertEqual(first_report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(first_report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
         self.assertEqual(first_report.order_lifecycle_events[0].event_type, "SUBMITTED")
         self.assertEqual(first_report.open_orders[0].status, "OPEN")
         self.assertEqual(len(first_report.market_snapshots), 1)
         self.assertEqual(first_report.market_snapshots[0]["symbol"], "XRPJPY")
         self.assertEqual(second_report.cycle_mode, "REFRESH")
-        self.assertEqual(second_report.decisions[0].execution_result["status"], "ORDER_OPEN")
-        self.assertEqual(second_report.decisions[0].execution_result["reason"], "open_order_waiting_for_touch")
+        self.assertEqual(second_report.decisions[0].execution_result["status"], "CANCELED")
+        self.assertEqual(second_report.decisions[0].execution_result["reason"], "order_reprice_deviation_requested")
         self.assertEqual(second_report.scheduling_diagnostics[0].should_run_decision, False)
         self.assertEqual(len(second_report.sell_diagnostics), 1)
         self.assertEqual(len(second_report.decision_ledger), 1)
-        self.assertEqual(second_report.decision_ledger[0].final_action, "OPEN_BUY")
+        self.assertEqual(second_report.decision_ledger[0].final_action, "CANCELED")
         self.assertEqual(analyst.assess_calls, 1)
         self.assertEqual(analyst.analyze_calls, 1)
         self.assertEqual(second_report.llm_analysis.status, "SKIPPED_REFRESH_ONLY")
@@ -514,15 +514,15 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             second_report = engine.run_cycle()
             snapshot = portfolio.load_snapshot()
 
-        self.assertEqual(first_report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(first_report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
         self.assertEqual(first_report.decisions[0].execution_result["trigger"], "strategy_sell")
         self.assertTrue(any(event.status == "FILLED" and event.trigger == "strategy_sell" for event in second_report.order_lifecycle_events))
         state = snapshot.activation_state["XRPJPY"]
         self.assertEqual(state["last_trigger"], "grid_wait_buyback")
         self.assertIn("等待回补", state["last_reason"])
-        self.assertAlmostEqual(state["pending_buyback_quantity"], 50.0)
-        self.assertAlmostEqual(state["last_grid_sell_price"], first_report.decisions[0].execution_result["limit_price"])
-        self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 50.0)
+        self.assertAlmostEqual(state["pending_buyback_quantity"], 37.5)
+        self.assertAlmostEqual(state["last_grid_sell_price"], first_report.decisions[0].execution_result["orders"][-1]["limit_price"])
+        self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 62.5)
 
     def test_pending_buyback_blocks_repeated_strategy_sell(self) -> None:
         settings = Settings(

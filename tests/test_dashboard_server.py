@@ -175,6 +175,26 @@ class DashboardServerTests(unittest.TestCase):
                             "created_at_ms": 1_000,
                             "updated_at_ms": 1_000,
                             "expires_at_ms": 10_000,
+                            "tier_index": 0,
+                            "ladder_group": "entry",
+                            "target_fraction": 0.25,
+                        },
+                        "order-2": {
+                            "client_order_id": "order-2",
+                            "symbol": "XRPJPY",
+                            "side": "SELL",
+                            "order_type": "LIMIT",
+                            "quantity": 0.5,
+                            "limit_price": 230.0,
+                            "time_in_force": "GTC",
+                            "status": "OPEN",
+                            "reserved_base": 0.5,
+                            "created_at_ms": 1_500,
+                            "updated_at_ms": 1_500,
+                            "expires_at_ms": 10_000,
+                            "tier_index": 0,
+                            "ladder_group": "exit",
+                            "target_fraction": 0.25,
                         }
                     },
                 },
@@ -284,13 +304,20 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(payload["live_refresh_bars"][0]["sample_count"], 3)
         self.assertEqual(len(payload["decision_ledger"]), 1)
         self.assertEqual(payload["decision_ledger"][0]["sell_blocker"], "继续持有")
-        self.assertEqual(len(payload["open_orders"]), 1)
+        self.assertEqual(len(payload["open_orders"]), 2)
         self.assertEqual(payload["open_orders"][0]["client_order_id"], "order-1")
+        self.assertEqual(payload["open_order_groups"]["buy_count"], 1)
+        self.assertEqual(payload["open_order_groups"]["sell_count"], 1)
+        self.assertAlmostEqual(payload["open_order_groups"]["reserved_quote"], 220.5)
+        self.assertAlmostEqual(payload["open_order_groups"]["reserved_base"], 0.5)
         self.assertEqual(len(payload["order_lifecycle_events"]), 1)
         self.assertEqual(payload["order_lifecycle_events"][0]["status"], "OPEN")
         self.assertGreaterEqual(len(payload["trade_records"]), 1)
-        self.assertEqual(payload["trade_records"][0]["status"], "OPEN")
-        self.assertEqual(payload["trade_records"][0]["reserved_quote"], 220.5)
+        buy_record = next(item for item in payload["trade_records"] if item.get("client_order_id") == "order-1")
+        sell_record = next(item for item in payload["trade_records"] if item.get("client_order_id") == "order-2")
+        self.assertEqual(buy_record["status"], "OPEN")
+        self.assertEqual(buy_record["reserved_quote"], 220.5)
+        self.assertEqual(sell_record["reserved_base"], 0.5)
         self.assertEqual(len(payload["order_markers"]), 1)
         self.assertEqual(payload["order_markers"][0]["status"], "OPEN")
         self.assertIn("grid_buyback_step_pct", payload["runtime_config"])

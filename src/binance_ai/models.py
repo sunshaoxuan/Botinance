@@ -51,6 +51,9 @@ class OrderRequest:
     client_order_id: str = ""
     trigger: str = ""
     expires_at_ms: int = 0
+    tier_index: int = 0
+    ladder_group: str = ""
+    target_fraction: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,9 @@ class ManagedOrder:
     reserved_base: float = 0.0
     entry_candle_close_time: int = 0
     last_reason: str = ""
+    tier_index: int = 0
+    ladder_group: str = ""
+    target_fraction: float = 0.0
 
 
 @dataclass(frozen=True)
