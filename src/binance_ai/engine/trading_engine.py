@@ -106,7 +106,8 @@ class TradingEngine:
             filters = self.client.get_symbol_filters(symbol)
             base_asset = self.risk.base_asset_for_symbol(symbol)
             base_balance = account.balance_of(base_asset) if base_asset else 0.0
-            has_position = base_balance > 0.0
+            min_position_notional = max(filters.min_notional, self.settings.min_order_notional)
+            has_position = base_balance >= filters.min_qty and base_balance * price >= min_position_notional
             if has_position and self.settings.dry_run and self.paper_portfolio is not None:
                 self.paper_portfolio.mark_to_market(
                     symbol=symbol,

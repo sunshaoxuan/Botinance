@@ -8,7 +8,7 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.engine.trading_engine import TradingEngine
 from binance_ai.execution.executor import OrderExecutor
-from binance_ai.models import AiRiskAssessment, Candle, LlmAnalysis, NewsItem, OrderRequest, SignalAction, SymbolFilters, TradeSignal
+from binance_ai.models import AiRiskAssessment, Candle, LlmAnalysis, NewsItem, OrderRequest, PortfolioSnapshot, PositionSnapshot, SignalAction, SymbolFilters, TradeSignal
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.risk.engine import RiskEngine
 from binance_ai.strategy.base import Strategy
@@ -112,6 +112,93 @@ class _MarketAnalystStub:
 
 
 class TradingEngineSchedulingTests(unittest.TestCase):
+    def test_dust_position_does_not_block_cash_rebuild_buy(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=50.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            decision_price_move_threshold_pct=0.01,
+        )
+        candles = [
+            Candle(
+                open_time=index * 1000,
+                open=100.0 + index,
+                high=101.0 + index,
+                low=99.0 + index,
+                close=100.0 + index,
+                volume=1.0,
+                close_time=index * 1000 + 999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=1000.0,
+                state_path=runtime_dir / "paper_state.json",
+            )
+            portfolio.save_snapshot(
+                PortfolioSnapshot(
+                    quote_asset="JPY",
+                    quote_balance=1000.0,
+                    initial_quote_balance=1000.0,
+                    positions={
+                        "XRPJPY": PositionSnapshot(
+                            quantity=0.001,
+                            average_entry_price=120.0,
+                            highest_price=120.0,
+                        )
+                    },
+                )
+            )
+            client = _ClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_StrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(
+                    state_path=runtime_dir / "decision_state.json",
+                    price_move_threshold_pct=settings.decision_price_move_threshold_pct,
+                ),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+
+        self.assertEqual(report.decisions[0].signal.action, SignalAction.BUY)
+        self.assertEqual(report.buy_diagnostics[0].has_position, False)
+        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "strategy_buy")
+
     def test_refresh_cycle_skips_order_execution_until_new_trigger(self) -> None:
         settings = Settings(
             api_key="",
