@@ -1519,7 +1519,7 @@ INDEX_HTML = """<!doctype html>
         order_price_deviation_exceeded: "价格偏离撤单",
         order_stale_observed: "挂单已陈旧，继续等待触价",
         order_stale_reprice_requested: "挂单已陈旧，建议重定价",
-        order_reprice_deviation_requested: "价格偏离，建议重定价",
+        order_reprice_deviation_requested: "价差结构偏离，建议重定价",
         open_order_waiting_for_touch: "挂单等待触价成交",
         order_status_unknown_wait: "订单状态待确认，继续查询",
         ai_risk_worsened_cancel_open_buy: "AI 风险变差，撤买单",
@@ -2202,12 +2202,19 @@ INDEX_HTML = """<!doctype html>
         const feeText = fee > 0 ? fmtCurrency(fee, quoteAsset) : isFilled && estimatedFee > 0 ? `预计 ${fmtCurrency(estimatedFee, quoteAsset)}` : "--";
         const realizedText = isFilled ? fmtCurrency(f.realized_pnl, quoteAsset) : "--";
         const reasonText = reasonLabel(f.reason || f.event_type || status);
+        const targetSpread = asNumber(f.target_spread_pct, 0);
+        const currentSpread = asNumber(f.current_spread_pct, 0);
+        const tolerance = asNumber(f.reprice_tolerance_pct, 0);
+        const spreadText = targetSpread || currentSpread || tolerance
+          ? `目标 ${fmtPercent(targetSpread * 100, 2)}<br><span class="muted">当前 ${fmtPercent(currentSpread * 100, 2)} / 容差 ${fmtPercent(tolerance * 100, 2)}</span>`
+          : "--";
         return `<tr>
           <td class="code" title="${escapeHtml(f.client_order_id || "")}">${escapeHtml(shortOrderId(f.client_order_id))}</td>
           <td>${statusChip(statusText, statusKind)}<br><span class="muted">${escapeHtml(reasonText)}</span></td>
           <td>${statusChip(side || "--", side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
           <td>${fmtNumber(f.quantity, 8)}</td>
           <td>${fmtCurrency(f.price || f.fill_price || f.limit_price, quoteAsset)}</td>
+          <td>${spreadText}</td>
           <td>${escapeHtml(frozenText)}</td>
           <td>${escapeHtml(feeText)}</td>
           <td class="${pnlClass(isFilled ? f.realized_pnl : 0)}">${realizedText}</td>
@@ -2222,7 +2229,7 @@ INDEX_HTML = """<!doctype html>
       if (els.fillPrev) els.fillPrev.disabled = fillPage <= 0;
       if (els.fillNext) els.fillNext.disabled = fillPage >= pageCount - 1;
       if (els.fillPageSize) els.fillPageSize.value = String(fillPageSize);
-      els.tradeFillsTable.innerHTML = table(["单据ID", "订单状态", "方向", "数量", "挂单/成交价", "冻结", "手续费", "已实现", "时间"], rows, "暂无订单或成交记录");
+      els.tradeFillsTable.innerHTML = table(["单据ID", "订单状态", "方向", "数量", "挂单/成交价", "价差", "冻结", "手续费", "已实现", "时间"], rows, "暂无订单或成交记录");
     }
 
     function activeRiskLines(c) {
@@ -3333,6 +3340,9 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "ai_can_cancel_buyback": settings.ai_can_cancel_buyback,
         "order_max_open_per_symbol": settings.order_max_open_per_symbol,
         "order_max_open_per_side": settings.order_max_open_per_side,
+        "order_reprice_tolerance_pct": settings.order_reprice_tolerance_pct,
+        "order_reprice_min_age_seconds": settings.order_reprice_min_age_seconds,
+        "order_reprice_compare_mode": settings.order_reprice_compare_mode,
         "order_ladder_enabled": settings.order_ladder_enabled,
         "target_position_fraction": settings.target_position_fraction,
         "min_cash_reserve_fraction": settings.min_cash_reserve_fraction,
@@ -3438,6 +3448,11 @@ def _build_order_trade_record(order: Dict[str, Any], quote_asset: str, fee_rate:
         "tier_index": _coerce_int(order.get("tier_index")),
         "ladder_group": order.get("ladder_group", ""),
         "target_fraction": _coerce_float(order.get("target_fraction")),
+        "target_spread_pct": _coerce_float(order.get("target_spread_pct")),
+        "current_spread_pct": _coerce_float(order.get("current_spread_pct")),
+        "spread_delta_pct": _coerce_float(order.get("spread_delta_pct")),
+        "reprice_tolerance_pct": _coerce_float(order.get("reprice_tolerance_pct")),
+        "created_reference_price": _coerce_float(order.get("created_reference_price")),
     }
 
 
@@ -3506,6 +3521,45 @@ def _build_open_order_groups(open_orders: List[Dict[str, Any]], quote_asset: str
     }
 
 
+def _decorate_open_order_spreads(
+    open_orders: List[Dict[str, Any]],
+    market_prices: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    decorated: List[Dict[str, Any]] = []
+    tolerance = _coerce_float(runtime_config.get("order_reprice_tolerance_pct"))
+    for order in open_orders:
+        if not isinstance(order, dict):
+            continue
+        item = dict(order)
+        symbol = str(item.get("symbol") or "")
+        reference_price = _coerce_float(market_prices.get(symbol))
+        limit_price = _coerce_float(item.get("limit_price"))
+        side = str(item.get("side") or "").upper()
+        current_spread = 0.0
+        if reference_price > 0 and limit_price > 0:
+            if side == "BUY":
+                current_spread = (reference_price - limit_price) / reference_price
+            elif side == "SELL":
+                current_spread = (limit_price - reference_price) / reference_price
+        target_spread = _coerce_float(item.get("target_spread_pct"))
+        if target_spread <= 0:
+            created_reference = _coerce_float(item.get("created_reference_price"))
+            if created_reference > 0 and limit_price > 0:
+                if side == "BUY":
+                    target_spread = (created_reference - limit_price) / created_reference
+                elif side == "SELL":
+                    target_spread = (limit_price - created_reference) / created_reference
+        item["current_spread_pct"] = current_spread
+        item["target_spread_pct"] = max(0.0, target_spread)
+        item["spread_delta_pct"] = abs(current_spread - target_spread) if current_spread >= 0 else 0.0
+        item["reprice_tolerance_pct"] = tolerance
+        item["open_order_action"] = "KEEP"
+        item["open_order_action_reason"] = "open_order_waiting_for_touch"
+        decorated.append(item)
+    return decorated
+
+
 def _build_trade_records(
     open_orders: List[Dict[str, Any]],
     recent_fills: List[Dict[str, Any]],
@@ -3525,7 +3579,21 @@ def _build_trade_records(
             client_order_id = str(order.get("client_order_id") or "")
             matching_event = events_by_client.get(client_order_id, {})
             merged_order = dict(order)
-            for key in ("symbol", "side", "quantity", "limit_price", "trigger", "created_at_ms", "updated_at_ms", "expires_at_ms"):
+            for key in (
+                "symbol",
+                "side",
+                "quantity",
+                "limit_price",
+                "trigger",
+                "created_at_ms",
+                "updated_at_ms",
+                "expires_at_ms",
+                "target_spread_pct",
+                "current_spread_pct",
+                "spread_delta_pct",
+                "reprice_tolerance_pct",
+                "created_reference_price",
+            ):
                 current = merged_order.get(key)
                 if current in (None, "", 0, 0.0):
                     merged_order[key] = matching_event.get(key, current)
@@ -4473,7 +4541,10 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
 
     recent_fills = _extract_recent_fills_from_file(history_path, scan_lines=240 if not include_chart else 800)
     all_fills = _extract_recent_fills_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
+    runtime_config = _dashboard_runtime_config()
+    market_prices = latest_report.get("market_prices", {}) if isinstance(latest_report.get("market_prices"), dict) else {}
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
+    open_orders = _decorate_open_order_spreads(open_orders, market_prices, runtime_config)
     open_order_groups = _build_open_order_groups(open_orders, quote_asset)
     drawer_scan_lines = 800 if not include_chart else 1200
     all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=500, scan_lines=drawer_scan_lines)
@@ -4483,7 +4554,6 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     decision_ledger = _extract_decision_ledger_from_file(history_path, latest_report, limit=200, scan_lines=drawer_scan_lines)
     trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=None)
     real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
-    runtime_config = _dashboard_runtime_config()
     decision_state_payload = _build_decision_state_payload(paper_state, latest_report, runtime_config)
 
     return {

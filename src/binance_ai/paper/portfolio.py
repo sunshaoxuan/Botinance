@@ -64,6 +64,9 @@ class PaperPortfolio:
                 tier_index=int(item.get("tier_index", 0)),
                 ladder_group=str(item.get("ladder_group", "")),
                 target_fraction=float(item.get("target_fraction", 0.0)),
+                target_spread_pct=float(item.get("target_spread_pct", 0.0)),
+                created_reference_price=float(item.get("created_reference_price", 0.0)),
+                created_signal_action=str(item.get("created_signal_action", "")),
             )
             for client_order_id, item in payload.get("open_orders", {}).items()
             if isinstance(item, dict)

@@ -55,6 +55,9 @@ class OrderRequest:
     tier_index: int = 0
     ladder_group: str = ""
     target_fraction: float = 0.0
+    target_spread_pct: float = 0.0
+    created_reference_price: float = 0.0
+    created_signal_action: str = ""
 
 
 def make_client_order_id(
@@ -99,6 +102,9 @@ class ManagedOrder:
     tier_index: int = 0
     ladder_group: str = ""
     target_fraction: float = 0.0
+    target_spread_pct: float = 0.0
+    created_reference_price: float = 0.0
+    created_signal_action: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,6 +122,10 @@ class OrderLifecycleEvent:
     reason: str = ""
     trigger: str = ""
     external_order_id: str = ""
+    target_spread_pct: float = 0.0
+    current_spread_pct: float = 0.0
+    reprice_tolerance_pct: float = 0.0
+    open_order_action: str = ""
 
 
 @dataclass(frozen=True)

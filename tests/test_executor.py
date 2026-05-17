@@ -617,7 +617,7 @@ class OrderExecutorTests(unittest.TestCase):
         self.assertEqual(events[0].status, "CANCELED")
         self.assertEqual(executor.all_open_orders(), [])
 
-    def test_live_open_order_price_deviation_is_reprice_classification(self) -> None:
+    def test_live_open_order_price_deviation_keeps_until_min_age_and_tier_spread_breaks(self) -> None:
         settings = Settings(
             api_key="key",
             api_secret="secret",
@@ -646,6 +646,8 @@ class OrderExecutorTests(unittest.TestCase):
             max_hold_bars=24,
             live_order_execution_enabled=True,
             order_reprice_deviation_pct=0.003,
+            order_reprice_tolerance_pct=0.002,
+            order_reprice_min_age_seconds=120,
         )
         executor = OrderExecutor(settings, _LiveClientStub())
         executor.submit_limit_order(
@@ -656,6 +658,8 @@ class OrderExecutorTests(unittest.TestCase):
                 quantity=1.0,
                 limit_price=200.0,
                 client_order_id="live-buy",
+                target_spread_pct=0.005,
+                created_reference_price=201.0,
             ),
             current_price=200.0,
             timestamp_ms=1_000,
@@ -677,8 +681,84 @@ class OrderExecutorTests(unittest.TestCase):
             signal_action="HOLD",
             ai_allow_entry=True,
         )
+        self.assertEqual(action["action"], "KEEP")
+        self.assertEqual(action["reason"], "open_order_waiting_for_touch")
+
+        action = executor.classify_open_order_action(
+            executor.all_open_orders()[0],
+            current_price=205.0,
+            timestamp_ms=130_000,
+            signal_action="HOLD",
+            ai_allow_entry=True,
+        )
         self.assertEqual(action["action"], "REPRICE")
         self.assertEqual(action["reason"], "order_reprice_deviation_requested")
+        self.assertAlmostEqual(action["target_spread_pct"], 0.005)
+        self.assertGreater(action["spread_delta_pct"], action["reprice_tolerance_pct"])
+
+    def test_sell_tier_order_is_kept_when_spread_matches_target(self) -> None:
+        settings = Settings(
+            api_key="key",
+            api_secret="secret",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            order_reprice_tolerance_pct=0.002,
+            order_reprice_min_age_seconds=120,
+        )
+        executor = OrderExecutor(settings, _ClientStub())
+        order = ManagedOrder(
+            client_order_id="sell-tier",
+            symbol="XRPJPY",
+            side="SELL",
+            order_type="LIMIT",
+            quantity=10.0,
+            limit_price=225.37,
+            time_in_force="GTC",
+            status="OPEN",
+            created_at_ms=1_000,
+            updated_at_ms=1_000,
+            expires_at_ms=301_000,
+            trigger="strategy_sell",
+            tier_index=0,
+            ladder_group="exit",
+            target_fraction=0.25,
+            target_spread_pct=0.0035,
+            created_reference_price=224.58,
+        )
+
+        action = executor.classify_open_order_action(
+            order,
+            current_price=224.58,
+            timestamp_ms=180_000,
+            signal_action="SELL",
+            ai_allow_entry=True,
+        )
+
+        self.assertEqual(action["action"], "KEEP")
+        self.assertEqual(action["reason"], "open_order_waiting_for_touch")
+        self.assertAlmostEqual(action["current_spread_pct"], 0.0035176774423367853)
+        self.assertLess(action["spread_delta_pct"], action["reprice_tolerance_pct"])
 
     def test_live_open_order_stale_is_observed_not_canceled(self) -> None:
         settings = Settings(

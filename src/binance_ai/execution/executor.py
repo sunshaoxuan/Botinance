@@ -202,6 +202,9 @@ class OrderExecutor:
                     tier_index=order.tier_index,
                     ladder_group=order.ladder_group,
                     target_fraction=order.target_fraction,
+                    target_spread_pct=order.target_spread_pct,
+                    created_reference_price=order.created_reference_price,
+                    created_signal_action=order.created_signal_action,
                 )
             event = OrderLifecycleEvent(
                 timestamp_ms=timestamp_ms,
@@ -223,12 +226,6 @@ class OrderExecutor:
         if max_open and len(open_orders) >= max_open:
             return "max_open_orders_per_symbol_reached"
 
-        max_side = max(0, getattr(self.settings, "order_max_open_per_side", 0))
-        if max_side:
-            side_count = sum(1 for existing in open_orders if existing.side.upper() == order.side.upper())
-            if side_count >= max_side:
-                return "max_open_orders_per_side_reached"
-
         for existing in open_orders:
             if (
                 existing.side.upper() == order.side.upper()
@@ -237,6 +234,11 @@ class OrderExecutor:
                 and existing.tier_index == order.tier_index
             ):
                 return "duplicate_open_ladder_order"
+        max_side = max(0, getattr(self.settings, "order_max_open_per_side", 0))
+        if max_side:
+            side_count = sum(1 for existing in open_orders if existing.side.upper() == order.side.upper())
+            if side_count >= max_side:
+                return "max_open_orders_per_side_reached"
         return ""
 
     def process_open_orders(
@@ -565,22 +567,69 @@ class OrderExecutor:
         side = order.side.upper()
         signal = signal_action.upper()
         stale = self._is_stale(order, timestamp_ms)
+        reprice_diagnostic = self._reprice_diagnostic(order, current_price, timestamp_ms)
+        base_payload = {
+            "is_stale": stale,
+            "target_spread_pct": reprice_diagnostic["target_spread_pct"],
+            "current_spread_pct": reprice_diagnostic["current_spread_pct"],
+            "spread_delta_pct": reprice_diagnostic["spread_delta_pct"],
+            "reprice_tolerance_pct": reprice_diagnostic["reprice_tolerance_pct"],
+            "age_seconds": reprice_diagnostic["age_seconds"],
+            "compare_mode": reprice_diagnostic["compare_mode"],
+        }
         if order.status == "UNKNOWN":
-            return {"action": "UNKNOWN_WAIT", "reason": "order_status_unknown_wait", "is_stale": stale}
+            return {"action": "UNKNOWN_WAIT", "reason": "order_status_unknown_wait", **base_payload}
         if side == "BUY" and not ai_allow_entry:
-            return {"action": "CANCEL", "reason": "ai_risk_worsened_cancel_open_buy", "is_stale": stale}
+            return {"action": "CANCEL", "reason": "ai_risk_worsened_cancel_open_buy", **base_payload}
         if side == "BUY" and signal == "SELL":
-            return {"action": "CANCEL", "reason": "signal_reversed_cancel_open_buy", "is_stale": stale}
+            return {"action": "CANCEL", "reason": "signal_reversed_cancel_open_buy", **base_payload}
         if side == "SELL" and signal == "BUY":
-            return {"action": "CANCEL", "reason": "signal_reversed_cancel_open_sell", "is_stale": stale}
-        if self.settings.order_reprice_enabled and self._should_reprice_for_deviation(order, current_price):
+            return {"action": "CANCEL", "reason": "signal_reversed_cancel_open_sell", **base_payload}
+        if self.settings.order_reprice_enabled and bool(reprice_diagnostic["should_reprice"]):
             reason = "order_stale_reprice_requested" if stale else "order_reprice_deviation_requested"
-            return {"action": "REPRICE", "reason": reason, "is_stale": stale}
+            return {"action": "REPRICE", "reason": reason, **base_payload}
         if stale:
-            return {"action": "KEEP", "reason": "order_stale_observed", "is_stale": stale}
-        return {"action": "KEEP", "reason": "open_order_waiting_for_touch", "is_stale": stale}
+            return {"action": "KEEP", "reason": "order_stale_observed", **base_payload}
+        return {"action": "KEEP", "reason": "open_order_waiting_for_touch", **base_payload}
 
     def _should_reprice_for_deviation(self, order: ManagedOrder, current_price: float) -> bool:
+        return bool(self._reprice_diagnostic(order, current_price, int(time.time() * 1000))["should_reprice"])
+
+    def _reprice_diagnostic(self, order: ManagedOrder, current_price: float, timestamp_ms: int) -> Dict[str, object]:
+        age_seconds = max(0.0, (timestamp_ms - order.created_at_ms) / 1000.0) if order.created_at_ms else 0.0
+        current_spread = self._current_order_spread_pct(order, current_price)
+        target_spread = max(0.0, float(order.target_spread_pct or 0.0))
+        if target_spread <= 0 and order.created_reference_price > 0 and order.limit_price > 0:
+            target_spread = self._current_order_spread_pct(order, order.created_reference_price)
+        tolerance = max(0.0, self.settings.order_reprice_tolerance_pct)
+        min_age = max(0, self.settings.order_reprice_min_age_seconds)
+        compare_mode = (self.settings.order_reprice_compare_mode or "tier_spread").lower()
+        spread_delta = abs(current_spread - target_spread)
+        should_reprice = False
+        if current_spread >= 0 and age_seconds >= min_age:
+            if compare_mode == "tier_spread" and target_spread > 0:
+                should_reprice = spread_delta > tolerance
+            else:
+                should_reprice = self._legacy_deviation_reprice(order, current_price)
+        return {
+            "target_spread_pct": target_spread,
+            "current_spread_pct": current_spread,
+            "spread_delta_pct": spread_delta if current_spread >= 0 else 0.0,
+            "reprice_tolerance_pct": tolerance,
+            "age_seconds": age_seconds,
+            "compare_mode": compare_mode,
+            "should_reprice": should_reprice,
+        }
+
+    @staticmethod
+    def _current_order_spread_pct(order: ManagedOrder, reference_price: float) -> float:
+        if order.limit_price <= 0 or reference_price <= 0:
+            return -1.0
+        if order.side.upper() == "BUY":
+            return (reference_price - order.limit_price) / reference_price
+        return (order.limit_price - reference_price) / reference_price
+
+    def _legacy_deviation_reprice(self, order: ManagedOrder, current_price: float) -> bool:
         threshold = max(0.0, self.settings.order_reprice_deviation_pct)
         if threshold <= 0 or order.limit_price <= 0 or current_price <= 0:
             return False
@@ -619,6 +668,9 @@ class OrderExecutor:
         fallback_tier_index = fallback.tier_index if fallback is not None else 0
         fallback_ladder_group = fallback.ladder_group if fallback is not None else ""
         fallback_target_fraction = fallback.target_fraction if fallback is not None else 0.0
+        fallback_target_spread = fallback.target_spread_pct if fallback is not None else 0.0
+        fallback_reference_price = fallback.created_reference_price if fallback is not None else 0.0
+        fallback_signal = fallback.created_signal_action if fallback is not None else ""
         fallback_external = fallback.external_order_id if isinstance(fallback, ManagedOrder) else ""
         fallback_created = fallback.created_at_ms if isinstance(fallback, ManagedOrder) else timestamp_ms
         fallback_entry_close = fallback.entry_candle_close_time if isinstance(fallback, ManagedOrder) else 0
@@ -656,6 +708,9 @@ class OrderExecutor:
             tier_index=fallback_tier_index,
             ladder_group=fallback_ladder_group,
             target_fraction=fallback_target_fraction,
+            target_spread_pct=fallback_target_spread,
+            created_reference_price=fallback_reference_price,
+            created_signal_action=fallback_signal,
         )
 
     @staticmethod
@@ -684,6 +739,9 @@ class OrderExecutor:
             "tier_index": order.tier_index,
             "ladder_group": order.ladder_group,
             "target_fraction": order.target_fraction,
+            "target_spread_pct": order.target_spread_pct,
+            "created_reference_price": order.created_reference_price,
+            "created_signal_action": order.created_signal_action,
         }
         fields.update(updates)
         return ManagedOrder(**fields)
@@ -718,6 +776,7 @@ class OrderExecutor:
             reason=reason,
             trigger=managed.trigger,
             external_order_id=managed.external_order_id,
+            target_spread_pct=managed.target_spread_pct,
         )
 
     @staticmethod

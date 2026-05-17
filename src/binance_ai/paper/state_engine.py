@@ -94,6 +94,9 @@ class PortfolioStateEngine:
             tier_index=order.tier_index,
             ladder_group=order.ladder_group,
             target_fraction=order.target_fraction,
+            target_spread_pct=order.target_spread_pct,
+            created_reference_price=order.created_reference_price,
+            created_signal_action=order.created_signal_action,
         )
         open_orders[managed.client_order_id] = managed
         reserved_base_balances = dict(snapshot.reserved_base_balances)
@@ -180,6 +183,9 @@ class PortfolioStateEngine:
             tier_index=managed.tier_index,
             ladder_group=managed.ladder_group,
             target_fraction=managed.target_fraction,
+            target_spread_pct=managed.target_spread_pct,
+            created_reference_price=managed.created_reference_price,
+            created_signal_action=managed.created_signal_action,
         )
         updated, result = self.apply_order(
             released,
@@ -202,6 +208,7 @@ class PortfolioStateEngine:
             reason="paper_limit_order_filled",
             trigger=managed.trigger,
             external_order_id=managed.external_order_id,
+            target_spread_pct=managed.target_spread_pct,
         )
         result["client_order_id"] = managed.client_order_id
         result["limit_price"] = managed.limit_price
@@ -375,4 +382,5 @@ class PortfolioStateEngine:
             limit_price=order.limit_price,
             reason=reason,
             trigger=order.trigger,
+            target_spread_pct=order.target_spread_pct,
         )

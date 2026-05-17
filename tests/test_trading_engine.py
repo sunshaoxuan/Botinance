@@ -199,7 +199,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
         self.assertEqual(report.decisions[0].execution_result["trigger"], "strategy_buy")
 
-    def test_refresh_cycle_skips_order_execution_until_new_trigger(self) -> None:
+    def test_refresh_cycle_keeps_open_order_until_touch_or_reversal(self) -> None:
         settings = Settings(
             api_key="",
             api_secret="",
@@ -277,12 +277,12 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(len(first_report.market_snapshots), 1)
         self.assertEqual(first_report.market_snapshots[0]["symbol"], "XRPJPY")
         self.assertEqual(second_report.cycle_mode, "REFRESH")
-        self.assertEqual(second_report.decisions[0].execution_result["status"], "CANCELED")
-        self.assertEqual(second_report.decisions[0].execution_result["reason"], "order_reprice_deviation_requested")
+        self.assertEqual(second_report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(second_report.decisions[0].execution_result["reason"], "open_order_group_waiting_for_touch")
         self.assertEqual(second_report.scheduling_diagnostics[0].should_run_decision, False)
         self.assertEqual(len(second_report.sell_diagnostics), 1)
         self.assertEqual(len(second_report.decision_ledger), 1)
-        self.assertEqual(second_report.decision_ledger[0].final_action, "CANCELED")
+        self.assertEqual(second_report.decision_ledger[0].final_action, "OPEN_BUY")
         self.assertEqual(analyst.assess_calls, 1)
         self.assertEqual(analyst.analyze_calls, 1)
         self.assertEqual(second_report.llm_analysis.status, "SKIPPED_REFRESH_ONLY")

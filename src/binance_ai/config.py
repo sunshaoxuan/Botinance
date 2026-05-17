@@ -93,6 +93,9 @@ class Settings:
     order_reprice_enabled: bool = True
     order_reprice_deviation_pct: float = 0.003
     order_cancel_deviation_pct: float = 0.003
+    order_reprice_tolerance_pct: float = 0.002
+    order_reprice_min_age_seconds: int = 120
+    order_reprice_compare_mode: str = "tier_spread"
     order_passive_offset_pct: float = 0.0002
     order_urgent_cross_pct: float = 0.001
     order_max_open_per_symbol: int = 6
@@ -204,6 +207,9 @@ def load_settings() -> Settings:
         order_reprice_enabled=_parse_bool(os.getenv("ORDER_REPRICE_ENABLED"), True),
         order_reprice_deviation_pct=float(os.getenv("ORDER_REPRICE_DEVIATION_PCT", os.getenv("ORDER_CANCEL_DEVIATION_PCT", "0.003"))),
         order_cancel_deviation_pct=float(os.getenv("ORDER_CANCEL_DEVIATION_PCT", "0.003")),
+        order_reprice_tolerance_pct=float(os.getenv("ORDER_REPRICE_TOLERANCE_PCT", "0.0020")),
+        order_reprice_min_age_seconds=int(os.getenv("ORDER_REPRICE_MIN_AGE_SECONDS", "120")),
+        order_reprice_compare_mode=os.getenv("ORDER_REPRICE_COMPARE_MODE", "tier_spread").strip().lower(),
         order_passive_offset_pct=float(os.getenv("ORDER_PASSIVE_OFFSET_PCT", "0.0002")),
         order_urgent_cross_pct=float(os.getenv("ORDER_URGENT_CROSS_PCT", "0.001")),
         order_max_open_per_symbol=int(os.getenv("ORDER_MAX_OPEN_PER_SYMBOL", "6")),

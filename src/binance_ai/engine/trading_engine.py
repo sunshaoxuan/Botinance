@@ -645,6 +645,7 @@ class TradingEngine:
         ladder_group: str = "",
         target_fraction: float = 0.0,
         limit_offset_pct: float | None = None,
+        signal_action: str = "",
     ) -> OrderRequest:
         if self.settings.order_execution_mode != "limit_lifecycle":
             return order
@@ -692,6 +693,9 @@ class TradingEngine:
             tier_index=tier_index,
             ladder_group=ladder_group,
             target_fraction=target_fraction,
+            target_spread_pct=offset,
+            created_reference_price=price,
+            created_signal_action=signal_action,
         )
 
     def _can_run_capital_deployment(
@@ -794,6 +798,7 @@ class TradingEngine:
                 ladder_group=ladder_group,
                 target_fraction=fraction,
                 limit_offset_pct=offset_pct if len(tiers) > 1 else None,
+                signal_action=order.side.upper(),
             )
             result, event = self.executor.submit_limit_order(
                 tier_order,
@@ -809,6 +814,11 @@ class TradingEngine:
 
         accepted = [item for item in results if str(item.get("status")) in {"ORDER_OPEN", "UNKNOWN"}]
         rejected = [item for item in results if str(item.get("status")) == "REJECTED"]
+        duplicate_rejections = [
+            item
+            for item in rejected
+            if str(item.get("reason")) == "duplicate_open_ladder_order"
+        ]
         if not results:
             return {
                 "status": "BLOCKED",
@@ -821,6 +831,15 @@ class TradingEngine:
             result["ladder_group"] = ladder_group
             result["tier_index"] = orders[0].tier_index if orders else 0
             return result, events, orders
+        if rejected and len(duplicate_rejections) == len(rejected) and not accepted:
+            return {
+                "status": "ORDER_OPEN",
+                "reason": "open_order_group_waiting_for_touch",
+                "trigger": trigger,
+                "ladder_group": ladder_group,
+                "submitted_count": 0,
+                "rejected_count": len(rejected),
+            }, events, orders
         return {
             "status": "ORDER_LADDER_OPEN" if accepted else "REJECTED",
             "reason": "order_ladder_submitted" if accepted else "order_ladder_rejected",
@@ -888,6 +907,12 @@ class TradingEngine:
                     "action": action,
                     "reason": reason,
                     "is_stale": bool(open_order_action.get("is_stale", False)),
+                    "target_spread_pct": float(open_order_action.get("target_spread_pct", 0.0) or 0.0),
+                    "current_spread_pct": float(open_order_action.get("current_spread_pct", 0.0) or 0.0),
+                    "spread_delta_pct": float(open_order_action.get("spread_delta_pct", 0.0) or 0.0),
+                    "reprice_tolerance_pct": float(open_order_action.get("reprice_tolerance_pct", 0.0) or 0.0),
+                    "age_seconds": float(open_order_action.get("age_seconds", 0.0) or 0.0),
+                    "compare_mode": str(open_order_action.get("compare_mode", "")),
                 }
             )
             if action in {"CANCEL", "REPRICE"}:
