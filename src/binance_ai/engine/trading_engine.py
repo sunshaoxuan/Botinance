@@ -148,6 +148,15 @@ class TradingEngine:
                 candles=candles,
             ):
                 exit_reason = "emergency_stop"
+            protective_exit_block_reason = self._protective_exit_block_reason(symbol=symbol, exit_reason=exit_reason)
+            if protective_exit_block_reason:
+                exit_reason = None
+                signal = replace(
+                    signal,
+                    action=SignalAction.HOLD,
+                    confidence=min(signal.confidence, 0.5),
+                    reason=protective_exit_block_reason,
+                )
             activation_decision = self._evaluate_position_activation(
                 symbol=symbol,
                 price=price,
@@ -1071,11 +1080,11 @@ class TradingEngine:
             )
         if side != "SELL":
             return None
-        if trigger in {"stop_loss", "emergency_stop"}:
+        if trigger in {"stop_loss", "emergency_stop", "trailing_stop", "max_hold_exit"}:
             return PositionActivationDecision(
                 action="SELL",
                 trigger=trigger,
-                reason="止损成交后更新分层退出状态" if trigger == "stop_loss" else "极端风险退出成交后更新状态",
+                reason=self._protective_exit_success_reason(trigger),
                 quantity=quantity,
             )
 
@@ -1103,6 +1112,26 @@ class TradingEngine:
         if remaining_position is None or remaining_position.quantity <= 0:
             return ""
         return release_trigger
+
+    @staticmethod
+    def _protective_exit_success_reason(trigger: str) -> str:
+        labels = {
+            "stop_loss": "止损成交后更新分层退出状态",
+            "emergency_stop": "极端风险退出成交后更新状态",
+            "trailing_stop": "跟踪止损成交后进入保护退出状态",
+            "max_hold_exit": "超时退出成交后进入保护退出状态",
+        }
+        return labels.get(trigger, "保护性退出成交后更新状态")
+
+    def _protective_exit_block_reason(self, *, symbol: str, exit_reason: str | None) -> str:
+        if exit_reason not in {"trailing_stop", "max_hold_exit"} or self.paper_portfolio is None:
+            return ""
+        state = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
+        if not isinstance(state, dict):
+            return ""
+        if state.get("decision_state") == "PROTECTIVE_EXIT_ACTIVE" and state.get("last_trigger") == exit_reason:
+            return f"{exit_reason} 已执行过保护性部分退出，等待新入场/回补条件，不重复连续卖出"
+        return ""
 
     @staticmethod
     def _release_reason_for_trigger(trigger: str) -> str:

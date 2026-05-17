@@ -204,6 +204,10 @@ class PositionActivationEngine:
         elif decision.trigger == "emergency_stop":
             self._clear_buyback_plan(state)
             state["decision_state"] = "EMERGENCY_EXIT"
+        elif decision.trigger in {"trailing_stop", "max_hold_exit"}:
+            self._clear_buyback_plan(state)
+            state["partial_stop_count"] = int(state.get("partial_stop_count", 0)) + 1
+            state["decision_state"] = "PROTECTIVE_EXIT_ACTIVE"
 
         activation_state = dict(snapshot.activation_state)
         activation_state[symbol] = state

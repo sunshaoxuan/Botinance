@@ -363,6 +363,43 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertNotIn("trailing_stop_release_sell", triggers)
         self.assertNotIn("max_hold_release_sell", triggers)
 
+    def test_trailing_stop_clears_buyback_plan_without_registering_rebuy(self) -> None:
+        engine = PositionActivationEngine(_settings(), _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=3000.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=30.0, average_entry_price=100.0, highest_price=101.0)},
+            activation_state={
+                "XRPJPY": {
+                    "pending_buyback_quantity": 20.0,
+                    "last_grid_sell_price": 101.0,
+                    "buyback_plan_total_quantity": 20.0,
+                    "daily_trade_day": "2026-05-09",
+                    "daily_trade_count": 1,
+                }
+            },
+        )
+
+        updated = engine.apply_success(
+            snapshot=snapshot,
+            symbol="XRPJPY",
+            decision=PositionActivationDecision(
+                action="SELL",
+                trigger="trailing_stop",
+                reason="跟踪止损成交后进入保护退出状态",
+                quantity=10.0,
+            ),
+            fill_price=99.0,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        state = updated.activation_state["XRPJPY"]
+        self.assertEqual(state["last_trigger"], "trailing_stop")
+        self.assertEqual(state["decision_state"], "PROTECTIVE_EXIT_ACTIVE")
+        self.assertAlmostEqual(state["pending_buyback_quantity"], 0.0)
+        self.assertAlmostEqual(state["last_grid_sell_price"], 0.0)
+
     def test_profit_grid_sell_is_blocked_when_expected_rebuy_edge_is_too_small(self) -> None:
         settings = replace(_settings(), trading_fee_rate=0.001, grid_buyback_step_pct=0.0012, min_net_edge_pct=0.001)
         engine = PositionActivationEngine(settings, _Client())
