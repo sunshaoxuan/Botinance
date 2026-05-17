@@ -50,6 +50,13 @@ class PositionActivationEngine:
         last_sell_price = float(state["last_grid_sell_price"])
         if pending_qty > 0 and last_sell_price > 0:
             state["decision_state"] = "RELEASED_WAIT_BUYBACK"
+            min_notional = self._effective_min_notional(filters)
+            if pending_qty * price < min_notional:
+                self._clear_buyback_plan(state)
+                state["decision_state"] = "NORMAL"
+                state["last_trigger"] = "grid_buyback_dust_ignored"
+                state["last_reason"] = f"剩余待回补金额低于策略最小成交额：{pending_qty * price:.8f} < {min_notional:.8f}"
+                return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
             tier_index, tier_net_edge_pct, tier_fraction = self._active_buyback_tier(state)
             buyback_price = self._effective_buyback_price(last_sell_price, tier_net_edge_pct)
             state["buyback_tier_index"] = tier_index
@@ -253,7 +260,7 @@ class PositionActivationEngine:
         desired_quantity = position.quantity * self.settings.grid_sell_fraction
         quantity = self.client.quantize_quantity(min(desired_quantity, max_sell_quantity), filters.step_size)
         notional = quantity * price
-        min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        min_notional = self._effective_min_notional(filters)
 
         if quantity <= 0 or quantity < filters.min_qty:
             state["last_trigger"] = "grid_sell_blocked"
@@ -303,7 +310,7 @@ class PositionActivationEngine:
         state: Dict[str, object],
     ) -> PositionActivationDecision:
         notional = quantity * price
-        min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        min_notional = self._effective_min_notional(filters)
         if quantity <= 0 or quantity < filters.min_qty:
             state["last_trigger"] = "grid_buyback_blocked"
             state["last_reason"] = f"回补数量低于最小数量：{quantity}"
@@ -352,6 +359,9 @@ class PositionActivationEngine:
         state.setdefault("buyback_tier_fraction", 0.0)
         state.setdefault("buyback_trigger_price", 0.0)
         return state
+
+    def _effective_min_notional(self, filters: SymbolFilters) -> float:
+        return max(filters.min_notional, self.settings.min_order_notional, self.settings.grid_min_order_notional)
 
     @staticmethod
     def _clear_buyback_plan(state: Dict[str, object]) -> None:
@@ -433,7 +443,7 @@ class PositionActivationEngine:
     ) -> float:
         plan_total = float(state.get("buyback_plan_total_quantity") or pending_qty)
         desired_quantity = min(pending_qty, max(0.0, plan_total * tier_fraction))
-        min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        min_notional = self._effective_min_notional(filters)
         if price > 0 and desired_quantity * price < min_notional <= pending_qty * price:
             desired_quantity = min(pending_qty, min_notional / price)
         return self.client.quantize_quantity(desired_quantity, filters.step_size)

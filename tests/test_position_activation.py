@@ -278,6 +278,40 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertEqual(state["decision_state"], "BUYBACK_COOLDOWN")
         self.assertGreater(state["buyback_cooldown_until_candle"], 1_778_300_000_000)
 
+    def test_small_buyback_remainder_is_cleared_as_uneconomic(self) -> None:
+        settings = replace(_settings(), grid_min_order_notional=3000.0)
+        engine = PositionActivationEngine(settings, _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=3000.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=75.0, average_entry_price=100.0, highest_price=101.0)},
+            activation_state={
+                "XRPJPY": {
+                    "pending_buyback_quantity": 7.4,
+                    "last_grid_sell_price": 101.0,
+                    "buyback_plan_total_quantity": 57.4,
+                    "daily_trade_day": "2026-05-09",
+                    "daily_trade_count": 1,
+                }
+            },
+        )
+
+        decision = engine.evaluate(
+            symbol="XRPJPY",
+            price=100.0,
+            account=AccountSnapshot({"JPY": 3000.0, "XRP": 75.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            snapshot=snapshot,
+            timestamp_ms=1_778_300_000_000,
+        )
+
+        self.assertEqual(decision.action, "HOLD")
+        self.assertEqual(decision.state_update["last_trigger"], "grid_buyback_dust_ignored")
+        self.assertAlmostEqual(decision.state_update["pending_buyback_quantity"], 0.0)
+        self.assertAlmostEqual(decision.state_update["last_grid_sell_price"], 0.0)
+        self.assertEqual(decision.state_update["decision_state"], "NORMAL")
+
     def test_risk_exit_clears_stale_buyback_plan(self) -> None:
         engine = PositionActivationEngine(_settings(), _Client())
         snapshot = PortfolioSnapshot(

@@ -74,6 +74,7 @@ class Settings:
     grid_sell_step_pct: float = 0.003
     grid_buyback_step_pct: float = 0.0025
     grid_buyback_tiers: str = ""
+    grid_min_order_notional: float = 0.0
     grid_sell_fraction: float = 0.25
     grid_min_core_position_fraction: float = 0.25
     grid_max_daily_trades: int = 8
@@ -190,6 +191,7 @@ def load_settings() -> Settings:
         grid_sell_step_pct=float(os.getenv("GRID_SELL_STEP_PCT", "0.003")),
         grid_buyback_step_pct=float(os.getenv("GRID_BUYBACK_STEP_PCT", "0.0025")),
         grid_buyback_tiers=os.getenv("GRID_BUYBACK_TIERS", "").strip(),
+        grid_min_order_notional=float(os.getenv("GRID_MIN_ORDER_NOTIONAL", "0")),
         grid_sell_fraction=float(os.getenv("GRID_SELL_FRACTION", "0.25")),
         grid_min_core_position_fraction=float(os.getenv("GRID_MIN_CORE_POSITION_FRACTION", "0.25")),
         grid_max_daily_trades=int(os.getenv("GRID_MAX_DAILY_TRADES", "8")),
