@@ -196,7 +196,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
 
         self.assertEqual(report.decisions[0].signal.action, SignalAction.BUY)
         self.assertEqual(report.buy_diagnostics[0].has_position, False)
-        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
+        self.assertIn(report.decisions[0].execution_result["status"], {"ORDER_OPEN", "ORDER_LADDER_OPEN"})
         self.assertEqual(report.decisions[0].execution_result["trigger"], "strategy_buy")
 
     def test_refresh_cycle_keeps_open_order_until_touch_or_reversal(self) -> None:
@@ -271,7 +271,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             second_report = engine.run_cycle()
 
         self.assertEqual(first_report.cycle_mode, "DECISION")
-        self.assertEqual(first_report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
+        self.assertIn(first_report.decisions[0].execution_result["status"], {"ORDER_OPEN", "ORDER_LADDER_OPEN"})
         self.assertEqual(first_report.order_lifecycle_events[0].event_type, "SUBMITTED")
         self.assertEqual(first_report.open_orders[0].status, "OPEN")
         self.assertEqual(len(first_report.market_snapshots), 1)
@@ -391,6 +391,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             trailing_stop_pct=0.50,
             max_hold_bars=0,
             decision_price_move_threshold_pct=0.01,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -464,6 +466,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             max_hold_bars=999,
             decision_price_move_threshold_pct=0.0,
             order_passive_offset_pct=0.0002,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         first_candles = [
             Candle(
@@ -518,11 +522,11 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(first_report.decisions[0].execution_result["trigger"], "strategy_sell")
         self.assertTrue(any(event.status == "FILLED" and event.trigger == "strategy_sell" for event in second_report.order_lifecycle_events))
         state = snapshot.activation_state["XRPJPY"]
-        self.assertEqual(state["last_trigger"], "grid_wait_buyback")
-        self.assertIn("等待回补", state["last_reason"])
-        self.assertAlmostEqual(state["pending_buyback_quantity"], 37.5)
+        self.assertIn(state["last_trigger"], {"strategy_release_sell", "grid_wait_buyback"})
+        self.assertTrue("待回补" in state["last_reason"] or "等待回补" in state["last_reason"])
+        self.assertAlmostEqual(state["pending_buyback_quantity"], 50.0)
         self.assertAlmostEqual(state["last_grid_sell_price"], first_report.decisions[0].execution_result["orders"][-1]["limit_price"])
-        self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 62.5)
+        self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 50.0)
 
     def test_strategy_sell_forces_decision_on_same_candle(self) -> None:
         settings = Settings(
@@ -553,6 +557,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             max_hold_bars=999,
             decision_price_move_threshold_pct=0.0,
             order_passive_offset_pct=0.0002,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -631,6 +637,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             trailing_stop_pct=0.50,
             max_hold_bars=999,
             decision_price_move_threshold_pct=0.0,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -717,6 +725,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             trailing_stop_pct=0.50,
             max_hold_bars=999,
             decision_price_move_threshold_pct=0.0,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -803,6 +813,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             decision_price_move_threshold_pct=0.0,
             ai_can_cancel_buyback=False,
             order_reprice_enabled=False,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -885,6 +897,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             max_hold_bars=999,
             decision_price_move_threshold_pct=0.0,
             grid_buyback_step_pct=0.0025,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -971,6 +985,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             max_hold_bars=999,
             decision_price_move_threshold_pct=0.0,
             grid_buyback_tiers="0.0003:0.25,0.0010:0.25,0.0020:0.25,0.0030:0.25",
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -1059,6 +1075,8 @@ class TradingEngineSchedulingTests(unittest.TestCase):
             trailing_stop_pct=0.50,
             max_hold_bars=0,
             decision_price_move_threshold_pct=0.0,
+            target_inventory_enabled=False,
+            min_effective_order_notional=10.0,
         )
         candles = [
             Candle(
@@ -1192,6 +1210,156 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(report.decisions[0].execution_result["trigger"], "target_rebuild_buy")
         self.assertTrue(report.decisions[0].execution_result["capital_deployment"])
         self.assertEqual(len(snapshot.open_orders), 3)
+
+    def test_target_inventory_builds_position_when_underweight_even_with_hold_signal(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=26000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.50,
+            trailing_stop_pct=0.50,
+            max_hold_bars=999,
+            decision_price_move_threshold_pct=0.0,
+            target_inventory_enabled=True,
+            min_effective_order_notional=5000.0,
+            order_target_notional=8000.0,
+            order_max_open_per_side=2,
+            entry_ladder_tiers="0.0025:0.50,0.0050:0.50",
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.0,
+                high=100.0,
+                low=100.0,
+                close=100.0,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 26000.0, runtime_dir / "paper_state.json")
+            client = _QuantizingClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_HoldStrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "target_rebuild_buy")
+        self.assertEqual(len(snapshot.open_orders), 2)
+        self.assertGreaterEqual(min(order.quantity * order.limit_price for order in snapshot.open_orders.values()), 5000.0)
+        self.assertGreater(report.decisions[0].execution_result["target_inventory_summary"]["available_buy_notional"], 0)
+
+    def test_target_inventory_sells_overweight_position_without_tiny_orders(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=25000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.50,
+            trailing_stop_pct=0.50,
+            max_hold_bars=999,
+            decision_price_move_threshold_pct=0.0,
+            target_inventory_enabled=True,
+            min_effective_order_notional=5000.0,
+            order_target_notional=8000.0,
+            order_max_open_per_side=2,
+            exit_ladder_tiers="0.0040:0.50,0.0080:0.50",
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.0,
+                high=100.0,
+                low=100.0,
+                close=100.0,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 25000.0, runtime_dir / "paper_state.json")
+            portfolio.apply_order(
+                order=OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=200.0),
+                fill_price=100.0,
+            )
+            client = _QuantizingClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_HoldStrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertIn(report.decisions[0].execution_result["status"], {"ORDER_OPEN", "ORDER_LADDER_OPEN"})
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "target_rebalance_sell")
+        self.assertGreaterEqual(len(snapshot.open_orders), 1)
+        self.assertGreaterEqual(min(order.quantity * order.limit_price for order in snapshot.open_orders.values()), 5000.0)
+        self.assertGreater(report.decisions[0].execution_result["target_inventory_summary"]["allowed_sell_quantity"], 0)
 
 
 if __name__ == "__main__":

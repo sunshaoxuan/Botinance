@@ -16,6 +16,7 @@ from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
 from binance_ai.risk.engine import RiskEngine
 from binance_ai.strategy.base import Strategy
+from binance_ai.target_inventory import TargetInventoryDecision, TargetInventoryEngine
 from binance_ai.trade_guard import TradeProfitabilityGuard
 
 
@@ -45,6 +46,7 @@ class TradingEngine:
         self.news_service = news_service
         self.position_activation = PositionActivationEngine(settings, client)
         self.profitability_guard = TradeProfitabilityGuard(settings)
+        self.target_inventory = TargetInventoryEngine(settings)
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -89,6 +91,7 @@ class TradingEngine:
             )
             order_lifecycle_events.extend(lifecycle_events)
             for result in lifecycle_results:
+                self._record_daily_risk_fill(symbol=symbol, result=result, timestamp_ms=cycle_timestamp_ms)
                 activation_success = self._activation_success_from_fill(symbol=symbol, result=result)
                 if activation_success is not None:
                     self._record_position_activation_success(
@@ -323,6 +326,16 @@ class TradingEngine:
                 position_multiplier=1.0,
                 veto_reason="",
             )
+            target_inventory = self.target_inventory.evaluate(
+                symbol=symbol,
+                price=price,
+                account=account,
+                base_balance=base_balance,
+                signal=signal,
+                candles=context["candles"],
+                ai_assessment=ai_assessment,
+                daily_risk_state=self._daily_risk_state(symbol=symbol, timestamp_ms=cycle_timestamp_ms),
+            )
             applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY else None
             open_orders = list(context.get("open_orders", []))
             cooldown_remaining_bars = self._buyback_cooldown_remaining_bars(
@@ -414,6 +427,7 @@ class TradingEngine:
                         base_balance=base_balance,
                         filters=filters,
                         position_multiplier=ai_assessment.position_multiplier,
+                        target_inventory=target_inventory,
                     )
                     decision = self.risk.build_buy_order(
                         symbol,
@@ -439,8 +453,7 @@ class TradingEngine:
                         order_lifecycle_events.extend(events)
                         order = orders[0] if orders else None
                         if target_order is not None:
-                            execution_result["target_position_fraction"] = self.settings.target_position_fraction
-                            execution_result["min_cash_reserve_fraction"] = self.settings.min_cash_reserve_fraction
+                            execution_result["target_inventory_summary"] = target_inventory.as_dict()
                     else:
                         execution_result = {"status": "BLOCKED", "reason": target_blocker if target_budget_enabled else decision.reason}
             elif signal.action == SignalAction.BUY:
@@ -451,14 +464,24 @@ class TradingEngine:
                     "cooldown_remaining_bars": cooldown_remaining_bars,
                 }
             elif signal.action == SignalAction.SELL and has_position:
-                decision = self.risk.build_sell_order(
-                    symbol,
-                    price,
-                    base_balance,
-                    filters,
-                    sell_fraction=self.risk.exit_sell_fraction(None, strategy_sell=True),
-                )
-                if decision.order is not None:
+                if self.settings.target_inventory_enabled:
+                    decision_order, decision_reason = self._build_target_position_sell_order(
+                        symbol=symbol,
+                        price=price,
+                        filters=filters,
+                        target_inventory=target_inventory,
+                    )
+                else:
+                    decision = self.risk.build_sell_order(
+                        symbol,
+                        price,
+                        base_balance,
+                        filters,
+                        sell_fraction=self.risk.exit_sell_fraction(None, strategy_sell=True),
+                    )
+                    decision_order = decision.order
+                    decision_reason = decision.reason
+                if decision_order is not None:
                     guard = self.profitability_guard.inspect_release(
                         price,
                         price * (1.0 - self.settings.grid_buyback_step_pct),
@@ -476,7 +499,7 @@ class TradingEngine:
                         }
                     else:
                         execution_result, events, orders = self._submit_ladder_orders(
-                            decision.order,
+                            decision_order,
                             current_price=price,
                             filters=filters,
                             timestamp_ms=cycle_timestamp_ms,
@@ -491,8 +514,47 @@ class TradingEngine:
                         execution_result["guard_result"] = guard.reason
                         execution_result["net_edge_pct"] = guard.net_edge_pct
                         execution_result["required_edge_pct"] = guard.required_edge_pct
+                        execution_result["target_inventory_summary"] = target_inventory.as_dict()
                 else:
-                    execution_result = {"status": "BLOCKED", "reason": decision.reason}
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": decision_reason,
+                        "target_inventory_summary": target_inventory.as_dict(),
+                    }
+            elif (
+                self.settings.target_inventory_enabled
+                and has_position
+                and target_inventory.active_trading_allowed
+                and target_inventory.allowed_sell_quantity > 0
+            ):
+                target_sell_order, target_sell_blocker = self._build_target_position_sell_order(
+                    symbol=symbol,
+                    price=price,
+                    filters=filters,
+                    target_inventory=target_inventory,
+                )
+                if target_sell_order is not None:
+                    execution_result, events, orders = self._submit_ladder_orders(
+                        target_sell_order,
+                        current_price=price,
+                        filters=filters,
+                        timestamp_ms=cycle_timestamp_ms,
+                        entry_candle_close_time_ms=latest_closed_candle_close_time,
+                        trigger="target_rebalance_sell",
+                        urgent=False,
+                        ladder_group="exit",
+                        tiers_raw=self.settings.exit_ladder_tiers,
+                    )
+                    order_lifecycle_events.extend(events)
+                    order = orders[0] if orders else None
+                    execution_result["target_inventory_summary"] = target_inventory.as_dict()
+                else:
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": target_sell_blocker,
+                        "trigger": "target_rebalance_sell",
+                        "target_inventory_summary": target_inventory.as_dict(),
+                    }
             elif activation_decision.order is not None:
                 tiers_raw = ""
                 ladder_group = "buyback" if activation_decision.trigger == "grid_buyback" else "activation"
@@ -530,6 +592,7 @@ class TradingEngine:
                     base_balance=base_balance,
                     filters=filters,
                     position_multiplier=ai_assessment.position_multiplier,
+                    target_inventory=target_inventory,
                 )
                 if target_order is not None:
                     execution_result, events, orders = self._submit_ladder_orders(
@@ -547,6 +610,7 @@ class TradingEngine:
                     order = orders[0] if orders else None
                     execution_result["target_position_fraction"] = self.settings.target_position_fraction
                     execution_result["min_cash_reserve_fraction"] = self.settings.min_cash_reserve_fraction
+                    execution_result["target_inventory_summary"] = target_inventory.as_dict()
                     execution_result["capital_deployment"] = True
                 else:
                     self._record_position_activation_state(
@@ -580,6 +644,7 @@ class TradingEngine:
 
             execution_result.setdefault("decision_state", self._decision_state_for_symbol(symbol))
             execution_result.setdefault("cooldown_remaining_bars", cooldown_remaining_bars)
+            execution_result.setdefault("target_inventory_summary", target_inventory.as_dict())
             buy_diagnostics.append(buy_diagnostic)
             sell_diagnostics.append(sell_diagnostic)
             decisions.append(
@@ -709,11 +774,12 @@ class TradingEngine:
     ) -> bool:
         if not self.settings.order_ladder_enabled or self.settings.target_position_fraction <= 0:
             return False
-        state = self._activation_state_for_symbol(symbol)
-        if float(state.get("pending_buyback_quantity", 0.0) or 0.0) > 0:
-            return False
-        if self._buyback_cooldown_remaining_bars(symbol=symbol, timestamp_ms=timestamp_ms) > 0:
-            return False
+        if not self.settings.target_inventory_enabled:
+            state = self._activation_state_for_symbol(symbol)
+            if float(state.get("pending_buyback_quantity", 0.0) or 0.0) > 0:
+                return False
+            if self._buyback_cooldown_remaining_bars(symbol=symbol, timestamp_ms=timestamp_ms) > 0:
+                return False
         if signal_action.upper() == "SELL":
             return False
         if exit_reason in {"emergency_stop", "stop_loss"}:
@@ -731,7 +797,20 @@ class TradingEngine:
         base_balance: float,
         filters,
         position_multiplier: float,
+        target_inventory: TargetInventoryDecision | None = None,
     ) -> Tuple[OrderRequest | None, str]:
+        if self.settings.target_inventory_enabled and target_inventory is not None:
+            order, reason = self.target_inventory.build_buy_order(
+                decision=target_inventory,
+                price=price,
+                quantize_quantity=self.client.quantize_quantity,
+                step_size=filters.step_size,
+                min_qty=filters.min_qty,
+            )
+            if order is None:
+                return None, reason
+            return order, ""
+
         if not self.settings.order_ladder_enabled:
             return None, ""
         target_fraction = min(1.0, max(0.0, self.settings.target_position_fraction))
@@ -757,6 +836,25 @@ class TradingEngine:
             return None, f"target_notional_below_min_notional:{final_notional:.2f}"
         return OrderRequest(symbol=symbol, side="BUY", order_type="MARKET", quantity=quantity), ""
 
+    def _build_target_position_sell_order(
+        self,
+        *,
+        symbol: str,
+        price: float,
+        filters,
+        target_inventory: TargetInventoryDecision,
+    ) -> Tuple[OrderRequest | None, str]:
+        order, reason = self.target_inventory.build_sell_order(
+            decision=target_inventory,
+            price=price,
+            quantize_quantity=self.client.quantize_quantity,
+            step_size=filters.step_size,
+            min_qty=filters.min_qty,
+        )
+        if order is None:
+            return None, reason
+        return order, ""
+
     def _submit_ladder_orders(
         self,
         order: OrderRequest,
@@ -777,7 +875,9 @@ class TradingEngine:
         results: List[Dict[str, object]] = []
         events: List[OrderLifecycleEvent] = []
         orders: List[OrderRequest] = []
-        min_notional = max(filters.min_notional, self.settings.min_order_notional)
+        min_notional = self._effective_min_notional(filters=filters, urgent=urgent)
+        if len(tiers) > 1 and order.quantity * current_price < min_notional * len(tiers):
+            tiers = [(tiers[0][0] if tiers else 0.0, 1.0)]
         for index, (offset_pct, fraction) in enumerate(tiers):
             quantity = order.quantity if len(tiers) == 1 else self.client.quantize_quantity(order.quantity * fraction, filters.step_size)
             if quantity <= 0 or quantity < filters.min_qty or quantity * current_price < min_notional:
@@ -825,11 +925,13 @@ class TradingEngine:
                 "reason": "ladder_orders_below_minimums",
                 "trigger": trigger,
                 "ladder_group": ladder_group,
+                "min_effective_order_notional": min_notional,
             }, events, orders
         if len(accepted) == 1 and not rejected:
             result = dict(accepted[0])
             result["ladder_group"] = ladder_group
             result["tier_index"] = orders[0].tier_index if orders else 0
+            result["min_effective_order_notional"] = min_notional
             return result, events, orders
         if rejected and len(duplicate_rejections) == len(rejected) and not accepted:
             return {
@@ -848,7 +950,24 @@ class TradingEngine:
             "submitted_count": len(accepted),
             "rejected_count": len(rejected),
             "orders": results,
+            "min_effective_order_notional": min_notional,
         }, events, orders
+
+    def _effective_min_notional(self, *, filters, urgent: bool) -> float:
+        base_min = max(filters.min_notional, self.settings.min_order_notional)
+        if urgent:
+            return base_min
+        configured = max(0.0, self.settings.min_effective_order_notional)
+        if configured <= base_min:
+            return base_min
+        if self.paper_portfolio is not None:
+            try:
+                snapshot = self.paper_portfolio.load_snapshot()
+                if snapshot.initial_quote_balance < configured * 2:
+                    return base_min
+            except Exception:  # noqa: BLE001 - fall back to exchange minimums.
+                return base_min
+        return configured
 
     @staticmethod
     def _ladder_tiers(raw: str) -> List[Tuple[float, float]]:
@@ -980,6 +1099,33 @@ class TradingEngine:
             return {}
         raw = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
         return raw if isinstance(raw, dict) else {}
+
+    def _daily_risk_state(self, *, symbol: str, timestamp_ms: int) -> Dict[str, object]:
+        if self.paper_portfolio is None:
+            return self.target_inventory.normalized_daily_state({}, timestamp_ms=timestamp_ms)
+        snapshot = self.paper_portfolio.load_snapshot()
+        raw = snapshot.activation_state.get("_daily_risk", {})
+        symbol_state = raw.get(symbol, {}) if isinstance(raw, dict) else {}
+        return self.target_inventory.normalized_daily_state(
+            symbol_state if isinstance(symbol_state, dict) else {},
+            timestamp_ms=timestamp_ms,
+        )
+
+    def _record_daily_risk_fill(self, *, symbol: str, result: Dict[str, object], timestamp_ms: int) -> None:
+        if self.paper_portfolio is None or result.get("status") != "PAPER_FILLED":
+            return
+        snapshot = self.paper_portfolio.load_snapshot()
+        activation_state = dict(snapshot.activation_state)
+        daily_all = dict(activation_state.get("_daily_risk", {}) if isinstance(activation_state.get("_daily_risk"), dict) else {})
+        state = self.target_inventory.normalized_daily_state(
+            daily_all.get(symbol, {}) if isinstance(daily_all.get(symbol, {}), dict) else {},
+            timestamp_ms=timestamp_ms,
+        )
+        state["turnover_notional"] = float(state.get("turnover_notional", 0.0) or 0.0) + float(result.get("notional", 0.0) or 0.0)
+        state["realized_pnl"] = float(state.get("realized_pnl", 0.0) or 0.0) + float(result.get("realized_pnl_delta", 0.0) or 0.0)
+        daily_all[symbol] = state
+        activation_state["_daily_risk"] = daily_all
+        self.paper_portfolio.save_snapshot(replace(snapshot, activation_state=activation_state))
 
     def _decision_state_for_symbol(self, symbol: str) -> str:
         state = self._activation_state_for_symbol(symbol)

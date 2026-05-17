@@ -1661,10 +1661,13 @@ INDEX_HTML = """<!doctype html>
       const vetoes = payload.live_ai_veto_markers || [];
       const openOrders = payload.open_orders || latest.open_orders || [];
       const openOrderGroups = payload.open_order_groups || payload.order_ladder_summary || {};
+      const targetInventory = (payload.target_inventory_summary || {})[symbol] || executionResult.target_inventory_summary || {};
+      const effectiveOrderGuard = (payload.effective_order_guard || {})[symbol] || {};
+      const dailyRiskBudget = (payload.daily_risk_budget || {})[symbol] || {};
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
       const profitCurve = payload.live_profit_curve || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, orderEvents, orderMarkers, profitCurve };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, targetInventory, effectiveOrderGuard, dailyRiskBudget, orderEvents, orderMarkers, profitCurve };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1757,6 +1760,10 @@ INDEX_HTML = """<!doctype html>
           ["Boti接管价", avg ? fmtCurrency(avg, c.quoteAsset) : "--"],
           ["最高价", fmtCurrency(highest, c.quoteAsset)],
           ["持仓K线", fmtNumber(holdBars, 0)],
+          ["目标仓位", c.targetInventory.target_fraction !== undefined ? fmtPercent(c.targetInventory.target_fraction) : "--"],
+          ["当前仓位", c.targetInventory.current_fraction !== undefined ? fmtPercent(c.targetInventory.current_fraction) : "--"],
+          ["可买预算", c.targetInventory.available_buy_notional !== undefined ? fmtCurrency(c.targetInventory.available_buy_notional, c.quoteAsset) : "--"],
+          ["可卖数量", c.targetInventory.allowed_sell_quantity !== undefined ? `${fmtNumber(c.targetInventory.allowed_sell_quantity, 6)} XRP` : "--"],
         ])}
       `;
 
@@ -1802,6 +1809,8 @@ INDEX_HTML = """<!doctype html>
           ["最近卖价", nearestSell > 0 ? fmtCurrency(nearestSell, c.quoteAsset) : "--"],
           ["冻结现金", fmtCurrency(orderSummary.reserved_quote, c.quoteAsset)],
           ["冻结币数", orderSummary.reserved_base ? `${fmtNumber(orderSummary.reserved_base, 8)} XRP` : "--"],
+          ["有效下限", c.effectiveOrderGuard.min_effective_order_notional ? fmtCurrency(c.effectiveOrderGuard.min_effective_order_notional, c.quoteAsset) : "--"],
+          ["收益闸门", c.effectiveOrderGuard.guard_result ? escapeHtml(triggerLabel(c.effectiveOrderGuard.guard_result)) : "--"],
         ])}
       ` : `
         <div class="card-label"><span>当前挂单组</span>${statusChip("无挂单", "wait")}</div>
@@ -1812,12 +1821,13 @@ INDEX_HTML = """<!doctype html>
       const firstEntryTier = entryPlan.tiers[0] || {};
       els.entryPlanCard.innerHTML = `
         <div class="card-label"><span>建仓/补仓计划</span>${entryPlan.blockers.length ? statusChip("等待", "wait") : statusChip("可评估", "buy")}</div>
-        <div class="card-value">${firstEntryTier.price ? fmtCurrency(firstEntryTier.price, c.quoteAsset) : "--"}</div>
+        <div class="card-value">${c.targetInventory.available_buy_notional !== undefined ? fmtCurrency(c.targetInventory.available_buy_notional, c.quoteAsset) : (firstEntryTier.price ? fmtCurrency(firstEntryTier.price, c.quoteAsset) : "--")}</div>
         ${miniKvRows([
-          ["目标仓位", fmtPercent(entryPlan.targetFraction)],
-          ["计划投入", fmtCurrency(entryPlan.plannedSpend, c.quoteAsset)],
+          ["目标仓位", c.targetInventory.target_fraction !== undefined ? fmtPercent(c.targetInventory.target_fraction) : fmtPercent(entryPlan.targetFraction)],
+          ["当前仓位", c.targetInventory.current_fraction !== undefined ? fmtPercent(c.targetInventory.current_fraction) : "--"],
+          ["计划投入", c.targetInventory.available_buy_notional !== undefined ? fmtCurrency(c.targetInventory.available_buy_notional, c.quoteAsset) : fmtCurrency(entryPlan.plannedSpend, c.quoteAsset)],
           ["首档数量", firstEntryTier.quantity ? `${fmtNumber(firstEntryTier.quantity, 6)} XRP` : "--"],
-          ["时机", escapeHtml(entryPlan.status)],
+          ["时机", escapeHtml(c.targetInventory.reason || entryPlan.status)],
         ])}
       `;
 
@@ -3345,9 +3355,20 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "order_reprice_compare_mode": settings.order_reprice_compare_mode,
         "order_ladder_enabled": settings.order_ladder_enabled,
         "target_position_fraction": settings.target_position_fraction,
+        "target_inventory_enabled": settings.target_inventory_enabled,
+        "target_position_strong_down": settings.target_position_strong_down,
+        "target_position_weak_down": settings.target_position_weak_down,
+        "target_position_range": settings.target_position_range,
+        "target_position_strong_up": settings.target_position_strong_up,
+        "target_position_emergency": settings.target_position_emergency,
+        "target_position_band_pct": settings.target_position_band_pct,
         "min_cash_reserve_fraction": settings.min_cash_reserve_fraction,
         "entry_ladder_tiers": settings.entry_ladder_tiers,
         "exit_ladder_tiers": settings.exit_ladder_tiers,
+        "min_effective_order_notional": settings.min_effective_order_notional,
+        "order_target_notional": settings.order_target_notional,
+        "max_daily_turnover_fraction": settings.max_daily_turnover_fraction,
+        "max_daily_realized_loss_pct": settings.max_daily_realized_loss_pct,
     }
 
 
@@ -4499,6 +4520,40 @@ def _build_decision_state_payload(
     }
 
 
+def _build_target_inventory_payload(latest_report: Dict[str, Any]) -> Dict[str, Any]:
+    summary: Dict[str, Any] = {}
+    guards: Dict[str, Any] = {}
+    daily: Dict[str, Any] = {}
+    for decision in latest_report.get("decisions", []) if isinstance(latest_report.get("decisions"), list) else []:
+        if not isinstance(decision, dict):
+            continue
+        symbol = str(decision.get("symbol") or "")
+        execution = decision.get("execution_result") if isinstance(decision.get("execution_result"), dict) else {}
+        target = execution.get("target_inventory_summary") if isinstance(execution.get("target_inventory_summary"), dict) else {}
+        if symbol and target:
+            summary[symbol] = target
+            guards[symbol] = {
+                "min_effective_order_notional": _coerce_float(execution.get("min_effective_order_notional")),
+                "guard_result": execution.get("guard_result", ""),
+                "net_edge_pct": _coerce_float(execution.get("net_edge_pct")),
+                "required_edge_pct": _coerce_float(execution.get("required_edge_pct")),
+                "reason": execution.get("reason", ""),
+            }
+            daily[symbol] = {
+                "daily_turnover_used": _coerce_float(target.get("daily_turnover_used")),
+                "daily_turnover_limit": _coerce_float(target.get("daily_turnover_limit")),
+                "daily_realized_pnl": _coerce_float(target.get("daily_realized_pnl")),
+                "daily_loss_limit": _coerce_float(target.get("daily_loss_limit")),
+                "active_trading_allowed": bool(target.get("active_trading_allowed", True)),
+                "active_trading_blocker": target.get("active_trading_blocker", ""),
+            }
+    return {
+        "target_inventory_summary": summary,
+        "effective_order_guard": guards,
+        "daily_risk_budget": daily,
+    }
+
+
 def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
@@ -4555,6 +4610,14 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=None)
     real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
     decision_state_payload = _build_decision_state_payload(paper_state, latest_report, runtime_config)
+    target_inventory_payload = _build_target_inventory_payload(latest_report)
+    boti_pnl_breakdown = {
+        "realized_pnl": _coerce_float(paper_state.get("realized_pnl"), _coerce_float(latest_report.get("realized_pnl"))),
+        "unrealized_pnl": _coerce_float(latest_report.get("unrealized_pnl")),
+        "net_pnl": _coerce_float(latest_report.get("net_pnl")),
+        "total_equity": _coerce_float(latest_report.get("total_equity"), _coerce_float(paper_state.get("total_equity"))),
+        "baseline": _coerce_float(paper_state.get("initial_quote_balance")),
+    }
 
     return {
         "latest_report": latest_report,
@@ -4577,6 +4640,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "position_activation_state": paper_state.get("activation_state", {}),
         "runtime_config": runtime_config,
         **decision_state_payload,
+        **target_inventory_payload,
+        "boti_pnl_breakdown": boti_pnl_breakdown,
         "live_main_interval_bars": main_bars,
         "live_refresh_interval": "1m",
         "live_refresh_bars": refresh_bars,
