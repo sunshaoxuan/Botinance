@@ -485,7 +485,7 @@ class TradingEngine:
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason}
             elif activation_decision.order is not None:
-                tiers_raw = self.settings.grid_buyback_tiers if activation_decision.trigger == "grid_buyback" else ""
+                tiers_raw = ""
                 ladder_group = "buyback" if activation_decision.trigger == "grid_buyback" else "activation"
                 execution_result, events, orders = self._submit_ladder_orders(
                     activation_decision.order,

@@ -942,6 +942,95 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertEqual(report.decisions[0].execution_result["trigger"], "grid_buyback")
         self.assertEqual(next(iter(snapshot.open_orders.values())).side, "BUY")
 
+    def test_grid_buyback_tier_is_not_split_twice_by_order_ladder(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=10.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.50,
+            trailing_stop_pct=0.50,
+            max_hold_bars=999,
+            decision_price_move_threshold_pct=0.0,
+            grid_buyback_tiers="0.0003:0.25,0.0010:0.25,0.0020:0.25,0.0030:0.25",
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.76,
+                high=100.76,
+                low=100.76,
+                close=100.76,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 20000.0, runtime_dir / "paper_state.json")
+            portfolio.apply_order(
+                order=OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=60.0),
+                fill_price=100.0,
+            )
+            snapshot = portfolio.load_snapshot()
+            portfolio.save_snapshot(
+                replace(
+                    snapshot,
+                    activation_state={
+                        "XRPJPY": {
+                            "daily_trade_day": "2026-05-10",
+                            "daily_trade_count": 1,
+                            "pending_buyback_quantity": 40.0,
+                            "buyback_plan_total_quantity": 40.0,
+                            "last_grid_sell_price": 101.0,
+                        }
+                    },
+                )
+            )
+            client = _QuantizingClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_SellStrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertEqual(report.decisions[0].signal.action, SignalAction.HOLD)
+        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_OPEN")
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "grid_buyback")
+        open_order = next(iter(snapshot.open_orders.values()))
+        self.assertEqual(open_order.side, "BUY")
+        self.assertAlmostEqual(open_order.quantity, 10.0)
+
     def test_pending_buyback_blocks_repeated_partial_exit_rules(self) -> None:
         settings = Settings(
             api_key="",
