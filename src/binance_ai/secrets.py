@@ -167,10 +167,13 @@ def read_passphrase_from_windows_dpapi_file(path: Path) -> str:
     if not powershell:
         raise FileNotFoundError("PowerShell is required to read Windows DPAPI secrets.")
     script = (
-        "$secure = Get-Content -Raw -Path $env:BINANCE_AI_DPAPI_FILE | ConvertTo-SecureString; "
-        "$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); "
-        "try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } "
-        "finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }"
+        "Add-Type -AssemblyName System.Security; "
+        "$raw = (Get-Content -Raw -Path $env:BINANCE_AI_DPAPI_FILE).Trim(); "
+        "$bytes = [Convert]::FromBase64String($raw); "
+        "$plain = [Security.Cryptography.ProtectedData]::Unprotect("
+        "$bytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser"
+        "); "
+        "[Text.Encoding]::UTF8.GetString($plain)"
     )
     env = os.environ.copy()
     env["BINANCE_AI_DPAPI_FILE"] = str(path)
