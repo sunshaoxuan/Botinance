@@ -91,6 +91,13 @@ class OrderExecutor:
 
         limit_reason = self._open_order_limit_violation(order)
         if limit_reason:
+            if limit_reason == "duplicate_open_ladder_order":
+                return {
+                    "status": "REJECTED",
+                    "reason": limit_reason,
+                    "symbol": order.symbol,
+                    "client_order_id": order.client_order_id,
+                }, None
             event = OrderLifecycleEvent(
                 timestamp_ms=timestamp_ms,
                 symbol=order.symbol,
