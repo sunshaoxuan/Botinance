@@ -114,6 +114,32 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertAlmostEqual(snapshot.quote_balance, 799.8)
             self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 1.0)
 
+    def test_limit_order_without_client_id_gets_virtual_order_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=1000.0,
+                state_path=Path(tmpdir) / "paper_state.json",
+            )
+            order = OrderRequest(
+                symbol="XRPJPY",
+                side="BUY",
+                order_type="LIMIT",
+                quantity=1.0,
+                limit_price=200.0,
+                trigger="capital_deployment",
+            )
+
+            result, event = portfolio.submit_limit_order(order, timestamp_ms=1_000)
+            snapshot = portfolio.load_snapshot()
+            generated_id = result["client_order_id"]
+
+            self.assertEqual(result["status"], "ORDER_OPEN")
+            self.assertTrue(str(generated_id).startswith("boti_XRPJPY_B0_capita_"))
+            self.assertLessEqual(len(str(generated_id)), 36)
+            self.assertEqual(event.client_order_id, generated_id)
+            self.assertIn(generated_id, snapshot.open_orders)
+
     def test_limit_sell_lifecycle_locks_base_then_cancels(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             portfolio = PaperPortfolio(

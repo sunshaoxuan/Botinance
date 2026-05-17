@@ -4,7 +4,7 @@ import time
 from dataclasses import replace
 from typing import Dict, Tuple
 
-from binance_ai.models import AccountSnapshot, ManagedOrder, OrderLifecycleEvent, OrderRequest, PortfolioSnapshot, PositionSnapshot
+from binance_ai.models import AccountSnapshot, ManagedOrder, OrderLifecycleEvent, OrderRequest, PortfolioSnapshot, PositionSnapshot, make_client_order_id
 
 
 class PortfolioStateEngine:
@@ -29,6 +29,17 @@ class PortfolioStateEngine:
         timestamp_ms: int,
         entry_candle_close_time_ms: int,
     ) -> Tuple[PortfolioSnapshot, Dict[str, object], OrderLifecycleEvent]:
+        if not order.client_order_id:
+            order = replace(
+                order,
+                client_order_id=make_client_order_id(
+                    symbol=order.symbol,
+                    side=order.side,
+                    trigger=order.ladder_group or order.trigger or "order",
+                    tier_index=order.tier_index,
+                    timestamp_ms=timestamp_ms,
+                ),
+            )
         limit_price = float(order.limit_price)
         notional = order.quantity * limit_price
         fee = notional * self.fee_rate
@@ -164,6 +175,7 @@ class PortfolioStateEngine:
             side=managed.side,
             order_type="MARKET",
             quantity=managed.quantity,
+            client_order_id=managed.client_order_id,
             trigger=managed.trigger,
             tier_index=managed.tier_index,
             ladder_group=managed.ladder_group,
@@ -321,6 +333,8 @@ class PortfolioStateEngine:
             "net_notional": notional + fee if order.side == "BUY" else notional - fee,
             "realized_pnl_delta": realized_pnl_delta,
             "timestamp_ms": applied_timestamp_ms,
+            "client_order_id": order.client_order_id,
+            "trigger": order.trigger,
         }
 
     def equity_summary(self, snapshot: PortfolioSnapshot, mark_prices: Dict[str, float]) -> Dict[str, float]:

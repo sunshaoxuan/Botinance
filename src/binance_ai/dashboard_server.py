@@ -1583,6 +1583,12 @@ INDEX_HTML = """<!doctype html>
         .replaceAll('"', "&quot;");
     }
 
+    function shortOrderId(value) {
+      const id = String(value || "").trim();
+      if (!id) return "--";
+      return id.length > 18 ? `${id.slice(0, 10)}…${id.slice(-6)}` : id;
+    }
+
     function kvRows(rows) {
       const html = rows.map(([k, v]) => `
         <div class="kv-row"><span>${escapeHtml(k)}</span><strong>${v}</strong></div>
@@ -2094,6 +2100,7 @@ INDEX_HTML = """<!doctype html>
       </tr>`);
       const eventRows = orderEvents.slice(0, 100).map((e) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(e.timestamp_ms || e.time))}</td>
+        <td class="code" title="${escapeHtml(e.client_order_id || "")}">${escapeHtml(shortOrderId(e.client_order_id))}</td>
         <td>${statusChip(signalLabel(e.status || e.event_type || "--"), signalClass(e.status || e.side))}<br><span class="muted code">${escapeHtml(e.status || e.event_type || "--")}</span></td>
         <td>${labelWithRaw(signalLabel(e.side), e.side)}</td>
         <td>${fmtCurrency(e.fill_price || e.limit_price, c.quoteAsset)}</td>
@@ -2107,7 +2114,7 @@ INDEX_HTML = """<!doctype html>
         </div>
         <div class="drawer-section">
           <div class="drawer-section-title">订单生命周期事件 <span class="drawer-count">已加载 ${orderEvents.length} 条，显示 ${eventsShown} 条</span></div>
-          ${table(["时间", "状态", "方向", "价格", "数量", "原因"], eventRows, "暂无订单生命周期事件")}
+          ${table(["时间", "单据ID", "状态", "方向", "价格", "数量", "原因"], eventRows, "暂无订单生命周期事件")}
         </div>
       `;
     }
@@ -2196,6 +2203,7 @@ INDEX_HTML = """<!doctype html>
         const realizedText = isFilled ? fmtCurrency(f.realized_pnl, quoteAsset) : "--";
         const reasonText = reasonLabel(f.reason || f.event_type || status);
         return `<tr>
+          <td class="code" title="${escapeHtml(f.client_order_id || "")}">${escapeHtml(shortOrderId(f.client_order_id))}</td>
           <td>${statusChip(statusText, statusKind)}<br><span class="muted">${escapeHtml(reasonText)}</span></td>
           <td>${statusChip(side || "--", side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
           <td>${fmtNumber(f.quantity, 8)}</td>
@@ -2214,7 +2222,7 @@ INDEX_HTML = """<!doctype html>
       if (els.fillPrev) els.fillPrev.disabled = fillPage <= 0;
       if (els.fillNext) els.fillNext.disabled = fillPage >= pageCount - 1;
       if (els.fillPageSize) els.fillPageSize.value = String(fillPageSize);
-      els.tradeFillsTable.innerHTML = table(["订单状态", "方向", "数量", "挂单/成交价", "冻结", "手续费", "已实现", "时间"], rows, "暂无订单或成交记录");
+      els.tradeFillsTable.innerHTML = table(["单据ID", "订单状态", "方向", "数量", "挂单/成交价", "冻结", "手续费", "已实现", "时间"], rows, "暂无订单或成交记录");
     }
 
     function activeRiskLines(c) {

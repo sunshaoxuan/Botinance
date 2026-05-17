@@ -10,7 +10,7 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderRequest, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderRequest, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
@@ -672,8 +672,13 @@ class TradingEngine:
             if callable(quantize_price)
             else raw_limit
         )
-        group_part = ladder_group or trigger or "order"
-        client_order_id = f"boti_{order.symbol}_{side.lower()}_{group_part}_{tier_index}_{timestamp_ms}"
+        client_order_id = make_client_order_id(
+            symbol=order.symbol,
+            side=side,
+            trigger=ladder_group or trigger or "order",
+            tier_index=tier_index,
+            timestamp_ms=timestamp_ms,
+        )
         return OrderRequest(
             symbol=order.symbol,
             side=order.side,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
+import hashlib
 from typing import Dict, List, Optional
 
 
@@ -54,6 +55,23 @@ class OrderRequest:
     tier_index: int = 0
     ladder_group: str = ""
     target_fraction: float = 0.0
+
+
+def make_client_order_id(
+    *,
+    symbol: str,
+    side: str,
+    trigger: str = "",
+    tier_index: int = 0,
+    timestamp_ms: int = 0,
+) -> str:
+    """Create a compact client order id used by paper mode and Binance clientOrderId."""
+    clean_symbol = "".join(ch for ch in symbol.upper() if ch.isalnum())[:8] or "SYM"
+    clean_side = (side.upper()[:1] or "O")
+    clean_trigger = "".join(ch for ch in (trigger or "order").lower() if ch.isalnum())[:6] or "order"
+    seed = f"{symbol}|{side}|{trigger}|{tier_index}|{timestamp_ms}"
+    digest = hashlib.blake2s(seed.encode("utf-8"), digest_size=4).hexdigest()
+    return f"boti_{clean_symbol}_{clean_side}{tier_index}_{clean_trigger}_{digest}"[:36]
 
 
 @dataclass(frozen=True)
