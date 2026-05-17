@@ -212,6 +212,8 @@ class TradingEngine:
             scheduler_exit_reason = exit_reason or (
                 activation_decision.trigger if activation_decision.order is not None else None
             )
+            if scheduler_exit_reason is None and has_position and signal.action == SignalAction.SELL:
+                scheduler_exit_reason = "strategy_sell"
             scheduling = self.scheduler.evaluate(
                 symbol=symbol,
                 latest_closed_candle_close_time=latest_closed_candle_close_time,

@@ -524,6 +524,85 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertAlmostEqual(state["last_grid_sell_price"], first_report.decisions[0].execution_result["orders"][-1]["limit_price"])
         self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 62.5)
 
+    def test_strategy_sell_forces_decision_on_same_candle(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=10.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.50,
+            trailing_stop_pct=0.50,
+            max_hold_bars=999,
+            decision_price_move_threshold_pct=0.0,
+            order_passive_offset_pct=0.0002,
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.0,
+                high=100.0,
+                low=100.0,
+                close=100.0,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 20000.0, runtime_dir / "paper_state.json")
+            portfolio.apply_order(
+                order=OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=100.0),
+                fill_price=100.0,
+            )
+            scheduler = DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct)
+            scheduler.record_decision(
+                symbol="XRPJPY",
+                latest_closed_candle_close_time=candles[-1].close_time,
+                current_price=100.0,
+                timestamp_ms=1111,
+            )
+            scheduler.save()
+            engine = TradingEngine(
+                settings=settings,
+                client=_QuantizingClientStub(),
+                market_data=_MarketDataStub(candles),
+                strategy=_SellStrategyStub(),
+                risk=RiskEngine(settings, _QuantizingClientStub()),
+                executor=OrderExecutor(settings, _QuantizingClientStub(), paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+
+        self.assertEqual(report.cycle_mode, "DECISION")
+        self.assertTrue(report.scheduling_diagnostics[0].should_run_decision)
+        self.assertIn("strategy_sell", report.scheduling_diagnostics[0].decision_reason)
+        self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "strategy_sell")
+
     def test_pending_buyback_blocks_repeated_strategy_sell(self) -> None:
         settings = Settings(
             api_key="",
