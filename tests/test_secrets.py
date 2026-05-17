@@ -11,6 +11,7 @@ from binance_ai.secrets import (
     encrypt_secret_values,
     is_sensitive_key,
     migrate_plaintext_env,
+    resolve_passphrase,
 )
 
 
@@ -79,6 +80,23 @@ class SecretsTests(unittest.TestCase):
         self.assertEqual(settings.quote_asset, "JPY")
         self.assertEqual(settings.llm_api_key, "plain-llm")
         self.assertEqual(settings.llm_base_url, "http://localhost:49530/v1")
+
+    def test_resolve_passphrase_uses_windows_dpapi_file_before_keychain(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            dpapi_path = Path(tmpdir) / "secrets_passphrase.dpapi"
+            dpapi_path.write_text("encrypted", encoding="utf-8")
+
+            with (
+                patch("binance_ai.secrets._is_windows", return_value=True),
+                patch("binance_ai.secrets.read_passphrase_from_windows_dpapi_file", return_value="dpapi-passphrase") as read_dpapi,
+                patch("binance_ai.secrets.read_passphrase_from_keychain") as read_keychain,
+                patch.dict(os.environ, {"SECRETS_DPAPI_FILE": str(dpapi_path)}, clear=True),
+            ):
+                passphrase = resolve_passphrase("service", "account")
+
+        self.assertEqual(passphrase, "dpapi-passphrase")
+        read_dpapi.assert_called_once_with(dpapi_path)
+        read_keychain.assert_not_called()
 
 
 if __name__ == "__main__":

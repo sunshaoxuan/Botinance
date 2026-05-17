@@ -17,6 +17,7 @@ DEFAULT_CIPHER = "aes-256-cbc"
 DEFAULT_ITERATIONS = 200000
 DEFAULT_KEYCHAIN_SERVICE = "binance-ai-trader"
 DEFAULT_KEYCHAIN_ACCOUNT = "workspace-default"
+DEFAULT_WINDOWS_DPAPI_FILE = "secrets_passphrase.dpapi"
 HMAC_SALT = b"binance-ai-trader-hmac-v1"
 
 EXPLICIT_SENSITIVE_KEYS = {
@@ -161,10 +162,41 @@ def read_passphrase_from_keychain(service: str, account: str) -> str:
     return result.stdout.strip()
 
 
+def read_passphrase_from_windows_dpapi_file(path: Path) -> str:
+    powershell = shutil.which("powershell.exe") or shutil.which("pwsh") or shutil.which("powershell")
+    if not powershell:
+        raise FileNotFoundError("PowerShell is required to read Windows DPAPI secrets.")
+    script = (
+        "$secure = Get-Content -Raw -Path $env:BINANCE_AI_DPAPI_FILE | ConvertTo-SecureString; "
+        "$ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); "
+        "try { [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) } "
+        "finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }"
+    )
+    env = os.environ.copy()
+    env["BINANCE_AI_DPAPI_FILE"] = str(path)
+    result = subprocess.run(
+        [powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    return result.stdout.strip()
+
+
+def _is_windows() -> bool:
+    return os.name == "nt"
+
+
 def resolve_passphrase(service: str, account: str) -> str:
     provided = os.getenv(PASSPHRASE_ENV_VAR, "").strip()
     if provided:
         return provided
+    dpapi_path_raw = os.getenv("SECRETS_DPAPI_FILE", DEFAULT_WINDOWS_DPAPI_FILE).strip()
+    if _is_windows() and dpapi_path_raw:
+        dpapi_path = Path(dpapi_path_raw)
+        if dpapi_path.exists():
+            return read_passphrase_from_windows_dpapi_file(dpapi_path)
     return read_passphrase_from_keychain(service, account)
 
 
