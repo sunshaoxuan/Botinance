@@ -1015,7 +1015,7 @@ INDEX_HTML = """<!doctype html>
               </div>
               <div class="profit-strip">
                 <div class="profit-strip-header">
-                  <span>全时间总利润线</span>
+                  <span>Boti已实现操作利润线</span>
                   <strong id="profitCurveLabel">--</strong>
                 </div>
                 <canvas id="profitCurveChart"></canvas>
@@ -1736,10 +1736,10 @@ INDEX_HTML = """<!doctype html>
       els.chartInterval.textContent = `图表 ${payload.live_chart_interval_label || payload.live_chart_interval || "1m"} / 策略 ${payload.live_main_interval || "--"} / ${chartSource}`;
       els.chartPointCount.textContent = `${c.bars.length} bars`;
       const lastProfitPoint = c.profitCurve.slice(-1)[0] || {};
-      const latestNetPnl = asNumber(lastProfitPoint.net_pnl, NaN);
+      const latestRealizedPnl = asNumber(lastProfitPoint.realized_pnl, 0);
       if (els.profitCurveLabel) {
-        els.profitCurveLabel.textContent = Number.isFinite(latestNetPnl)
-          ? `${fmtCurrency(latestNetPnl, c.quoteAsset)} / ${c.profitCurve.length} 点`
+        els.profitCurveLabel.textContent = c.profitCurve.length
+          ? `${fmtCurrency(latestRealizedPnl, c.quoteAsset)} / ${c.profitCurve.length} 点`
           : "暂无利润曲线";
       }
 
@@ -2869,7 +2869,10 @@ INDEX_HTML = """<!doctype html>
       const setup = setupCanvas(canvas);
       if (!setup) return;
       const { ctx, width, height } = setup;
-      const data = (points || []).filter((p) => Number.isFinite(Number(p.net_pnl)));
+      const data = (points || []).map((p) => ({
+        ...p,
+        realized_pnl: asNumber(p.realized_pnl, 0),
+      }));
       ctx.fillStyle = "#fff";
       ctx.fillRect(0, 0, width, height);
       if (!data.length) {
@@ -2882,8 +2885,8 @@ INDEX_HTML = """<!doctype html>
       const pad = { left: 54, right: 16, top: 10, bottom: 18 };
       const plotW = Math.max(1, width - pad.left - pad.right);
       const plotH = Math.max(1, height - pad.top - pad.bottom);
-      let min = Math.min(0, ...data.map((p) => Number(p.net_pnl)));
-      let max = Math.max(0, ...data.map((p) => Number(p.net_pnl)));
+      let min = Math.min(0, ...data.map((p) => Number(p.realized_pnl)));
+      let max = Math.max(0, ...data.map((p) => Number(p.realized_pnl)));
       if (min === max) { min -= 1; max += 1; }
       const x = (i) => pad.left + (i / Math.max(1, data.length - 1)) * plotW;
       const y = (v) => pad.top + (max - v) / (max - min) * plotH;
@@ -2904,14 +2907,14 @@ INDEX_HTML = """<!doctype html>
       ctx.lineTo(width - pad.right, zeroY);
       ctx.stroke();
 
-      const lastValue = Number(data[data.length - 1].net_pnl);
+      const lastValue = Number(data[data.length - 1].realized_pnl);
       const positive = lastValue >= 0;
       const lineColor = positive ? "#14854f" : "#b4232a";
       const fill = positive ? "rgba(20, 133, 79, 0.08)" : "rgba(180, 35, 42, 0.07)";
       ctx.beginPath();
       data.forEach((p, i) => {
         const px = x(i);
-        const py = y(Number(p.net_pnl));
+        const py = y(Number(p.realized_pnl));
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       });
@@ -2924,7 +2927,7 @@ INDEX_HTML = """<!doctype html>
       ctx.beginPath();
       data.forEach((p, i) => {
         const px = x(i);
-        const py = y(Number(p.net_pnl));
+        const py = y(Number(p.realized_pnl));
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
       });
@@ -2939,7 +2942,7 @@ INDEX_HTML = """<!doctype html>
       ctx.fillText(fmtNumber(0, 2), pad.left - 8, zeroY + 4);
       ctx.fillText(fmtNumber(min, 2), pad.left - 8, height - pad.bottom);
       ctx.textAlign = "left";
-      ctx.fillText(`总利润 ${fmtCurrency(lastValue, quoteAsset || "")}`, pad.left, 12);
+      ctx.fillText(`已实现 ${fmtCurrency(lastValue, quoteAsset || "")}`, pad.left, 12);
     }
 
     async function loadData(chartInterval, requestSeq, includeChart = true) {
@@ -4289,7 +4292,7 @@ def _build_live_profit_curve(history: List[Dict[str, Any]]) -> List[Dict[str, An
             continue
         total_equity = _coerce_float(row.get("total_equity"), float("nan"))
         net_pnl = _coerce_float(row.get("net_pnl"), float("nan"))
-        realized_pnl = _coerce_float(row.get("realized_pnl"), float("nan"))
+        realized_pnl = _coerce_float(row.get("realized_pnl"), 0.0)
         unrealized_pnl = _coerce_float(row.get("unrealized_pnl"), float("nan"))
         if not (total_equity == total_equity):
             paper_state = row.get("paper_state") if isinstance(row.get("paper_state"), dict) else {}
@@ -4308,8 +4311,7 @@ def _build_live_profit_curve(history: List[Dict[str, Any]]) -> List[Dict[str, An
         }
         if total_equity == total_equity:
             point["total_equity"] = total_equity
-        if realized_pnl == realized_pnl:
-            point["realized_pnl"] = realized_pnl
+        point["realized_pnl"] = realized_pnl
         if unrealized_pnl == unrealized_pnl:
             point["unrealized_pnl"] = unrealized_pnl
         points.append(point)
