@@ -356,6 +356,13 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertAlmostEqual(state["buyback_trigger_price"], 0.0)
         self.assertAlmostEqual(state["buyback_tier_net_edge_pct"], 0.0)
 
+    def test_protective_exits_are_not_release_buyback_triggers(self) -> None:
+        triggers = PositionActivationEngine.release_sell_triggers()
+
+        self.assertIn("take_profit_release_sell", triggers)
+        self.assertNotIn("trailing_stop_release_sell", triggers)
+        self.assertNotIn("max_hold_release_sell", triggers)
+
     def test_profit_grid_sell_is_blocked_when_expected_rebuy_edge_is_too_small(self) -> None:
         settings = replace(_settings(), trading_fee_rate=0.001, grid_buyback_step_pct=0.0012, min_net_edge_pct=0.001)
         engine = PositionActivationEngine(settings, _Client())

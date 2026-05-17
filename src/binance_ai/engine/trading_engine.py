@@ -1013,7 +1013,7 @@ class TradingEngine:
         exit_reason: str | None,
         activation_decision: PositionActivationDecision,
     ) -> str:
-        if exit_reason not in {"take_profit", "trailing_stop", "max_hold_exit"}:
+        if exit_reason != "take_profit":
             return ""
         if activation_decision.trigger == "grid_buyback" and activation_decision.order is not None:
             return "已有释放仓位到达回补线，本轮优先回补买入，暂停继续部分退出"
@@ -1093,8 +1093,6 @@ class TradingEngine:
         trigger_map = {
             "strategy_sell": "strategy_release_sell",
             "take_profit": "take_profit_release_sell",
-            "trailing_stop": "trailing_stop_release_sell",
-            "max_hold_exit": "max_hold_release_sell",
             "grid_profit_sell": "grid_profit_sell",
             "grid_loss_recovery_sell": "grid_loss_recovery_sell",
         }
@@ -1111,8 +1109,6 @@ class TradingEngine:
         labels = {
             "strategy_release_sell": "策略卖出已登记待回补",
             "take_profit_release_sell": "止盈部分卖出已登记待回补",
-            "trailing_stop_release_sell": "跟踪止损部分卖出已登记待回补",
-            "max_hold_release_sell": "超时退出部分卖出已登记待回补",
             "grid_profit_sell": "网格卖出成交后登记待回补",
             "grid_loss_recovery_sell": "亏损修复卖出成交后登记待回补",
         }

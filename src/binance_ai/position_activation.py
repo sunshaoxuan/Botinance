@@ -455,6 +455,4 @@ class PositionActivationEngine:
             "grid_loss_recovery_sell",
             "strategy_release_sell",
             "take_profit_release_sell",
-            "trailing_stop_release_sell",
-            "max_hold_release_sell",
         }
