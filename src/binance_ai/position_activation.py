@@ -191,9 +191,11 @@ class PositionActivationEngine:
             state["buyback_cooldown_until_candle"] = timestamp_ms + self._interval_ms() * max(0, self.settings.buyback_cooldown_bars)
             state["decision_state"] = "BUYBACK_COOLDOWN"
         elif decision.trigger == "stop_loss":
+            self._clear_buyback_plan(state)
             state["partial_stop_count"] = int(state.get("partial_stop_count", 0)) + 1
             state["decision_state"] = "PARTIAL_STOP_ACTIVE"
         elif decision.trigger == "emergency_stop":
+            self._clear_buyback_plan(state)
             state["decision_state"] = "EMERGENCY_EXIT"
 
         activation_state = dict(snapshot.activation_state)
@@ -350,6 +352,17 @@ class PositionActivationEngine:
         state.setdefault("buyback_tier_fraction", 0.0)
         state.setdefault("buyback_trigger_price", 0.0)
         return state
+
+    @staticmethod
+    def _clear_buyback_plan(state: Dict[str, object]) -> None:
+        state["pending_buyback_quantity"] = 0.0
+        state["last_grid_sell_price"] = 0.0
+        state["buyback_plan_total_quantity"] = 0.0
+        state["buyback_tier_index"] = 0
+        state["buyback_trigger_price"] = 0.0
+        state["buyback_tier_net_edge_pct"] = 0.0
+        state["buyback_tier_fraction"] = 0.0
+        state["last_net_edge_pct"] = 0.0
 
     def _interval_ms(self) -> int:
         raw = str(self.settings.kline_interval).strip().lower()
