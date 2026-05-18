@@ -15,3 +15,4 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
 
 $env:PYTHONPATH = "src"
 python -m binance_ai.service_manager health --output-dir $OutputDir --host $HostAddress --port $Port --stale-seconds $StaleSeconds
+exit $LASTEXITCODE

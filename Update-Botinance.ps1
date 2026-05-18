@@ -126,6 +126,9 @@ function Test-Healthy {
     --host "127.0.0.1" `
     --port $Port `
     --stale-seconds $StaleSeconds | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "Botinance health check failed with exit code $LASTEXITCODE"
+  }
 }
 
 Set-Location $RootDir
