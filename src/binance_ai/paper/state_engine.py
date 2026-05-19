@@ -168,6 +168,7 @@ class PortfolioStateEngine:
         fill_price: float,
         timestamp_ms: int,
         entry_candle_close_time_ms: int | None = None,
+        metadata: Dict[str, object] | None = None,
     ) -> Tuple[PortfolioSnapshot, Dict[str, object], OrderLifecycleEvent | None]:
         managed = snapshot.open_orders.get(client_order_id)
         if managed is None:
@@ -193,6 +194,7 @@ class PortfolioStateEngine:
             fill_price,
             timestamp_ms=timestamp_ms,
             entry_candle_close_time_ms=entry_candle_close_time_ms or managed.entry_candle_close_time,
+            metadata=metadata,
         )
         event = OrderLifecycleEvent(
             timestamp_ms=timestamp_ms,
@@ -250,6 +252,7 @@ class PortfolioStateEngine:
         min_qty: float | None = None,
         timestamp_ms: int | None = None,
         entry_candle_close_time_ms: int | None = None,
+        metadata: Dict[str, object] | None = None,
     ) -> Tuple[PortfolioSnapshot, Dict[str, object]]:
         positions = dict(snapshot.positions)
         realized_pnl_delta = 0.0
@@ -328,7 +331,7 @@ class PortfolioStateEngine:
                 realized_pnl=snapshot.realized_pnl + realized_pnl_delta,
             )
 
-        return updated_snapshot, {
+        result = {
             "status": "PAPER_FILLED",
             "symbol": order.symbol,
             "side": order.side,
@@ -343,6 +346,13 @@ class PortfolioStateEngine:
             "client_order_id": order.client_order_id,
             "trigger": order.trigger,
         }
+        if metadata:
+            result.update(metadata)
+        fill_record = dict(result)
+        fill_record["status"] = "PAPER_FILLED"
+        fill_record["price"] = fill_price
+        updated_snapshot = replace(updated_snapshot, fills=[*snapshot.fills, fill_record])
+        return updated_snapshot, result
 
     def equity_summary(self, snapshot: PortfolioSnapshot, mark_prices: Dict[str, float]) -> Dict[str, float]:
         market_value = 0.0

@@ -113,6 +113,10 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertAlmostEqual(snapshot.reserved_quote_balance, 0.0)
             self.assertAlmostEqual(snapshot.quote_balance, 799.8)
             self.assertAlmostEqual(snapshot.positions["XRPJPY"].quantity, 1.0)
+            self.assertEqual(len(snapshot.fills), 1)
+            self.assertEqual(snapshot.fills[0]["client_order_id"], "buy-1")
+            self.assertEqual(snapshot.fills[0]["fee"], 0.2)
+            self.assertEqual(snapshot.fills[0]["trigger"], "strategy_buy")
 
     def test_limit_order_without_client_id_gets_virtual_order_id(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

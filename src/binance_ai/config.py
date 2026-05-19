@@ -138,6 +138,14 @@ class Settings:
     dynamic_stop_max_multiplier: float = 1.25
     dynamic_exit_strong_trend_threshold: float = 0.004
     dynamic_exit_volume_lookback: int = 20
+    composite_decision_enabled: bool = True
+    buy_score_threshold: float = 0.62
+    sell_score_threshold: float = 0.68
+    risk_exit_score_threshold: float = 0.82
+    entry_protection_bars: int = 8
+    entry_protection_allow_emergency_stop: bool = True
+    recovery_turnover_fraction: float = 0.5
+    min_expected_net_edge_pct: float = 0.0025
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -263,4 +271,12 @@ def load_settings() -> Settings:
         dynamic_stop_max_multiplier=float(os.getenv("DYNAMIC_STOP_MAX_MULTIPLIER", "1.25")),
         dynamic_exit_strong_trend_threshold=float(os.getenv("DYNAMIC_EXIT_STRONG_TREND_THRESHOLD", "0.004")),
         dynamic_exit_volume_lookback=int(os.getenv("DYNAMIC_EXIT_VOLUME_LOOKBACK", "20")),
+        composite_decision_enabled=_parse_bool(os.getenv("COMPOSITE_DECISION_ENABLED"), True),
+        buy_score_threshold=float(os.getenv("BUY_SCORE_THRESHOLD", "0.62")),
+        sell_score_threshold=float(os.getenv("SELL_SCORE_THRESHOLD", "0.68")),
+        risk_exit_score_threshold=float(os.getenv("RISK_EXIT_SCORE_THRESHOLD", "0.82")),
+        entry_protection_bars=int(os.getenv("ENTRY_PROTECTION_BARS", "8")),
+        entry_protection_allow_emergency_stop=_parse_bool(os.getenv("ENTRY_PROTECTION_ALLOW_EMERGENCY_STOP"), True),
+        recovery_turnover_fraction=float(os.getenv("RECOVERY_TURNOVER_FRACTION", "0.5")),
+        min_expected_net_edge_pct=float(os.getenv("MIN_EXPECTED_NET_EDGE_PCT", os.getenv("MIN_NET_EDGE_PCT", "0.0025"))),
     )

@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 import time
 from typing import Dict, List, Tuple
 
 from binance_ai.config import Settings
+from binance_ai.composite_decision import CompositeDecisionEngine
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderRequest, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderRequest, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
@@ -47,6 +48,7 @@ class TradingEngine:
         self.position_activation = PositionActivationEngine(settings, client)
         self.profitability_guard = TradeProfitabilityGuard(settings)
         self.target_inventory = TargetInventoryEngine(settings)
+        self.composite_decision = CompositeDecisionEngine(settings)
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -64,6 +66,7 @@ class TradingEngine:
         position_diagnostics: List[PositionDiagnostic] = []
         scheduling_diagnostics: List[SchedulingDiagnostic] = []
         order_lifecycle_events: List[OrderLifecycleEvent] = []
+        composite_decisions: List[CompositeDecision] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
         symbol_contexts: List[Dict[str, object]] = []
@@ -100,6 +103,12 @@ class TradingEngine:
                         fill_price=float(result.get("fill_price", price)),
                         timestamp_ms=cycle_timestamp_ms,
                     )
+                self._record_entry_success_from_fill(
+                    symbol=symbol,
+                    result=result,
+                    fill_price=float(result.get("fill_price", price)),
+                    timestamp_ms=cycle_timestamp_ms,
+                )
             if lifecycle_results:
                 account = self._load_account_snapshot()
             latest_closed_candle_close_time = self._latest_closed_candle_close_time(
@@ -336,12 +345,72 @@ class TradingEngine:
                 ai_assessment=ai_assessment,
                 daily_risk_state=self._daily_risk_state(symbol=symbol, timestamp_ms=cycle_timestamp_ms),
             )
-            applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY else None
             open_orders = list(context.get("open_orders", []))
             cooldown_remaining_bars = self._buyback_cooldown_remaining_bars(
                 symbol=symbol,
                 timestamp_ms=cycle_timestamp_ms,
             )
+            composite_decision = self.composite_decision.evaluate(
+                symbol=symbol,
+                price=price,
+                candles=context["candles"],
+                signal=signal,
+                position=context["position"],
+                quote_balance=account.balance_of(self.settings.quote_asset),
+                target_inventory=target_inventory,
+                ai_assessment=ai_assessment,
+                open_orders=open_orders,
+                activation_state=self._activation_state_for_symbol(symbol),
+                timestamp_ms=cycle_timestamp_ms,
+            )
+            composite_decisions.append(composite_decision)
+            if self.settings.composite_decision_enabled:
+                if composite_decision.entry_protection.get("active"):
+                    cooldown_remaining_bars = max(
+                        cooldown_remaining_bars,
+                        int(composite_decision.entry_protection.get("remaining_bars", 0) or 0),
+                    )
+                if composite_decision.recommended_action == "BUY" and signal.action != SignalAction.BUY:
+                    signal = replace(
+                        signal,
+                        action=SignalAction.BUY,
+                        confidence=max(signal.confidence, composite_decision.buy_score),
+                        reason=composite_decision.explanation_cn,
+                        regime=composite_decision.scenario,
+                    )
+                elif composite_decision.recommended_action == "SELL" and signal.action != SignalAction.SELL:
+                    signal = replace(
+                        signal,
+                        action=SignalAction.SELL,
+                        confidence=max(signal.confidence, composite_decision.sell_score),
+                        reason=composite_decision.explanation_cn,
+                        regime=composite_decision.scenario,
+                    )
+                if (
+                    exit_reason in {"stop_loss", "trailing_stop", "take_profit", "max_hold_exit"}
+                    and composite_decision.recommended_action != "RISK_EXIT"
+                    and composite_decision.risk_score < self.settings.risk_exit_score_threshold
+                ):
+                    exit_reason = None
+                if composite_decision.entry_protection.get("active"):
+                    remaining = int(composite_decision.entry_protection.get("remaining_bars", 0) or 0)
+                    protection_reason = f"入场保护剩余 {remaining} 根K线，暂停普通卖出/跟踪止损/超时退出"
+                    if exit_reason in {"trailing_stop", "take_profit", "max_hold_exit"}:
+                        exit_reason = None
+                    elif exit_reason == "stop_loss" and (
+                        not self.settings.entry_protection_allow_emergency_stop
+                        or composite_decision.risk_score < self.settings.risk_exit_score_threshold
+                    ):
+                        exit_reason = None
+                    if signal.action == SignalAction.SELL and composite_decision.risk_score < self.settings.risk_exit_score_threshold:
+                        signal = replace(
+                            signal,
+                            action=SignalAction.HOLD,
+                            confidence=min(signal.confidence, 0.5),
+                            reason=protection_reason,
+                            regime=composite_decision.scenario,
+                        )
+            applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY else None
 
             order = None
             execution_result: Dict[str, object] = {"status": "NO_ACTION"}
@@ -645,6 +714,11 @@ class TradingEngine:
             execution_result.setdefault("decision_state", self._decision_state_for_symbol(symbol))
             execution_result.setdefault("cooldown_remaining_bars", cooldown_remaining_bars)
             execution_result.setdefault("target_inventory_summary", target_inventory.as_dict())
+            execution_result.setdefault("composite_decision", asdict(composite_decision))
+            execution_result.setdefault("scenario", composite_decision.scenario)
+            execution_result.setdefault("score_breakdown", composite_decision.score_breakdown)
+            execution_result.setdefault("target_position_summary", composite_decision.target_position_summary)
+            execution_result.setdefault("entry_protection", composite_decision.entry_protection)
             buy_diagnostics.append(buy_diagnostic)
             sell_diagnostics.append(sell_diagnostic)
             decisions.append(
@@ -677,6 +751,7 @@ class TradingEngine:
             position_diagnostics=position_diagnostics,
             scheduling_diagnostics=scheduling_diagnostics,
             decision_ledger=decision_ledger,
+            composite_decisions=composite_decisions,
             order_lifecycle_events=order_lifecycle_events,
             open_orders=self.executor.all_open_orders(),
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
@@ -1130,6 +1205,8 @@ class TradingEngine:
     def _decision_state_for_symbol(self, symbol: str) -> str:
         state = self._activation_state_for_symbol(symbol)
         decision_state = str(state.get("decision_state", "NORMAL"))
+        if self._entry_protection_remaining_bars(symbol=symbol, timestamp_ms=int(time.time() * 1000)) > 0:
+            return "ENTRY_PROTECTION"
         if self._buyback_cooldown_remaining_bars(symbol=symbol, timestamp_ms=int(time.time() * 1000)) > 0:
             return "BUYBACK_COOLDOWN"
         if float(state.get("pending_buyback_quantity", 0.0) or 0.0) > 0:
@@ -1143,6 +1220,14 @@ class TradingEngine:
             return 0
         interval_ms = max(1, self._settings_interval_ms())
         return int((cooldown_until - timestamp_ms + interval_ms - 1) // interval_ms)
+
+    def _entry_protection_remaining_bars(self, *, symbol: str, timestamp_ms: int) -> int:
+        state = self._activation_state_for_symbol(symbol)
+        protection_until = int(float(state.get("entry_protection_until_candle", 0) or 0))
+        if protection_until <= timestamp_ms:
+            return 0
+        interval_ms = max(1, int(float(state.get("entry_protection_interval_ms", 0) or 0)) or self._settings_interval_ms())
+        return int((protection_until - timestamp_ms + interval_ms - 1) // interval_ms)
 
     def _settings_interval_ms(self) -> int:
         raw = str(self.settings.kline_interval).strip().lower()
@@ -1235,6 +1320,39 @@ class TradingEngine:
             timestamp_ms=timestamp_ms,
         )
         self.paper_portfolio.save_snapshot(updated)
+
+    def _record_entry_success_from_fill(
+        self,
+        *,
+        symbol: str,
+        result: Dict[str, object],
+        fill_price: float,
+        timestamp_ms: int,
+    ) -> None:
+        if self.paper_portfolio is None or result.get("status") != "PAPER_FILLED":
+            return
+        if str(result.get("side", "")).upper() != "BUY":
+            return
+        trigger = str(result.get("trigger", ""))
+        if trigger not in {"strategy_buy", "target_rebuild_buy", "grid_buyback"}:
+            return
+        snapshot = self.paper_portfolio.load_snapshot()
+        activation_state = dict(snapshot.activation_state)
+        state = dict(activation_state.get(symbol, {}) if isinstance(activation_state.get(symbol, {}), dict) else {})
+        interval_ms = self._settings_interval_ms()
+        protection_until = timestamp_ms + interval_ms * max(0, self.settings.entry_protection_bars)
+        state.update(
+            {
+                "decision_state": "ENTRY_PROTECTION",
+                "entry_protection_until_candle": protection_until,
+                "entry_protection_interval_ms": interval_ms,
+                "entry_protection_remaining_bars": max(0, self.settings.entry_protection_bars),
+                "last_entry_trigger": trigger,
+                "last_entry_price": fill_price,
+            }
+        )
+        activation_state[symbol] = state
+        self.paper_portfolio.save_snapshot(replace(snapshot, activation_state=activation_state))
 
     def _activation_success_from_fill(
         self,

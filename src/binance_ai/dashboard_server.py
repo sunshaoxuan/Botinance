@@ -3276,6 +3276,32 @@ def _extract_recent_fills(history: List[Dict[str, Any]], limit: int | None = 300
     return _apply_optional_limit_newest_first(fills, limit)
 
 
+def _dedupe_fills(fills: List[Dict[str, Any]], limit: int | None = 300) -> List[Dict[str, Any]]:
+    seen: set[str] = set()
+    unique: List[Dict[str, Any]] = []
+    for fill in fills:
+        if not isinstance(fill, dict):
+            continue
+        key = "|".join(
+            [
+                str(fill.get("client_order_id") or ""),
+                str(fill.get("timestamp_ms") or fill.get("timestamp") or ""),
+                str(fill.get("side") or fill.get("action") or ""),
+                str(fill.get("quantity") or fill.get("filled_quantity") or ""),
+                str(fill.get("fill_price") or fill.get("price") or fill.get("limit_price") or ""),
+            ]
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized = dict(fill)
+        normalized.setdefault("status", "PAPER_FILLED")
+        if "fill_price" not in normalized and "price" in normalized:
+            normalized["fill_price"] = normalized.get("price")
+        unique.append(normalized)
+    return _apply_optional_limit_newest_first(unique, limit)
+
+
 def _extract_recent_fills_from_file(path: Path, limit: int | None = 300, scan_lines: int | None = 8000) -> List[Dict[str, Any]]:
     matching_cycles = list(_iter_matching_cycles_from_file(path, ('"PAPER_FILLED"', '"order_lifecycle_events": [{', '"order_lifecycle_events":[{'), scan_lines))
     return _extract_recent_fills(matching_cycles, limit=limit)
@@ -4594,8 +4620,11 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
             "live_ai_veto_markers": [],
         }
 
-    recent_fills = _extract_recent_fills_from_file(history_path, scan_lines=240 if not include_chart else 800)
-    all_fills = _extract_recent_fills_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
+    paper_fills = paper_state.get("fills", []) if isinstance(paper_state.get("fills", []), list) else []
+    file_recent_fills = _extract_recent_fills_from_file(history_path, scan_lines=240 if not include_chart else 800)
+    file_all_fills = _extract_recent_fills_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
+    all_fills = _dedupe_fills([*paper_fills, *file_all_fills], limit=500)
+    recent_fills = _dedupe_fills([*paper_fills, *file_recent_fills], limit=300)
     runtime_config = _dashboard_runtime_config()
     market_prices = latest_report.get("market_prices", {}) if isinstance(latest_report.get("market_prices"), dict) else {}
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
@@ -4636,6 +4665,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "trade_records_complete": False,
         "real_cost_basis_summary": real_cost_basis_summary,
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
+        "composite_decisions": latest_report.get("composite_decisions", []),
         "decision_ledger": decision_ledger,
         "position_activation_state": paper_state.get("activation_state", {}),
         "runtime_config": runtime_config,

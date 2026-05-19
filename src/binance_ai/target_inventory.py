@@ -95,9 +95,12 @@ class TargetInventoryEngine:
         daily_realized_pnl = float(daily_risk_state.get("realized_pnl", 0.0) or 0.0)
         daily_turnover_limit = total_equity * max(0.0, self.settings.max_daily_turnover_fraction)
         daily_loss_limit = total_equity * max(0.0, self.settings.max_daily_realized_loss_pct)
+        recovery_turnover_limit = daily_turnover_limit
+        if current_fraction < lower and daily_realized_pnl > -daily_loss_limit:
+            recovery_turnover_limit += total_equity * max(0.0, self.settings.recovery_turnover_fraction)
         active_allowed = True
         blocker = ""
-        if daily_turnover_limit > 0 and daily_turnover_used >= daily_turnover_limit:
+        if recovery_turnover_limit > 0 and daily_turnover_used >= recovery_turnover_limit:
             active_allowed = False
             blocker = "daily_turnover_budget_exhausted"
         if daily_loss_limit > 0 and daily_realized_pnl <= -daily_loss_limit:

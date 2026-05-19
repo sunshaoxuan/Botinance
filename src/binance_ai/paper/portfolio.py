@@ -84,6 +84,7 @@ class PaperPortfolio:
                 symbol: float(quantity)
                 for symbol, quantity in payload.get("reserved_base_balances", {}).items()
             },
+            fills=list(payload.get("fills", [])) if isinstance(payload.get("fills", []), list) else [],
         )
         migrated = self._backfill_position_metadata(snapshot)
         if migrated != snapshot:
@@ -191,6 +192,7 @@ class PaperPortfolio:
         fill_price: float,
         timestamp_ms: int,
         entry_candle_close_time_ms: int | None = None,
+        metadata: Dict[str, object] | None = None,
     ) -> tuple[Dict[str, object], OrderLifecycleEvent | None]:
         snapshot = self.load_snapshot()
         updated, result, event = self.engine.fill_open_order(
@@ -199,6 +201,7 @@ class PaperPortfolio:
             fill_price=fill_price,
             timestamp_ms=timestamp_ms,
             entry_candle_close_time_ms=entry_candle_close_time_ms,
+            metadata=metadata,
         )
         if updated != snapshot:
             self.save_snapshot(updated)
@@ -275,4 +278,5 @@ class PaperPortfolio:
             open_orders=snapshot.open_orders,
             reserved_quote_balance=snapshot.reserved_quote_balance,
             reserved_base_balances=snapshot.reserved_base_balances,
+            fills=snapshot.fills,
         )

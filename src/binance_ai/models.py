@@ -137,6 +137,24 @@ class CycleDecision:
 
 
 @dataclass(frozen=True)
+class CompositeDecision:
+    symbol: str
+    scenario: str
+    recommended_action: str
+    buy_score: float
+    sell_score: float
+    hold_score: float
+    risk_score: float
+    target_position_fraction: float
+    recommended_notional: float
+    blockers: List[str] = field(default_factory=list)
+    explanation_cn: str = ""
+    score_breakdown: Dict[str, float] = field(default_factory=dict)
+    target_position_summary: Dict[str, object] = field(default_factory=dict)
+    entry_protection: Dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class BuyDecisionDiagnostic:
     symbol: str
     signal_action: str
@@ -275,6 +293,7 @@ class CycleReport:
     position_diagnostics: List[PositionDiagnostic]
     scheduling_diagnostics: List[SchedulingDiagnostic]
     decision_ledger: List[DecisionLedgerEntry]
+    composite_decisions: List[CompositeDecision]
     order_lifecycle_events: List[OrderLifecycleEvent]
     open_orders: List[ManagedOrder]
     ai_risk_assessments: List[AiRiskAssessment]
@@ -329,6 +348,7 @@ class PortfolioSnapshot:
     open_orders: Dict[str, ManagedOrder] = field(default_factory=dict)
     reserved_quote_balance: float = 0.0
     reserved_base_balances: Dict[str, float] = field(default_factory=dict)
+    fills: List[Dict[str, object]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

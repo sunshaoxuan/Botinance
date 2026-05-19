@@ -221,6 +221,7 @@ class PositionActivationEngine:
             open_orders=snapshot.open_orders,
             reserved_quote_balance=snapshot.reserved_quote_balance,
             reserved_base_balances=snapshot.reserved_base_balances,
+            fills=snapshot.fills,
         )
 
     def apply_state_update(
@@ -246,6 +247,7 @@ class PositionActivationEngine:
             open_orders=snapshot.open_orders,
             reserved_quote_balance=snapshot.reserved_quote_balance,
             reserved_base_balances=snapshot.reserved_base_balances,
+            fills=snapshot.fills,
         )
 
     def _build_grid_sell(
