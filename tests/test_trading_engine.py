@@ -1284,6 +1284,89 @@ class TradingEngineSchedulingTests(unittest.TestCase):
         self.assertGreaterEqual(min(order.quantity * order.limit_price for order in snapshot.open_orders.values()), 5000.0)
         self.assertGreater(report.decisions[0].execution_result["target_inventory_summary"]["available_buy_notional"], 0)
 
+    def test_risk_exit_reentry_blocks_buy_above_required_reentry_price(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1m",
+            kline_limit=250,
+            fast_window=3,
+            slow_window=9,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.001,
+            paper_quote_balance=26000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.50,
+            take_profit_pct=0.50,
+            trailing_stop_pct=0.50,
+            max_hold_bars=999,
+            decision_price_move_threshold_pct=0.0,
+            target_inventory_enabled=True,
+            min_effective_order_notional=5000.0,
+            order_target_notional=8000.0,
+            order_max_open_per_side=2,
+            min_expected_net_edge_pct=0.0025,
+        )
+        candles = [
+            Candle(
+                open_time=index * 60_000,
+                open=100.0,
+                high=101.0,
+                low=99.0,
+                close=100.0,
+                volume=1.0,
+                close_time=index * 60_000 + 59_999,
+            )
+            for index in range(1, 60)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio("JPY", 26000.0, runtime_dir / "paper_state.json", fee_rate=0.001)
+            snapshot = portfolio.load_snapshot()
+            portfolio.save_snapshot(
+                replace(
+                    snapshot,
+                    activation_state={
+                        "XRPJPY": {
+                            "last_risk_exit_price": 99.0,
+                            "risk_exit_reentry_price": 98.55,
+                        }
+                    },
+                )
+            )
+            client = _QuantizingClientStub()
+            engine = TradingEngine(
+                settings=settings,
+                client=client,
+                market_data=_MarketDataStub(candles),
+                strategy=_HoldStrategyStub(),
+                risk=RiskEngine(settings, client),
+                executor=OrderExecutor(settings, client, paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(runtime_dir / "decision_state.json", settings.decision_price_move_threshold_pct),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+            snapshot = portfolio.load_snapshot()
+
+        self.assertEqual(report.decisions[0].execution_result["status"], "BLOCKED")
+        self.assertEqual(report.decisions[0].execution_result["reason"], "risk_exit_reentry_price_not_reached")
+        self.assertEqual(snapshot.open_orders, {})
+
     def test_target_inventory_sells_overweight_position_without_tiny_orders(self) -> None:
         settings = Settings(
             api_key="",

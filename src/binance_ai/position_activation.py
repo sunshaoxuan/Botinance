@@ -199,10 +199,24 @@ class PositionActivationEngine:
             state["decision_state"] = "BUYBACK_COOLDOWN"
         elif decision.trigger == "stop_loss":
             self._clear_buyback_plan(state)
+            state["last_risk_exit_price"] = fill_price
+            state["last_risk_exit_quantity"] = decision.quantity
+            state["last_risk_exit_timestamp_ms"] = timestamp_ms
+            state["risk_exit_reentry_price"] = self._effective_buyback_price(
+                fill_price,
+                max(self.settings.min_expected_net_edge_pct, self.settings.min_net_edge_pct),
+            )
             state["partial_stop_count"] = int(state.get("partial_stop_count", 0)) + 1
             state["decision_state"] = "PARTIAL_STOP_ACTIVE"
         elif decision.trigger == "emergency_stop":
             self._clear_buyback_plan(state)
+            state["last_risk_exit_price"] = fill_price
+            state["last_risk_exit_quantity"] = decision.quantity
+            state["last_risk_exit_timestamp_ms"] = timestamp_ms
+            state["risk_exit_reentry_price"] = self._effective_buyback_price(
+                fill_price,
+                max(self.settings.min_expected_net_edge_pct, self.settings.min_net_edge_pct),
+            )
             state["decision_state"] = "EMERGENCY_EXIT"
         elif decision.trigger in {"trailing_stop", "max_hold_exit"}:
             self._clear_buyback_plan(state)
@@ -364,6 +378,10 @@ class PositionActivationEngine:
         state.setdefault("buyback_tier_net_edge_pct", 0.0)
         state.setdefault("buyback_tier_fraction", 0.0)
         state.setdefault("buyback_trigger_price", 0.0)
+        state.setdefault("last_risk_exit_price", 0.0)
+        state.setdefault("last_risk_exit_quantity", 0.0)
+        state.setdefault("last_risk_exit_timestamp_ms", 0)
+        state.setdefault("risk_exit_reentry_price", 0.0)
         return state
 
     def _effective_min_notional(self, filters: SymbolFilters) -> float:

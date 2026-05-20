@@ -355,6 +355,8 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertAlmostEqual(state["buyback_plan_total_quantity"], 0.0)
         self.assertAlmostEqual(state["buyback_trigger_price"], 0.0)
         self.assertAlmostEqual(state["buyback_tier_net_edge_pct"], 0.0)
+        self.assertAlmostEqual(state["last_risk_exit_price"], 99.0)
+        self.assertLess(state["risk_exit_reentry_price"], 99.0)
 
     def test_protective_exits_are_not_release_buyback_triggers(self) -> None:
         triggers = PositionActivationEngine.release_sell_triggers()

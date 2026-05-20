@@ -392,6 +392,12 @@ class TradingEngine:
                     and composite_decision.risk_score < self.settings.risk_exit_score_threshold
                 ):
                     exit_reason = None
+                if (
+                    exit_reason == "emergency_stop"
+                    and composite_decision.recommended_action != "RISK_EXIT"
+                    and composite_decision.risk_score < self.settings.risk_exit_score_threshold
+                ):
+                    exit_reason = None
                 if composite_decision.entry_protection.get("active"):
                     remaining = int(composite_decision.entry_protection.get("remaining_bars", 0) or 0)
                     protection_reason = f"入场保护剩余 {remaining} 根K线，暂停普通卖出/跟踪止损/超时退出"
@@ -435,6 +441,7 @@ class TradingEngine:
                 exit_reason=exit_reason,
                 activation_decision=activation_decision,
             )
+            risk_reentry_block_reason = self._risk_exit_reentry_block_reason(symbol=symbol, price=price)
 
             open_order_summary, open_order_events = self._manage_open_orders(
                 symbol=symbol,
@@ -482,7 +489,15 @@ class TradingEngine:
                 else:
                     execution_result = {"status": "BLOCKED", "reason": decision.reason, "trigger": exit_reason}
             elif signal.action == SignalAction.BUY and (buy_diagnostic.eligible_to_buy or not ai_assessment.allow_entry):
-                if not ai_assessment.allow_entry:
+                if risk_reentry_block_reason:
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": "risk_exit_reentry_price_not_reached",
+                        "detail": risk_reentry_block_reason,
+                        "trigger": "strategy_buy",
+                        "scenario": composite_decision.scenario,
+                    }
+                elif not ai_assessment.allow_entry:
                     execution_result = {
                         "status": "BLOCKED",
                         "reason": "ai_entry_veto",
@@ -663,7 +678,16 @@ class TradingEngine:
                     position_multiplier=ai_assessment.position_multiplier,
                     target_inventory=target_inventory,
                 )
-                if target_order is not None:
+                if risk_reentry_block_reason:
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": "risk_exit_reentry_price_not_reached",
+                        "detail": risk_reentry_block_reason,
+                        "trigger": "target_rebuild_buy",
+                        "decision_state": self._decision_state_for_symbol(symbol),
+                        "cooldown_remaining_bars": cooldown_remaining_bars,
+                    }
+                elif target_order is not None:
                     execution_result, events, orders = self._submit_ladder_orders(
                         target_order,
                         current_price=price,
@@ -1228,6 +1252,19 @@ class TradingEngine:
             return 0
         interval_ms = max(1, int(float(state.get("entry_protection_interval_ms", 0) or 0)) or self._settings_interval_ms())
         return int((protection_until - timestamp_ms + interval_ms - 1) // interval_ms)
+
+    def _risk_exit_reentry_block_reason(self, *, symbol: str, price: float) -> str:
+        state = self._activation_state_for_symbol(symbol)
+        last_exit_price = float(state.get("last_risk_exit_price", 0.0) or 0.0)
+        reentry_price = float(state.get("risk_exit_reentry_price", 0.0) or 0.0)
+        if last_exit_price <= 0 or reentry_price <= 0:
+            return ""
+        if price <= reentry_price:
+            return ""
+        return (
+            f"最近风险卖出价 {last_exit_price:.4f}，回补必须低于 {reentry_price:.4f} "
+            f"以覆盖手续费和净边际；当前价 {price:.4f}，禁止高价买回"
+        )
 
     def _settings_interval_ms(self) -> int:
         raw = str(self.settings.kline_interval).strip().lower()
