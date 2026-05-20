@@ -616,6 +616,109 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("SELL", order_sides)
         self.assertEqual(orders_payload["order_records_meta"]["scan_lines"], "all")
 
+    def test_trade_records_collapse_repeated_open_order_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(
+                runtime_dir / "latest_report.json",
+                {
+                    "timestamp_ms": 10_000,
+                    "decisions": [{"symbol": "XRPJPY", "signal": {"action": "HOLD"}}],
+                    "market_prices": {"XRPJPY": 218.0},
+                },
+            )
+            _write_json(
+                runtime_dir / "paper_state.json",
+                {
+                    "quote_asset": "JPY",
+                    "quote_balance": 1000,
+                    "initial_quote_balance": 1000,
+                    "positions": {},
+                    "open_orders": {
+                        "current-open": {
+                            "client_order_id": "current-open",
+                            "symbol": "XRPJPY",
+                            "side": "SELL",
+                            "status": "OPEN",
+                            "quantity": 1.0,
+                            "remaining_quantity": 1.0,
+                            "limit_price": 219.0,
+                            "reserved_base": 1.0,
+                            "created_at_ms": 9_000,
+                        }
+                    },
+                },
+            )
+            cycles = [
+                {
+                    "timestamp_ms": 1_000,
+                    "order_lifecycle_events": [
+                        {
+                            "timestamp_ms": 1_000,
+                            "client_order_id": "old-order",
+                            "symbol": "XRPJPY",
+                            "side": "SELL",
+                            "status": "OPEN",
+                            "event_type": "STALE",
+                            "quantity": 2.0,
+                            "limit_price": 220.0,
+                        },
+                        {
+                            "timestamp_ms": 1_000,
+                            "client_order_id": "current-open",
+                            "symbol": "XRPJPY",
+                            "side": "SELL",
+                            "status": "OPEN",
+                            "event_type": "STALE",
+                            "quantity": 1.0,
+                            "limit_price": 219.0,
+                        },
+                    ],
+                },
+                {
+                    "timestamp_ms": 2_000,
+                    "order_lifecycle_events": [
+                        {
+                            "timestamp_ms": 2_000,
+                            "client_order_id": "old-order",
+                            "symbol": "XRPJPY",
+                            "side": "SELL",
+                            "status": "OPEN",
+                            "event_type": "STALE",
+                            "quantity": 2.0,
+                            "limit_price": 220.0,
+                        }
+                    ],
+                },
+                {
+                    "timestamp_ms": 3_000,
+                    "order_lifecycle_events": [
+                        {
+                            "timestamp_ms": 3_000,
+                            "client_order_id": "old-order",
+                            "symbol": "XRPJPY",
+                            "side": "SELL",
+                            "status": "CANCELED",
+                            "event_type": "CANCELED",
+                            "quantity": 2.0,
+                            "limit_price": 220.0,
+                            "reason": "order_stale_reprice_requested",
+                        }
+                    ],
+                },
+            ]
+            _write_text(runtime_dir / "cycle_reports.jsonl", "\n".join(json.dumps(item) for item in cycles))
+
+            payload = build_order_records_payload(runtime_dir)
+
+        records = payload["trade_records"]
+        current_records = [item for item in records if item.get("client_order_id") == "current-open"]
+        old_records = [item for item in records if item.get("client_order_id") == "old-order"]
+        self.assertEqual(len(current_records), 1)
+        self.assertEqual(current_records[0]["status"], "OPEN")
+        self.assertEqual(len(old_records), 1)
+        self.assertEqual(old_records[0]["status"], "CANCELED")
+
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)

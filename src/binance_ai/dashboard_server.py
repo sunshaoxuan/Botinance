@@ -3627,8 +3627,9 @@ def _build_trade_records(
 ) -> List[Dict[str, Any]]:
     records: List[Dict[str, Any]] = []
     current_open_clients = {str(order.get("client_order_id") or "") for order in open_orders if order.get("client_order_id")}
+    collapsed_order_events = _collapse_order_events_for_trade_records(order_events, current_open_clients)
     events_by_client: Dict[str, Dict[str, Any]] = {}
-    for event in order_events:
+    for event in collapsed_order_events:
         if isinstance(event, dict) and event.get("client_order_id"):
             events_by_client[str(event.get("client_order_id"))] = event
     for order in open_orders:
@@ -3655,7 +3656,7 @@ def _build_trade_records(
                 if current in (None, "", 0, 0.0):
                     merged_order[key] = matching_event.get(key, current)
             records.append(_build_order_trade_record(merged_order, quote_asset, fee_rate))
-    for event in order_events:
+    for event in collapsed_order_events:
         if not isinstance(event, dict):
             continue
         status = str(event.get("status") or "").upper()
@@ -3683,6 +3684,40 @@ def _build_trade_records(
         deduped[key] = record
     sorted_records = sorted(deduped.values(), key=lambda item: _coerce_int(item.get("timestamp_ms")), reverse=True)
     return sorted_records if limit is None else sorted_records[:limit]
+
+
+def _collapse_order_events_for_trade_records(
+    order_events: List[Dict[str, Any]],
+    current_open_clients: set[str],
+) -> List[Dict[str, Any]]:
+    """Keep one table row per historical order instead of one row per polling event."""
+    selected_by_client: Dict[str, Dict[str, Any]] = {}
+    anonymous: List[Dict[str, Any]] = []
+    terminal_statuses = {"CANCELED", "EXPIRED", "REJECTED", "FILLED"}
+    for event in order_events:
+        if not isinstance(event, dict):
+            continue
+        client_order_id = str(event.get("client_order_id") or "")
+        status = str(event.get("status") or "").upper()
+        event_type = str(event.get("event_type") or "").upper()
+        if client_order_id and client_order_id in current_open_clients:
+            continue
+        if status == "FILLED" or event_type == "FILLED":
+            continue
+        if not client_order_id:
+            anonymous.append(event)
+            continue
+        existing = selected_by_client.get(client_order_id)
+        if existing is None:
+            selected_by_client[client_order_id] = event
+            continue
+        existing_status = str(existing.get("status") or "").upper()
+        existing_type = str(existing.get("event_type") or "").upper()
+        existing_terminal = existing_status in terminal_statuses or existing_type in terminal_statuses
+        current_terminal = status in terminal_statuses or event_type in terminal_statuses
+        if current_terminal and not existing_terminal:
+            selected_by_client[client_order_id] = event
+    return [*selected_by_client.values(), *anonymous]
 
 
 def _build_real_cost_basis_summary(
