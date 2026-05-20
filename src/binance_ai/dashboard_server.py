@@ -3395,6 +3395,16 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "order_target_notional": settings.order_target_notional,
         "max_daily_turnover_fraction": settings.max_daily_turnover_fraction,
         "max_daily_realized_loss_pct": settings.max_daily_realized_loss_pct,
+        "policy_engine_enabled": settings.policy_engine_enabled,
+        "pair_lock_after_risk_exit_candles": settings.pair_lock_after_risk_exit_candles,
+        "pair_lock_require_trend_stable": settings.pair_lock_require_trend_stable,
+        "pair_lock_require_net_edge": settings.pair_lock_require_net_edge,
+        "stoploss_guard_trade_limit": settings.stoploss_guard_trade_limit,
+        "max_drawdown_guard_pct": settings.max_drawdown_guard_pct,
+        "inventory_skew_enabled": settings.inventory_skew_enabled,
+        "inventory_target_base_pct": settings.inventory_target_base_pct,
+        "inventory_range_multiplier": settings.inventory_range_multiplier,
+        "order_proposal_min_net_edge_pct": settings.order_proposal_min_net_edge_pct,
     }
 
 
@@ -4580,6 +4590,48 @@ def _build_target_inventory_payload(latest_report: Dict[str, Any]) -> Dict[str, 
     }
 
 
+def _build_policy_payload(latest_report: Dict[str, Any]) -> Dict[str, Any]:
+    policy_state_summary: Dict[str, Any] = {}
+    protection_summary: Dict[str, Any] = {}
+    order_proposal_summary: Dict[str, Any] = {}
+    decisions = latest_report.get("policy_decisions", [])
+    if not isinstance(decisions, list):
+        decisions = []
+    for item in decisions:
+        if not isinstance(item, dict):
+            continue
+        symbol = str(item.get("symbol") or "")
+        if not symbol:
+            continue
+        locks = item.get("protection_locks") if isinstance(item.get("protection_locks"), list) else []
+        proposals = item.get("order_proposals") if isinstance(item.get("order_proposals"), list) else []
+        filters = item.get("proposal_filter_results") if isinstance(item.get("proposal_filter_results"), list) else []
+        active_locks = [lock for lock in locks if isinstance(lock, dict) and bool(lock.get("active"))]
+        rejected = [result for result in filters if isinstance(result, dict) and not bool(result.get("allowed"))]
+        policy_state_summary[symbol] = {
+            "policy_state": item.get("policy_state", ""),
+            "recommended_action": item.get("recommended_action", ""),
+            "reason": item.get("mode_reason_cn", ""),
+            "inventory_skew_summary": item.get("inventory_skew_summary", {}),
+            "accepted_proposal_count": len(proposals),
+            "rejected_proposal_count": len(rejected),
+        }
+        protection_summary[symbol] = {
+            "active_lock_count": len(active_locks),
+            "locks": locks,
+        }
+        order_proposal_summary[symbol] = {
+            "proposals": proposals,
+            "filter_results": filters,
+            "blocked_reasons_cn": [str(result.get("reason_cn", "")) for result in rejected],
+        }
+    return {
+        "policy_state_summary": policy_state_summary,
+        "protection_summary": protection_summary,
+        "order_proposal_summary": order_proposal_summary,
+    }
+
+
 def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
@@ -4640,6 +4692,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
     decision_state_payload = _build_decision_state_payload(paper_state, latest_report, runtime_config)
     target_inventory_payload = _build_target_inventory_payload(latest_report)
+    policy_payload = _build_policy_payload(latest_report)
     boti_pnl_breakdown = {
         "realized_pnl": _coerce_float(paper_state.get("realized_pnl"), _coerce_float(latest_report.get("realized_pnl"))),
         "unrealized_pnl": _coerce_float(latest_report.get("unrealized_pnl")),
@@ -4666,11 +4719,13 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "real_cost_basis_summary": real_cost_basis_summary,
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "composite_decisions": latest_report.get("composite_decisions", []),
+        "policy_decisions": latest_report.get("policy_decisions", []),
         "decision_ledger": decision_ledger,
         "position_activation_state": paper_state.get("activation_state", {}),
         "runtime_config": runtime_config,
         **decision_state_payload,
         **target_inventory_payload,
+        **policy_payload,
         "boti_pnl_breakdown": boti_pnl_breakdown,
         "live_main_interval_bars": main_bars,
         "live_refresh_interval": "1m",

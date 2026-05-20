@@ -155,6 +155,77 @@ class CompositeDecision:
 
 
 @dataclass(frozen=True)
+class ProtectionLock:
+    symbol: str
+    lock_type: str
+    active: bool
+    reason_cn: str
+    unlock_conditions: List[str] = field(default_factory=list)
+    remaining_bars: int = 0
+    reference_price: float = 0.0
+    unlock_price: float = 0.0
+
+
+@dataclass(frozen=True)
+class OrderProposal:
+    symbol: str
+    side: str
+    trigger: str
+    ladder_group: str
+    quantity: float
+    notional: float
+    urgent: bool = False
+    tier_index: int = 0
+    target_spread_pct: float = 0.0
+    target_fraction: float = 0.0
+    score: float = 0.0
+    reason_cn: str = ""
+    source: str = "policy"
+    tiers_raw: str = ""
+
+
+@dataclass(frozen=True)
+class ProposalFilterResult:
+    symbol: str
+    side: str
+    trigger: str
+    ladder_group: str
+    allowed: bool
+    reason: str
+    reason_cn: str
+    quantity: float = 0.0
+    notional: float = 0.0
+    net_edge_pct: float = 0.0
+    required_edge_pct: float = 0.0
+
+
+@dataclass(frozen=True)
+class InventorySkewSummary:
+    symbol: str
+    current_fraction: float
+    target_fraction: float
+    lower_fraction: float
+    upper_fraction: float
+    skew: float
+    buy_weight: float
+    sell_weight: float
+    reason_cn: str
+
+
+@dataclass(frozen=True)
+class PolicyDecision:
+    symbol: str
+    policy_state: str
+    mode_reason_cn: str
+    recommended_action: str
+    protection_locks: List[ProtectionLock] = field(default_factory=list)
+    order_proposals: List[OrderProposal] = field(default_factory=list)
+    proposal_filter_results: List[ProposalFilterResult] = field(default_factory=list)
+    inventory_skew_summary: InventorySkewSummary | None = None
+    blockers: List[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
 class BuyDecisionDiagnostic:
     symbol: str
     signal_action: str
@@ -274,6 +345,8 @@ class DecisionLedgerEntry:
     guard_result: str = ""
     net_edge_pct: float = 0.0
     cooldown_remaining_bars: int = 0
+    policy_state: str = ""
+    policy_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -294,6 +367,7 @@ class CycleReport:
     scheduling_diagnostics: List[SchedulingDiagnostic]
     decision_ledger: List[DecisionLedgerEntry]
     composite_decisions: List[CompositeDecision]
+    policy_decisions: List[PolicyDecision]
     order_lifecycle_events: List[OrderLifecycleEvent]
     open_orders: List[ManagedOrder]
     ai_risk_assessments: List[AiRiskAssessment]

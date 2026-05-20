@@ -146,6 +146,18 @@ class Settings:
     entry_protection_allow_emergency_stop: bool = True
     recovery_turnover_fraction: float = 0.5
     min_expected_net_edge_pct: float = 0.0025
+    policy_engine_enabled: bool = True
+    pair_lock_after_risk_exit_candles: int = 12
+    pair_lock_require_trend_stable: bool = True
+    pair_lock_require_net_edge: bool = True
+    stoploss_guard_lookback_candles: int = 48
+    stoploss_guard_trade_limit: int = 2
+    stoploss_guard_lock_candles: int = 24
+    max_drawdown_guard_pct: float = 0.015
+    inventory_skew_enabled: bool = True
+    inventory_target_base_pct: float = 0.55
+    inventory_range_multiplier: float = 1.5
+    order_proposal_min_net_edge_pct: float = 0.0025
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -279,4 +291,16 @@ def load_settings() -> Settings:
         entry_protection_allow_emergency_stop=_parse_bool(os.getenv("ENTRY_PROTECTION_ALLOW_EMERGENCY_STOP"), True),
         recovery_turnover_fraction=float(os.getenv("RECOVERY_TURNOVER_FRACTION", "0.5")),
         min_expected_net_edge_pct=float(os.getenv("MIN_EXPECTED_NET_EDGE_PCT", os.getenv("MIN_NET_EDGE_PCT", "0.0025"))),
+        policy_engine_enabled=_parse_bool(os.getenv("POLICY_ENGINE_ENABLED"), True),
+        pair_lock_after_risk_exit_candles=int(os.getenv("PAIR_LOCK_AFTER_RISK_EXIT_CANDLES", "12")),
+        pair_lock_require_trend_stable=_parse_bool(os.getenv("PAIR_LOCK_REQUIRE_TREND_STABLE"), True),
+        pair_lock_require_net_edge=_parse_bool(os.getenv("PAIR_LOCK_REQUIRE_NET_EDGE"), True),
+        stoploss_guard_lookback_candles=int(os.getenv("STOPLOSS_GUARD_LOOKBACK_CANDLES", "48")),
+        stoploss_guard_trade_limit=int(os.getenv("STOPLOSS_GUARD_TRADE_LIMIT", "2")),
+        stoploss_guard_lock_candles=int(os.getenv("STOPLOSS_GUARD_LOCK_CANDLES", "24")),
+        max_drawdown_guard_pct=float(os.getenv("MAX_DRAWDOWN_GUARD_PCT", "0.015")),
+        inventory_skew_enabled=_parse_bool(os.getenv("INVENTORY_SKEW_ENABLED"), True),
+        inventory_target_base_pct=float(os.getenv("INVENTORY_TARGET_BASE_PCT", "0.55")),
+        inventory_range_multiplier=float(os.getenv("INVENTORY_RANGE_MULTIPLIER", "1.5")),
+        order_proposal_min_net_edge_pct=float(os.getenv("ORDER_PROPOSAL_MIN_NET_EDGE_PCT", os.getenv("MIN_EXPECTED_NET_EDGE_PCT", "0.0025"))),
     )

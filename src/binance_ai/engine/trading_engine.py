@@ -11,9 +11,10 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderRequest, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderProposal, OrderRequest, PolicyDecision, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
+from binance_ai.policy.engine import PolicyContext, PolicyEngine
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
 from binance_ai.risk.engine import RiskEngine
 from binance_ai.strategy.base import Strategy
@@ -49,6 +50,7 @@ class TradingEngine:
         self.profitability_guard = TradeProfitabilityGuard(settings)
         self.target_inventory = TargetInventoryEngine(settings)
         self.composite_decision = CompositeDecisionEngine(settings)
+        self.policy_engine = PolicyEngine(settings)
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -67,6 +69,7 @@ class TradingEngine:
         scheduling_diagnostics: List[SchedulingDiagnostic] = []
         order_lifecycle_events: List[OrderLifecycleEvent] = []
         composite_decisions: List[CompositeDecision] = []
+        policy_decisions: List[PolicyDecision] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
         symbol_contexts: List[Dict[str, object]] = []
@@ -416,6 +419,35 @@ class TradingEngine:
                             reason=protection_reason,
                             regime=composite_decision.scenario,
                         )
+            policy_decision = self.policy_engine.evaluate(
+                PolicyContext(
+                    symbol=symbol,
+                    price=price,
+                    candles=context["candles"],
+                    signal=signal,
+                    exit_reason=exit_reason,
+                    has_position=has_position,
+                    base_balance=base_balance,
+                    quote_balance=account.balance_of(self.settings.quote_asset),
+                    filters=filters,
+                    target_inventory=target_inventory,
+                    composite_decision=composite_decision,
+                    ai_assessment=ai_assessment,
+                    open_orders=open_orders,
+                    activation_state=self._activation_state_for_symbol(symbol),
+                    timestamp_ms=cycle_timestamp_ms,
+                )
+            )
+            policy_decisions.append(policy_decision)
+            if self.settings.policy_engine_enabled:
+                if policy_decision.policy_state in {"PAIR_LOCKED_AFTER_STOP", "OBSERVE_ONLY"} and signal.action == SignalAction.BUY:
+                    signal = replace(
+                        signal,
+                        action=SignalAction.HOLD,
+                        confidence=min(signal.confidence, 0.5),
+                        reason=policy_decision.mode_reason_cn,
+                        regime=policy_decision.policy_state,
+                    )
             applied_ai_assessment = ai_assessment if signal.action == SignalAction.BUY else None
 
             order = None
@@ -456,7 +488,37 @@ class TradingEngine:
             if open_order_summary.get("status") != "NO_OPEN_ORDERS":
                 execution_result = open_order_summary
 
-            if open_order_summary.get("status") == "CANCELED":
+            policy_handled = False
+            policy_has_active_locks = any(lock.active for lock in policy_decision.protection_locks)
+            if (
+                self.settings.policy_engine_enabled
+                and scheduling.should_run_decision
+                and open_order_summary.get("status") in {"NO_OPEN_ORDERS", "CANCELED"}
+            ):
+                if policy_decision.order_proposals:
+                    execution_result, events, orders = self._submit_policy_proposals(
+                        policy_decision=policy_decision,
+                        current_price=price,
+                        filters=filters,
+                        timestamp_ms=cycle_timestamp_ms,
+                        entry_candle_close_time_ms=latest_closed_candle_close_time,
+                    )
+                    order_lifecycle_events.extend(events)
+                    order = orders[0] if orders else None
+                    policy_handled = True
+                elif policy_has_active_locks:
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": "policy_protection_lock_active",
+                        "policy_state": policy_decision.policy_state,
+                        "policy_reason": policy_decision.mode_reason_cn,
+                        "proposal_filter_results": [asdict(item) for item in policy_decision.proposal_filter_results],
+                    }
+                    policy_handled = True
+
+            if policy_handled:
+                pass
+            elif open_order_summary.get("status") == "CANCELED":
                 pass
             elif not scheduling.should_run_decision and open_order_summary.get("status") == "NO_OPEN_ORDERS":
                 execution_result = {
@@ -739,6 +801,12 @@ class TradingEngine:
             execution_result.setdefault("cooldown_remaining_bars", cooldown_remaining_bars)
             execution_result.setdefault("target_inventory_summary", target_inventory.as_dict())
             execution_result.setdefault("composite_decision", asdict(composite_decision))
+            execution_result.setdefault("policy_decision", asdict(policy_decision))
+            execution_result.setdefault("policy_state", policy_decision.policy_state)
+            execution_result.setdefault("protection_locks", [asdict(item) for item in policy_decision.protection_locks])
+            execution_result.setdefault("proposal_filter_results", [asdict(item) for item in policy_decision.proposal_filter_results])
+            if policy_decision.inventory_skew_summary is not None:
+                execution_result.setdefault("inventory_skew_summary", asdict(policy_decision.inventory_skew_summary))
             execution_result.setdefault("scenario", composite_decision.scenario)
             execution_result.setdefault("score_breakdown", composite_decision.score_breakdown)
             execution_result.setdefault("target_position_summary", composite_decision.target_position_summary)
@@ -776,6 +844,7 @@ class TradingEngine:
             scheduling_diagnostics=scheduling_diagnostics,
             decision_ledger=decision_ledger,
             composite_decisions=composite_decisions,
+            policy_decisions=policy_decisions,
             order_lifecycle_events=order_lifecycle_events,
             open_orders=self.executor.all_open_orders(),
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
@@ -953,6 +1022,88 @@ class TradingEngine:
         if order is None:
             return None, reason
         return order, ""
+
+    def _submit_policy_proposals(
+        self,
+        *,
+        policy_decision: PolicyDecision,
+        current_price: float,
+        filters,
+        timestamp_ms: int,
+        entry_candle_close_time_ms: int,
+    ) -> Tuple[Dict[str, object], List[OrderLifecycleEvent], List[OrderRequest]]:
+        results: List[Dict[str, object]] = []
+        events: List[OrderLifecycleEvent] = []
+        orders: List[OrderRequest] = []
+        for proposal in policy_decision.order_proposals:
+            order = self._order_from_policy_proposal(proposal, current_price=current_price, filters=filters)
+            if order is None:
+                results.append(
+                    {
+                        "status": "BLOCKED",
+                        "reason": "policy_proposal_quantity_below_minimum",
+                        "trigger": proposal.trigger,
+                        "ladder_group": proposal.ladder_group,
+                    }
+                )
+                continue
+            result, result_events, result_orders = self._submit_ladder_orders(
+                order,
+                current_price=current_price,
+                filters=filters,
+                timestamp_ms=timestamp_ms,
+                entry_candle_close_time_ms=entry_candle_close_time_ms,
+                trigger=proposal.trigger,
+                urgent=proposal.urgent,
+                ladder_group=proposal.ladder_group,
+                tiers_raw=proposal.tiers_raw,
+            )
+            results.append(result)
+            events.extend(result_events)
+            orders.extend(result_orders)
+
+        accepted = [item for item in results if str(item.get("status")) in {"ORDER_OPEN", "ORDER_LADDER_OPEN", "UNKNOWN"}]
+        if len(results) == 1:
+            payload = dict(results[0])
+        else:
+            payload = {
+                "status": "ORDER_LADDER_OPEN" if accepted else "BLOCKED",
+                "reason": "policy_proposals_submitted" if accepted else "policy_proposals_blocked",
+                "submitted_count": len(accepted),
+                "proposal_count": len(policy_decision.order_proposals),
+                "orders": results,
+            }
+        payload["policy_state"] = policy_decision.policy_state
+        payload["policy_reason"] = policy_decision.mode_reason_cn
+        payload["order_proposals"] = [asdict(item) for item in policy_decision.order_proposals]
+        payload["proposal_filter_results"] = [asdict(item) for item in policy_decision.proposal_filter_results]
+        payload["protection_locks"] = [asdict(item) for item in policy_decision.protection_locks]
+        if policy_decision.inventory_skew_summary is not None:
+            payload["inventory_skew_summary"] = asdict(policy_decision.inventory_skew_summary)
+        return payload, events, orders
+
+    def _order_from_policy_proposal(
+        self,
+        proposal: OrderProposal,
+        *,
+        current_price: float,
+        filters,
+    ) -> OrderRequest | None:
+        quantity = self.client.quantize_quantity(proposal.quantity, filters.step_size)
+        if quantity <= 0 or quantity < filters.min_qty:
+            return None
+        return OrderRequest(
+            symbol=proposal.symbol,
+            side=proposal.side,
+            order_type="MARKET",
+            quantity=quantity,
+            trigger=proposal.trigger,
+            ladder_group=proposal.ladder_group,
+            target_fraction=proposal.target_fraction,
+            target_spread_pct=proposal.target_spread_pct,
+            created_reference_price=current_price,
+            created_signal_action=proposal.side.upper(),
+        )
 
     def _submit_ladder_orders(
         self,
@@ -1553,6 +1704,8 @@ class TradingEngine:
                     guard_result=str(execution.get("guard_result", "")),
                     net_edge_pct=float(execution.get("net_edge_pct", 0.0) or 0.0),
                     cooldown_remaining_bars=int(execution.get("cooldown_remaining_bars", 0) or 0),
+                    policy_state=str(execution.get("policy_state", "")),
+                    policy_reason=str(execution.get("policy_reason", "")),
                 )
             )
         return ledger
