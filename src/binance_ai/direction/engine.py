@@ -194,28 +194,32 @@ class DirectionDecisionEngine:
         price_zone = self._price_zone(price, fair)
         buy_edge = self.pairs.expected_net_edge_pct(side="BUY", price=price, fair_value=fair)
         sell_edge = self.pairs.expected_net_edge_pct(side="SELL", price=price, fair_value=fair)
+        buy_limit_price, buy_limit_edge = self._resting_limit_edge(side="BUY", price=price, fair=fair)
+        sell_limit_price, sell_limit_edge = self._resting_limit_edge(side="SELL", price=price, fair=fair)
         required = max(0.0, self.settings.min_pair_net_edge_pct)
         has_open_buy = any(order.side.upper() == "BUY" for order in open_orders)
         has_open_sell = any(order.side.upper() == "SELL" for order in open_orders)
+        buy_limit_in_zone = buy_limit_price > 0 and buy_limit_price <= fair.buy_zone_price
+        sell_limit_in_zone = sell_limit_price > 0 and sell_limit_price >= fair.sell_zone_price
         allow_buy = (
-            price_zone == "BUY_ZONE"
+            (price_zone == "BUY_ZONE" or buy_limit_in_zone)
             and target_inventory.available_buy_notional > 0
-            and buy_edge >= required
+            and max(buy_edge, buy_limit_edge) >= required
             and not has_open_buy
             and ai_assessment.allow_entry
         )
         allow_sell = (
-            price_zone == "SELL_ZONE"
+            (price_zone == "SELL_ZONE" or sell_limit_in_zone)
             and target_inventory.allowed_sell_quantity > 0
-            and sell_edge >= required
+            and max(sell_edge, sell_limit_edge) >= required
             and not has_open_sell
         )
         blockers = []
-        if target_inventory.available_buy_notional > 0 and price_zone != "BUY_ZONE":
-            blockers.append("当前价不在折价建仓区，拒绝追涨买入")
-        if target_inventory.allowed_sell_quantity > 0 and price_zone != "SELL_ZONE" and not allow_risk_exit:
-            blockers.append("当前价不在溢价卖出区，拒绝杀跌卖出")
-        if max(buy_edge, sell_edge) < required:
+        if target_inventory.available_buy_notional > 0 and price_zone != "BUY_ZONE" and not buy_limit_in_zone:
+            blockers.append("当前价和首档买入挂单价都不在折价建仓区，拒绝追涨买入")
+        if target_inventory.allowed_sell_quantity > 0 and price_zone != "SELL_ZONE" and not sell_limit_in_zone and not allow_risk_exit:
+            blockers.append("当前价和首档卖出挂单价都不在溢价卖出区，拒绝杀跌卖出")
+        if max(buy_edge, sell_edge, buy_limit_edge, sell_limit_edge) < required:
             blockers.append("预期净边际不足，扣除手续费后不值得交易")
         if has_open_buy:
             blockers.append("已有买入挂单，等待触价或重定价")
@@ -238,6 +242,12 @@ class DirectionDecisionEngine:
             "sell_buyback_price": round(self.pairs.sell_buyback_price(price), 8),
             "buy_expected_net_edge_pct": round(buy_edge, 8),
             "sell_expected_net_edge_pct": round(sell_edge, 8),
+            "resting_buy_limit_price": round(buy_limit_price, 8),
+            "resting_sell_limit_price": round(sell_limit_price, 8),
+            "resting_buy_expected_net_edge_pct": round(buy_limit_edge, 8),
+            "resting_sell_expected_net_edge_pct": round(sell_limit_edge, 8),
+            "resting_buy_limit_in_zone": buy_limit_in_zone,
+            "resting_sell_limit_in_zone": sell_limit_in_zone,
         }
         reason = self._reason(
             action=action,
@@ -258,7 +268,7 @@ class DirectionDecisionEngine:
             fair_value=fair.fair_value,
             buy_zone_price=fair.buy_zone_price,
             sell_zone_price=fair.sell_zone_price,
-            expected_net_edge_pct=round(max(buy_edge, sell_edge), 8),
+            expected_net_edge_pct=round(max(buy_edge, sell_edge, buy_limit_edge, sell_limit_edge), 8),
             allow_buy=allow_buy,
             allow_sell=allow_sell,
             allow_risk_exit=allow_risk_exit,
@@ -275,6 +285,34 @@ class DirectionDecisionEngine:
         if price >= fair.sell_zone_price:
             return "SELL_ZONE"
         return "NEUTRAL_ZONE"
+
+    def _resting_limit_edge(self, *, side: str, price: float, fair: FairValueSummary) -> tuple[float, float]:
+        side = side.upper()
+        tiers = self._tiers(self.settings.entry_ladder_tiers if side == "BUY" else self.settings.exit_ladder_tiers)
+        offset = tiers[0][0] if tiers else self.settings.order_passive_offset_pct
+        limit_price = price * (1.0 - offset) if side == "BUY" else price * (1.0 + offset)
+        fee = max(0.0, self.settings.trading_fee_rate * 2.0)
+        if side == "BUY" and limit_price > 0:
+            return limit_price, max(0.0, fair.sell_zone_price / limit_price - 1.0) - fee
+        if side == "SELL" and fair.buy_zone_price > 0:
+            return limit_price, max(0.0, limit_price / fair.buy_zone_price - 1.0) - fee
+        return limit_price, 0.0
+
+    @staticmethod
+    def _tiers(raw: str) -> list[tuple[float, float]]:
+        tiers: list[tuple[float, float]] = []
+        for item in str(raw or "").split(","):
+            if ":" not in item:
+                continue
+            offset_raw, fraction_raw = item.split(":", 1)
+            try:
+                offset = max(0.0, float(offset_raw.strip()))
+                fraction = max(0.0, float(fraction_raw.strip()))
+            except ValueError:
+                continue
+            if fraction > 0:
+                tiers.append((offset, fraction))
+        return tiers
 
     @staticmethod
     def _reason(

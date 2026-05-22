@@ -89,7 +89,7 @@ class DirectionDecisionEngineTests(unittest.TestCase):
         self.assertIn("拒绝追涨买入", decision.reason_cn)
 
     def test_price_below_sell_zone_rejects_panic_sell(self):
-        settings = _settings()
+        settings = _settings(exit_ladder_tiers="0.0010:1.0")
         candles = _flat_candles(100.0)
         target = TargetInventoryEngine(settings).evaluate(
             symbol="XRPJPY",
@@ -114,6 +114,34 @@ class DirectionDecisionEngineTests(unittest.TestCase):
 
         self.assertFalse(decision.allow_sell)
         self.assertIn("拒绝杀跌卖出", decision.reason_cn)
+
+    def test_resting_sell_limit_in_sell_zone_is_allowed_before_touch(self):
+        settings = _settings(exit_ladder_tiers="0.0040:1.0")
+        candles = _flat_candles(100.0)
+        target = TargetInventoryEngine(settings).evaluate(
+            symbol="XRPJPY",
+            price=100.0,
+            account=AccountSnapshot({"JPY": 1000.0, "XRP": 100.0}),
+            base_balance=100.0,
+            signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "hold"),
+            candles=candles,
+            ai_assessment=AiRiskAssessment("XRPJPY", "PASS", True, 0.1, 1.0, ""),
+            daily_risk_state={},
+        )
+        decision = DirectionDecisionEngine(settings).evaluate(
+            symbol="XRPJPY",
+            price=100.0,
+            candles=candles,
+            signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "hold"),
+            target_inventory=target,
+            ai_assessment=AiRiskAssessment("XRPJPY", "PASS", True, 0.1, 1.0, ""),
+            open_orders=[],
+            exit_reason=None,
+        )
+
+        self.assertEqual(decision.price_zone, "NEUTRAL_ZONE")
+        self.assertTrue(decision.allow_sell)
+        self.assertTrue(decision.paired_order_state["resting_sell_limit_in_zone"])
 
     def test_discount_price_allows_buy_when_inventory_low(self):
         settings = _settings()
