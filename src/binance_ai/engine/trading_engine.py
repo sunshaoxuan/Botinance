@@ -8,10 +8,11 @@ from binance_ai.config import Settings
 from binance_ai.composite_decision import CompositeDecisionEngine
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.data.market_data import MarketDataService
+from binance_ai.direction import DirectionDecisionEngine
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, LlmAnalysis, OrderLifecycleEvent, OrderProposal, OrderRequest, PolicyDecision, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, DirectionDecision, LlmAnalysis, OrderLifecycleEvent, OrderProposal, OrderRequest, PolicyDecision, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.policy.engine import PolicyContext, PolicyEngine
@@ -51,6 +52,7 @@ class TradingEngine:
         self.target_inventory = TargetInventoryEngine(settings)
         self.composite_decision = CompositeDecisionEngine(settings)
         self.policy_engine = PolicyEngine(settings)
+        self.direction_decision = DirectionDecisionEngine(settings)
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -70,6 +72,7 @@ class TradingEngine:
         order_lifecycle_events: List[OrderLifecycleEvent] = []
         composite_decisions: List[CompositeDecision] = []
         policy_decisions: List[PolicyDecision] = []
+        direction_decisions: List[DirectionDecision] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
         symbol_contexts: List[Dict[str, object]] = []
@@ -419,6 +422,17 @@ class TradingEngine:
                             reason=protection_reason,
                             regime=composite_decision.scenario,
                         )
+            direction_decision = self.direction_decision.evaluate(
+                symbol=symbol,
+                price=price,
+                candles=context["candles"],
+                signal=signal,
+                target_inventory=target_inventory,
+                ai_assessment=ai_assessment,
+                open_orders=open_orders,
+                exit_reason=exit_reason,
+            )
+            direction_decisions.append(direction_decision)
             policy_decision = self.policy_engine.evaluate(
                 PolicyContext(
                     symbol=symbol,
@@ -436,6 +450,7 @@ class TradingEngine:
                     open_orders=open_orders,
                     activation_state=self._activation_state_for_symbol(symbol),
                     timestamp_ms=cycle_timestamp_ms,
+                    direction_decision=direction_decision if self.settings.direction_engine_enabled else None,
                 )
             )
             policy_decisions.append(policy_decision)
@@ -510,6 +525,17 @@ class TradingEngine:
                     execution_result = {
                         "status": "BLOCKED",
                         "reason": "policy_protection_lock_active",
+                        "policy_state": policy_decision.policy_state,
+                        "policy_reason": policy_decision.mode_reason_cn,
+                        "proposal_filter_results": [asdict(item) for item in policy_decision.proposal_filter_results],
+                    }
+                    policy_handled = True
+                elif self.settings.direction_engine_enabled and not self.settings.legacy_direct_order_fallback:
+                    execution_result = {
+                        "status": "BLOCKED",
+                        "reason": "direction_policy_no_order",
+                        "direction_reason": direction_decision.reason_cn,
+                        "direction_decision": asdict(direction_decision),
                         "policy_state": policy_decision.policy_state,
                         "policy_reason": policy_decision.mode_reason_cn,
                         "proposal_filter_results": [asdict(item) for item in policy_decision.proposal_filter_results],
@@ -801,6 +827,11 @@ class TradingEngine:
             execution_result.setdefault("cooldown_remaining_bars", cooldown_remaining_bars)
             execution_result.setdefault("target_inventory_summary", target_inventory.as_dict())
             execution_result.setdefault("composite_decision", asdict(composite_decision))
+            execution_result.setdefault("direction_decision", asdict(direction_decision))
+            execution_result.setdefault("fair_value_summary", direction_decision.fair_value_summary)
+            execution_result.setdefault("price_zone", direction_decision.price_zone)
+            execution_result.setdefault("expected_net_edge_pct", direction_decision.expected_net_edge_pct)
+            execution_result.setdefault("paired_order_state", direction_decision.paired_order_state)
             execution_result.setdefault("policy_decision", asdict(policy_decision))
             execution_result.setdefault("policy_state", policy_decision.policy_state)
             execution_result.setdefault("protection_locks", [asdict(item) for item in policy_decision.protection_locks])
@@ -845,6 +876,7 @@ class TradingEngine:
             decision_ledger=decision_ledger,
             composite_decisions=composite_decisions,
             policy_decisions=policy_decisions,
+            direction_decisions=direction_decisions,
             order_lifecycle_events=order_lifecycle_events,
             open_orders=self.executor.all_open_orders(),
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],
@@ -1080,6 +1112,12 @@ class TradingEngine:
         payload["protection_locks"] = [asdict(item) for item in policy_decision.protection_locks]
         if policy_decision.inventory_skew_summary is not None:
             payload["inventory_skew_summary"] = asdict(policy_decision.inventory_skew_summary)
+        if policy_decision.direction_decision is not None:
+            payload["direction_decision"] = asdict(policy_decision.direction_decision)
+            payload["fair_value_summary"] = policy_decision.direction_decision.fair_value_summary
+            payload["price_zone"] = policy_decision.direction_decision.price_zone
+            payload["expected_net_edge_pct"] = policy_decision.direction_decision.expected_net_edge_pct
+            payload["paired_order_state"] = policy_decision.direction_decision.paired_order_state
         return payload, events, orders
 
     def _order_from_policy_proposal(
@@ -1706,6 +1744,9 @@ class TradingEngine:
                     cooldown_remaining_bars=int(execution.get("cooldown_remaining_bars", 0) or 0),
                     policy_state=str(execution.get("policy_state", "")),
                     policy_reason=str(execution.get("policy_reason", "")),
+                    direction_mode=str((execution.get("direction_decision") or {}).get("mode", "") if isinstance(execution.get("direction_decision"), dict) else ""),
+                    price_zone=str(execution.get("price_zone", "")),
+                    direction_reason=str(execution.get("direction_reason") or ((execution.get("direction_decision") or {}).get("reason_cn", "") if isinstance(execution.get("direction_decision"), dict) else "")),
                 )
             )
         return ledger

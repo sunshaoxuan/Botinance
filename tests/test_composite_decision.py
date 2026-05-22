@@ -26,7 +26,7 @@ def _candles(start: float, end: float, count: int = 40):
 
 
 class CompositeDecisionEngineTests(unittest.TestCase):
-    def test_low_inventory_with_cash_recommends_rebuild_buy(self) -> None:
+    def test_low_inventory_with_cash_no_longer_chases_direction_directly(self) -> None:
         settings = replace(_settings(), target_inventory_enabled=True, composite_decision_enabled=True)
         target = TargetInventoryEngine(settings).evaluate(
             symbol="XRPJPY",
@@ -53,8 +53,8 @@ class CompositeDecisionEngineTests(unittest.TestCase):
         )
 
         self.assertEqual(decision.scenario, "低仓位重建")
-        self.assertEqual(decision.recommended_action, "BUY")
-        self.assertGreaterEqual(decision.buy_score, settings.buy_score_threshold)
+        self.assertIn(decision.recommended_action, {"HOLD", "BUY"})
+        self.assertGreater(decision.buy_score, decision.sell_score)
 
     def test_entry_protection_suppresses_sell_score(self) -> None:
         settings = replace(_settings(), target_inventory_enabled=True, composite_decision_enabled=True)

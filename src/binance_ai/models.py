@@ -155,6 +155,45 @@ class CompositeDecision:
 
 
 @dataclass(frozen=True)
+class FairValueSummary:
+    symbol: str
+    method: str
+    current_price: float
+    fair_value: float
+    ema_value: float
+    vwap_value: float
+    range_midpoint: float
+    atr: float
+    atr_pct: float
+    buy_zone_price: float
+    sell_zone_price: float
+    buy_discount_pct: float
+    sell_premium_pct: float
+    volatility_buffer_pct: float
+    lookback_bars: int
+
+
+@dataclass(frozen=True)
+class DirectionDecision:
+    symbol: str
+    mode: str
+    recommended_action: str
+    price_zone: str
+    current_price: float
+    fair_value: float
+    buy_zone_price: float
+    sell_zone_price: float
+    expected_net_edge_pct: float
+    allow_buy: bool
+    allow_sell: bool
+    allow_risk_exit: bool
+    reason_cn: str
+    blockers: List[str] = field(default_factory=list)
+    fair_value_summary: Dict[str, object] = field(default_factory=dict)
+    paired_order_state: Dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ProtectionLock:
     symbol: str
     lock_type: str
@@ -222,6 +261,7 @@ class PolicyDecision:
     order_proposals: List[OrderProposal] = field(default_factory=list)
     proposal_filter_results: List[ProposalFilterResult] = field(default_factory=list)
     inventory_skew_summary: InventorySkewSummary | None = None
+    direction_decision: DirectionDecision | None = None
     blockers: List[str] = field(default_factory=list)
 
 
@@ -347,6 +387,9 @@ class DecisionLedgerEntry:
     cooldown_remaining_bars: int = 0
     policy_state: str = ""
     policy_reason: str = ""
+    direction_mode: str = ""
+    price_zone: str = ""
+    direction_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -368,6 +411,7 @@ class CycleReport:
     decision_ledger: List[DecisionLedgerEntry]
     composite_decisions: List[CompositeDecision]
     policy_decisions: List[PolicyDecision]
+    direction_decisions: List[DirectionDecision]
     order_lifecycle_events: List[OrderLifecycleEvent]
     open_orders: List[ManagedOrder]
     ai_risk_assessments: List[AiRiskAssessment]

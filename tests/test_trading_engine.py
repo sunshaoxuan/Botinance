@@ -112,6 +112,88 @@ class _MarketAnalystStub:
 
 
 class TradingEngineSchedulingTests(unittest.TestCase):
+    def test_direction_engine_blocks_legacy_chase_buy_fallback(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=50.0,
+            trading_fee_rate=0.001,
+            paper_quote_balance=10000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            decision_price_move_threshold_pct=0.01,
+            direction_engine_enabled=True,
+            legacy_direct_order_fallback=False,
+        )
+        candles = [
+            Candle(
+                open_time=index * 1000,
+                open=100.0,
+                high=100.1,
+                low=99.9,
+                close=100.0,
+                volume=100.0,
+                close_time=index * 1000 + 999,
+            )
+            for index in range(1, 80)
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir)
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=10000.0,
+                state_path=runtime_dir / "paper_state.json",
+            )
+            portfolio.save_snapshot(
+                PortfolioSnapshot(
+                    quote_asset="JPY",
+                    quote_balance=10000.0,
+                    initial_quote_balance=10000.0,
+                    positions={},
+                )
+            )
+            engine = TradingEngine(
+                settings=settings,
+                client=_QuantizingClientStub(),
+                market_data=_MarketDataStub(candles),
+                strategy=_StrategyStub(),
+                risk=RiskEngine(settings, _QuantizingClientStub()),
+                executor=OrderExecutor(settings, _QuantizingClientStub(), paper_portfolio=portfolio),
+                scheduler=DecisionScheduler(
+                    state_path=runtime_dir / "decision_state.json",
+                    price_move_threshold_pct=settings.decision_price_move_threshold_pct,
+                ),
+                paper_portfolio=portfolio,
+                market_analyst=None,
+                news_service=None,
+            )
+
+            report = engine.run_cycle()
+
+        self.assertEqual(report.decisions[0].execution_result["status"], "BLOCKED")
+        self.assertEqual(report.decisions[0].execution_result["reason"], "direction_policy_no_order")
+        self.assertIn("拒绝追涨买入", report.decisions[0].execution_result["direction_reason"])
+        self.assertFalse(report.direction_decisions[0].allow_buy)
+
     def test_dust_position_does_not_block_cash_rebuild_buy(self) -> None:
         settings = Settings(
             api_key="",

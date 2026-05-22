@@ -195,19 +195,18 @@ class TargetInventoryEngine:
                 short_pct = (candles[-1].close - short_window.close) / short_window.close
         action = signal.action
         if trend_pct <= -0.006 or (action == SignalAction.SELL and short_pct <= -0.003):
-            return "strong_down"
+            return "down_context"
         if trend_pct <= -0.002 or action == SignalAction.SELL:
-            return "weak_down"
+            return "down_context"
         if trend_pct >= 0.006 or (action == SignalAction.BUY and short_pct >= 0.003):
-            return "strong_up"
+            return "up_context"
         return "range"
 
     def _target_fraction_for_regime(self, regime: str) -> float:
         values = {
-            "strong_down": self.settings.target_position_strong_down,
-            "weak_down": self.settings.target_position_weak_down,
+            "down_context": self.settings.inventory_target_base_pct,
             "range": self.settings.target_position_range,
-            "strong_up": self.settings.target_position_strong_up,
+            "up_context": self.settings.inventory_target_base_pct,
             "emergency": self.settings.target_position_emergency,
         }
-        return min(1.0, max(0.0, values.get(regime, self.settings.target_position_range)))
+        return min(1.0, max(0.0, values.get(regime, self.settings.inventory_target_base_pct)))

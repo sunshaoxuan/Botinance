@@ -5,6 +5,7 @@ from binance_ai.models import (
     AiRiskAssessment,
     Candle,
     CompositeDecision,
+    DirectionDecision,
     SignalAction,
     SymbolFilters,
     TradeSignal,
@@ -113,6 +114,29 @@ def _composite(**updates):
     return CompositeDecision(**payload)
 
 
+def _direction(**updates):
+    payload = dict(
+        symbol="XRPJPY",
+        mode="RANGE",
+        recommended_action="HOLD",
+        price_zone="NEUTRAL_ZONE",
+        current_price=100.0,
+        fair_value=100.0,
+        buy_zone_price=99.5,
+        sell_zone_price=100.5,
+        expected_net_edge_pct=0.0,
+        allow_buy=False,
+        allow_sell=False,
+        allow_risk_exit=False,
+        reason_cn="当前价不在折价建仓区，拒绝追涨买入",
+        blockers=["当前价不在折价建仓区，拒绝追涨买入"],
+        fair_value_summary={},
+        paired_order_state={},
+    )
+    payload.update(updates)
+    return DirectionDecision(**payload)
+
+
 class PolicyEngineTests(unittest.TestCase):
     def test_pair_lock_after_risk_exit_filters_buy_proposal(self):
         settings = _settings()
@@ -171,6 +195,31 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertEqual(len(decision.order_proposals), 1)
         self.assertEqual(decision.order_proposals[0].side, "BUY")
         self.assertGreater(decision.inventory_skew_summary.buy_weight, 1.0)
+
+    def test_direction_decision_blocks_low_inventory_chase_buy(self):
+        decision = PolicyEngine(_settings()).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=101.0,
+                candles=_candles(100.0),
+                signal=TradeSignal("XRPJPY", SignalAction.BUY, 0.9, "test"),
+                exit_reason=None,
+                has_position=True,
+                base_balance=10.0,
+                quote_balance=9000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(),
+                composite_decision=_composite(),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.1, 1.0, ""),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(),
+            )
+        )
+
+        self.assertEqual(decision.order_proposals, [])
+        self.assertEqual(decision.direction_decision.price_zone, "NEUTRAL_ZONE")
 
     def test_drawdown_guard_blocks_active_proposals(self):
         decision = PolicyEngine(_settings()).evaluate(

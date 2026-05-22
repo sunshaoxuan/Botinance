@@ -75,20 +75,19 @@ class CompositeDecisionEngine:
         buy_score = (
             underweight_score * 0.32
             + cash_score * 0.18
-            + max(0.0, trend_score) * 0.16
-            + max(0.0, momentum_score) * 0.14
+            + max(0.0, -momentum_score) * 0.12
+            + max(0.0, -trend_score) * 0.06
             + volume_score * 0.08
             + (1.0 - ai_risk) * 0.08
-            + (0.04 if signal.action == SignalAction.BUY else 0.0)
+            + (0.04 if signal.action == SignalAction.BUY and trend_score <= 0.0 else 0.0)
         )
         sell_score = (
             overweight_score * 0.30
-            + max(0.0, -trend_score) * 0.16
-            + max(0.0, -momentum_score) * 0.14
+            + max(0.0, momentum_score) * 0.12
+            + max(0.0, trend_score) * 0.06
             + profit_pressure * 0.12
-            + loss_pressure * 0.08
             + ai_risk * 0.10
-            + (0.06 if signal.action == SignalAction.SELL else 0.0)
+            + (0.06 if signal.action == SignalAction.SELL and trend_score >= 0.0 else 0.0)
         )
         risk_score = (
             max(0.0, -trend_score) * 0.25
@@ -202,9 +201,9 @@ class CompositeDecisionEngine:
             return "低仓位重建"
         if position_fraction > target.upper_fraction:
             return "高仓位减仓"
-        if target.regime == "strong_up" or indicators["trend_pct"] >= 0.006 or signal.action == SignalAction.BUY:
-            return "强涨跟随"
-        if target.regime in {"weak_down", "strong_down"} or indicators["trend_pct"] <= -0.004:
+        if indicators["trend_pct"] >= 0.006:
+            return "上涨溢价观察"
+        if target.regime == "down_context" or indicators["trend_pct"] <= -0.004:
             return "弱跌防守"
         pending = float(target.target_position_fraction if hasattr(target, "target_position_fraction") else 0.0)
         if pending > 0:
@@ -213,9 +212,9 @@ class CompositeDecisionEngine:
 
     def _scenario_target_fraction(self, scenario: str, fallback: float) -> float:
         mapping = {
-            "强涨跟随": self.settings.target_position_strong_up,
+            "上涨溢价观察": self.settings.inventory_target_base_pct,
             "震荡网格": self.settings.target_position_range,
-            "弱跌防守": self.settings.target_position_weak_down,
+            "弱跌防守": self.settings.inventory_target_base_pct,
             "急跌风险": self.settings.target_position_emergency,
             "低仓位重建": self.settings.target_position_range,
             "高仓位减仓": fallback,

@@ -1662,12 +1662,13 @@ INDEX_HTML = """<!doctype html>
       const openOrders = payload.open_orders || latest.open_orders || [];
       const openOrderGroups = payload.open_order_groups || payload.order_ladder_summary || {};
       const targetInventory = (payload.target_inventory_summary || {})[symbol] || executionResult.target_inventory_summary || {};
+      const directionDecision = (payload.direction_decision || executionResult.direction_decision || (latest.direction_decisions || [])[0] || {});
       const effectiveOrderGuard = (payload.effective_order_guard || {})[symbol] || {};
       const dailyRiskBudget = (payload.daily_risk_budget || {})[symbol] || {};
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
       const profitCurve = payload.live_profit_curve || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, targetInventory, effectiveOrderGuard, dailyRiskBudget, orderEvents, orderMarkers, profitCurve };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, targetInventory, directionDecision, effectiveOrderGuard, dailyRiskBudget, orderEvents, orderMarkers, profitCurve };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1820,14 +1821,17 @@ INDEX_HTML = """<!doctype html>
 
       const firstEntryTier = entryPlan.tiers[0] || {};
       els.entryPlanCard.innerHTML = `
-        <div class="card-label"><span>建仓/补仓计划</span>${entryPlan.blockers.length ? statusChip("等待", "wait") : statusChip("可评估", "buy")}</div>
-        <div class="card-value">${c.targetInventory.available_buy_notional !== undefined ? fmtCurrency(c.targetInventory.available_buy_notional, c.quoteAsset) : (firstEntryTier.price ? fmtCurrency(firstEntryTier.price, c.quoteAsset) : "--")}</div>
+        <div class="card-label"><span>方向决策 / 建仓/补仓计划</span>${statusChip(escapeHtml(c.directionDecision.price_zone || "未知区间"), c.directionDecision.allow_buy ? "buy" : c.directionDecision.allow_sell ? "sell" : "wait")}</div>
+        <div class="card-value">${escapeHtml(c.directionDecision.recommended_action || "HOLD")}</div>
         ${miniKvRows([
+          ["公平价", c.directionDecision.fair_value ? fmtCurrency(c.directionDecision.fair_value, c.quoteAsset) : "--"],
+          ["买入区", c.directionDecision.buy_zone_price ? `<= ${fmtCurrency(c.directionDecision.buy_zone_price, c.quoteAsset)}` : "--"],
+          ["卖出区", c.directionDecision.sell_zone_price ? `>= ${fmtCurrency(c.directionDecision.sell_zone_price, c.quoteAsset)}` : "--"],
+          ["净边际", c.directionDecision.expected_net_edge_pct !== undefined ? fmtPercent(c.directionDecision.expected_net_edge_pct) : "--"],
           ["目标仓位", c.targetInventory.target_fraction !== undefined ? fmtPercent(c.targetInventory.target_fraction) : fmtPercent(entryPlan.targetFraction)],
           ["当前仓位", c.targetInventory.current_fraction !== undefined ? fmtPercent(c.targetInventory.current_fraction) : "--"],
           ["计划投入", c.targetInventory.available_buy_notional !== undefined ? fmtCurrency(c.targetInventory.available_buy_notional, c.quoteAsset) : fmtCurrency(entryPlan.plannedSpend, c.quoteAsset)],
-          ["首档数量", firstEntryTier.quantity ? `${fmtNumber(firstEntryTier.quantity, 6)} XRP` : "--"],
-          ["时机", escapeHtml(c.targetInventory.reason || entryPlan.status)],
+          ["方向说明", escapeHtml(c.directionDecision.reason_cn || c.targetInventory.reason || entryPlan.status)],
         ])}
       `;
 
@@ -3405,6 +3409,16 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "inventory_target_base_pct": settings.inventory_target_base_pct,
         "inventory_range_multiplier": settings.inventory_range_multiplier,
         "order_proposal_min_net_edge_pct": settings.order_proposal_min_net_edge_pct,
+        "direction_engine_enabled": settings.direction_engine_enabled,
+        "legacy_direct_order_fallback": settings.legacy_direct_order_fallback,
+        "trend_follow_enabled": settings.trend_follow_enabled,
+        "fair_value_method": settings.fair_value_method,
+        "fair_value_lookback_bars": settings.fair_value_lookback_bars,
+        "volatility_buffer_atr_multiplier": settings.volatility_buffer_atr_multiplier,
+        "buy_zone_min_discount_pct": settings.buy_zone_min_discount_pct,
+        "sell_zone_min_premium_pct": settings.sell_zone_min_premium_pct,
+        "min_pair_net_edge_pct": settings.min_pair_net_edge_pct,
+        "allow_risk_sell_below_sell_zone": settings.allow_risk_sell_below_sell_zone,
     }
 
 
@@ -4648,6 +4662,7 @@ def _build_policy_payload(latest_report: Dict[str, Any]) -> Dict[str, Any]:
             "recommended_action": item.get("recommended_action", ""),
             "reason": item.get("mode_reason_cn", ""),
             "inventory_skew_summary": item.get("inventory_skew_summary", {}),
+            "direction_decision": item.get("direction_decision", {}),
             "accepted_proposal_count": len(proposals),
             "rejected_proposal_count": len(rejected),
         }
@@ -4755,6 +4770,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "composite_decisions": latest_report.get("composite_decisions", []),
         "policy_decisions": latest_report.get("policy_decisions", []),
+        "direction_decisions": latest_report.get("direction_decisions", []),
+        "direction_decision": (latest_report.get("direction_decisions", [{}]) or [{}])[0],
         "decision_ledger": decision_ledger,
         "position_activation_state": paper_state.get("activation_state", {}),
         "runtime_config": runtime_config,

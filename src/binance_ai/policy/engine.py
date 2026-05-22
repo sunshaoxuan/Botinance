@@ -8,6 +8,7 @@ from binance_ai.models import (
     AiRiskAssessment,
     Candle,
     CompositeDecision,
+    DirectionDecision,
     InventorySkewSummary,
     ManagedOrder,
     OrderProposal,
@@ -39,6 +40,7 @@ class PolicyContext:
     open_orders: Sequence[ManagedOrder]
     activation_state: Dict[str, object]
     timestamp_ms: int
+    direction_decision: DirectionDecision | None = None
 
 
 class ProtectionManager:
@@ -251,7 +253,12 @@ class InventorySkewOrderProposalEngine:
         proposals: List[OrderProposal] = []
         if policy_state in {"PAIR_LOCKED_AFTER_STOP", "RECOVERY_ENTRY", "INVENTORY_REBALANCE", "MARKET_MAKING"}:
             buy_notional = context.target_inventory.available_buy_notional * skew.buy_weight
-            if buy_notional > 0 and context.composite_decision.buy_score >= self.settings.buy_score_threshold * 0.85:
+            direction_allows_buy = (
+                context.composite_decision.buy_score >= self.settings.buy_score_threshold * 0.85
+                if context.direction_decision is None
+                else context.direction_decision.allow_buy
+            )
+            if buy_notional > 0 and direction_allows_buy:
                 proposals.append(
                     OrderProposal(
                         symbol=context.symbol,
@@ -262,7 +269,7 @@ class InventorySkewOrderProposalEngine:
                         notional=buy_notional,
                         urgent=False,
                         score=context.composite_decision.buy_score,
-                        reason_cn="仓位低于目标区间，按库存偏移生成建仓/补仓提案",
+                        reason_cn="价格位于折价买入区，按库存偏移生成建仓/补仓提案",
                         source="inventory_skew",
                         tiers_raw=self.settings.entry_ladder_tiers,
                     )
@@ -270,7 +277,12 @@ class InventorySkewOrderProposalEngine:
 
         if policy_state in {"INVENTORY_REBALANCE", "MARKET_MAKING"} and context.has_position:
             sell_qty = context.target_inventory.allowed_sell_quantity * skew.sell_weight
-            if sell_qty > 0 and context.composite_decision.sell_score >= self.settings.sell_score_threshold * 0.85:
+            direction_allows_sell = (
+                context.composite_decision.sell_score >= self.settings.sell_score_threshold * 0.85
+                if context.direction_decision is None
+                else context.direction_decision.allow_sell
+            )
+            if sell_qty > 0 and direction_allows_sell:
                 proposals.append(
                     OrderProposal(
                         symbol=context.symbol,
@@ -281,7 +293,7 @@ class InventorySkewOrderProposalEngine:
                         notional=min(context.base_balance, sell_qty) * context.price,
                         urgent=False,
                         score=context.composite_decision.sell_score,
-                        reason_cn="仓位高于目标区间，按库存偏移生成减仓提案",
+                        reason_cn="价格位于溢价卖出区，按库存偏移生成减仓提案",
                         source="inventory_skew",
                         tiers_raw=self.settings.exit_ladder_tiers,
                     )
@@ -339,6 +351,12 @@ class OrderProposalFilter:
                 f"提案金额 {proposal.notional:.2f} 低于有效下单金额 {min_notional:.2f}",
             )
         if proposal.side.upper() == "BUY":
+            if context.direction_decision is not None and not context.direction_decision.allow_buy:
+                return self._blocked(
+                    proposal,
+                    "direction_buy_zone_not_reached",
+                    context.direction_decision.reason_cn,
+                )
             reserved_quote = sum(
                 order.reserved_quote for order in context.open_orders if order.side.upper() == "BUY"
             )
@@ -347,6 +365,16 @@ class OrderProposalFilter:
             if self._has_duplicate_open_order(proposal, context.open_orders):
                 return self._blocked(proposal, "duplicate_open_ladder_order", "同一方向、触发源和梯队已有挂单，保持原挂单")
         if proposal.side.upper() == "SELL":
+            if (
+                context.direction_decision is not None
+                and not context.direction_decision.allow_sell
+                and proposal.trigger not in {"stop_loss", "emergency_stop"}
+            ):
+                return self._blocked(
+                    proposal,
+                    "direction_sell_zone_not_reached",
+                    context.direction_decision.reason_cn,
+                )
             reserved_base = sum(
                 order.reserved_base for order in context.open_orders if order.side.upper() == "SELL"
             )
@@ -454,6 +482,7 @@ class PolicyEngine:
             order_proposals=accepted,
             proposal_filter_results=filter_results,
             inventory_skew_summary=skew,
+            direction_decision=context.direction_decision,
             blockers=blockers,
         )
 

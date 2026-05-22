@@ -158,6 +158,16 @@ class Settings:
     inventory_target_base_pct: float = 0.55
     inventory_range_multiplier: float = 1.5
     order_proposal_min_net_edge_pct: float = 0.0025
+    direction_engine_enabled: bool = False
+    legacy_direct_order_fallback: bool = True
+    trend_follow_enabled: bool = False
+    fair_value_method: str = "ema_vwap_blend"
+    fair_value_lookback_bars: int = 60
+    volatility_buffer_atr_multiplier: float = 0.35
+    buy_zone_min_discount_pct: float = 0.0025
+    sell_zone_min_premium_pct: float = 0.0025
+    min_pair_net_edge_pct: float = 0.0035
+    allow_risk_sell_below_sell_zone: bool = True
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -303,4 +313,14 @@ def load_settings() -> Settings:
         inventory_target_base_pct=float(os.getenv("INVENTORY_TARGET_BASE_PCT", "0.55")),
         inventory_range_multiplier=float(os.getenv("INVENTORY_RANGE_MULTIPLIER", "1.5")),
         order_proposal_min_net_edge_pct=float(os.getenv("ORDER_PROPOSAL_MIN_NET_EDGE_PCT", os.getenv("MIN_EXPECTED_NET_EDGE_PCT", "0.0025"))),
+        direction_engine_enabled=_parse_bool(os.getenv("DIRECTION_ENGINE_ENABLED"), True),
+        legacy_direct_order_fallback=_parse_bool(os.getenv("LEGACY_DIRECT_ORDER_FALLBACK"), False),
+        trend_follow_enabled=_parse_bool(os.getenv("TREND_FOLLOW_ENABLED"), False),
+        fair_value_method=os.getenv("FAIR_VALUE_METHOD", "ema_vwap_blend").strip().lower(),
+        fair_value_lookback_bars=int(os.getenv("FAIR_VALUE_LOOKBACK_BARS", "60")),
+        volatility_buffer_atr_multiplier=float(os.getenv("VOLATILITY_BUFFER_ATR_MULTIPLIER", "0.35")),
+        buy_zone_min_discount_pct=float(os.getenv("BUY_ZONE_MIN_DISCOUNT_PCT", "0.0025")),
+        sell_zone_min_premium_pct=float(os.getenv("SELL_ZONE_MIN_PREMIUM_PCT", "0.0025")),
+        min_pair_net_edge_pct=float(os.getenv("MIN_PAIR_NET_EDGE_PCT", "0.0035")),
+        allow_risk_sell_below_sell_zone=_parse_bool(os.getenv("ALLOW_RISK_SELL_BELOW_SELL_ZONE"), True),
     )
