@@ -113,6 +113,8 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("target_rebuild_buy", INDEX_HTML)
         self.assertIn("目标仓位补仓/建仓", INDEX_HTML)
         self.assertIn("建仓/补仓计划", INDEX_HTML)
+        self.assertIn("card-note detail", INDEX_HTML)
+        self.assertIn("const directionReason =", INDEX_HTML)
         self.assertIn("buildEntryPlan", INDEX_HTML)
         self.assertIn("parseLadderTiers", INDEX_HTML)
         self.assertIn("预估挂买价", INDEX_HTML)

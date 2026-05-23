@@ -492,6 +492,15 @@ INDEX_HTML = """<!doctype html>
       max-width: 100%;
     }
 
+    .card-note.detail {
+      padding: 8px 9px;
+      border: 1px solid rgba(133, 155, 184, 0.24);
+      border-radius: 8px;
+      background: rgba(248, 251, 255, 0.72);
+      color: var(--ink-soft);
+      overflow-wrap: anywhere;
+    }
+
     .mini-kv {
       display: grid;
       gap: 5px;
@@ -1838,6 +1847,7 @@ INDEX_HTML = """<!doctype html>
       `;
 
       const firstEntryTier = entryPlan.tiers[0] || {};
+      const directionReason = c.directionDecision.reason_cn || c.targetInventory.reason || entryPlan.status;
       els.entryPlanCard.innerHTML = `
         <div class="card-label"><span>方向决策 / 建仓/补仓计划</span>${statusChip(escapeHtml(c.directionDecision.price_zone || "未知区间"), c.directionDecision.allow_buy ? "buy" : c.directionDecision.allow_sell ? "sell" : "wait")}</div>
         <div class="card-value">${escapeHtml(c.directionDecision.recommended_action || "HOLD")}</div>
@@ -1849,8 +1859,8 @@ INDEX_HTML = """<!doctype html>
           ["目标仓位", c.targetInventory.target_fraction !== undefined ? fmtPercent(c.targetInventory.target_fraction) : fmtPercent(entryPlan.targetFraction)],
           ["当前仓位", c.targetInventory.current_fraction !== undefined ? fmtPercent(c.targetInventory.current_fraction) : "--"],
           ["计划投入", c.targetInventory.available_buy_notional !== undefined ? fmtCurrency(c.targetInventory.available_buy_notional, c.quoteAsset) : fmtCurrency(entryPlan.plannedSpend, c.quoteAsset)],
-          ["方向说明", escapeHtml(c.directionDecision.reason_cn || c.targetInventory.reason || entryPlan.status)],
         ])}
+        <div class="card-note detail">${escapeHtml(directionReason || "暂无方向说明")}</div>
       `;
 
       const cfg = lastPayloadSnapshot?.runtime_config || payload?.runtime_config || {};
