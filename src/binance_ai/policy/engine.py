@@ -41,6 +41,7 @@ class PolicyContext:
     activation_state: Dict[str, object]
     timestamp_ms: int
     direction_decision: DirectionDecision | None = None
+    pair_profitability_stats: Dict[str, object] | None = None
 
 
 class ProtectionManager:
@@ -59,6 +60,9 @@ class ProtectionManager:
         drawdown_guard = self._drawdown_guard(context)
         if drawdown_guard is not None:
             locks.append(drawdown_guard)
+        low_profit_pair_guard = self._low_profit_pair_guard(context)
+        if low_profit_pair_guard is not None:
+            locks.append(low_profit_pair_guard)
         if self._ai_extreme(context.ai_assessment):
             locks.append(
                 ProtectionLock(
@@ -70,6 +74,28 @@ class ProtectionManager:
                 )
             )
         return locks
+
+    def _low_profit_pair_guard(self, context: PolicyContext) -> ProtectionLock | None:
+        stats = dict(context.pair_profitability_stats or {})
+        edges = list(stats.get("completed_edges", []))
+        lookback = max(1, self.settings.low_profit_pair_lookback)
+        recent = edges[-lookback:]
+        if len(recent) < lookback:
+            return None
+        average_edge = sum(float(value) for value in recent) / len(recent)
+        if average_edge >= self.settings.low_profit_pair_min_avg_net_edge_pct:
+            return None
+        return ProtectionLock(
+            symbol=context.symbol,
+            lock_type="LOW_PROFIT_PAIR_LOCK",
+            active=True,
+            reason_cn=(
+                f"最近 {lookback} 组完成 pair 平均净边际 {average_edge:.2%} 低于 "
+                f"{self.settings.low_profit_pair_min_avg_net_edge_pct:.2%}"
+            ),
+            unlock_conditions=[f"等待 {self.settings.low_profit_pair_lock_candles} 根K线后重评估"],
+            remaining_bars=max(0, self.settings.low_profit_pair_lock_candles),
+        )
 
     def _pair_lock_after_risk_exit(self, context: PolicyContext) -> ProtectionLock | None:
         state = context.activation_state
@@ -247,58 +273,129 @@ class InventorySkewOrderProposalEngine:
                     score=context.composite_decision.risk_score,
                     reason_cn=f"{context.exit_reason} 进入风险降低模式，生成保护性卖出提案",
                     source="risk",
+                    pair_role="ask",
                 )
             ]
 
+        if not self.settings.pair_market_making_enabled:
+            return []
+
+        pending_buyback = self._float(context.activation_state.get("pending_buyback_quantity"))
+        cooldown_until = int(self._float(context.activation_state.get("buyback_cooldown_until_candle")))
+        cooldown_active = cooldown_until > context.timestamp_ms
+        risk_exit_reentry_price = self._float(context.activation_state.get("risk_exit_reentry_price"))
+        risk_reentry_blocked = risk_exit_reentry_price > 0 and context.price > risk_exit_reentry_price
+        if pending_buyback > 0 or cooldown_active:
+            return []
+
+        price_reference = (
+            float(context.direction_decision.fair_value)
+            if context.direction_decision is not None and context.direction_decision.fair_value > 0
+            else context.price
+        )
+        spreads = self._spread_levels()
         proposals: List[OrderProposal] = []
-        if policy_state in {"PAIR_LOCKED_AFTER_STOP", "RECOVERY_ENTRY", "INVENTORY_REBALANCE", "MARKET_MAKING"}:
-            buy_notional = context.target_inventory.available_buy_notional * skew.buy_weight
-            direction_allows_buy = (
-                context.composite_decision.buy_score >= self.settings.buy_score_threshold * 0.85
-                if context.direction_decision is None
-                else context.direction_decision.allow_buy
+        allow_buy_pairs = policy_state in {"PAIR_LOCKED_AFTER_STOP", "RECOVERY_ENTRY", "INVENTORY_REBALANCE", "MARKET_MAKING"}
+        allow_sell_pairs = policy_state in {"INVENTORY_REBALANCE", "MARKET_MAKING"}
+        if context.target_inventory.current_fraction < context.target_inventory.lower_fraction:
+            allow_sell_pairs = False
+        elif context.target_inventory.current_fraction > context.target_inventory.upper_fraction:
+            allow_buy_pairs = False
+        if risk_reentry_blocked:
+            allow_buy_pairs = False
+
+        pair_count = self._pair_count()
+        buy_budget = max(0.0, context.target_inventory.available_buy_notional * max(0.0, skew.buy_weight))
+        sell_budget_qty = max(0.0, min(context.base_balance, context.target_inventory.allowed_sell_quantity * max(0.0, skew.sell_weight)))
+        buy_levels = min(pair_count, len(spreads))
+        sell_levels = min(pair_count, len(spreads))
+
+        if allow_buy_pairs and buy_budget > 0:
+            per_level_notional = min(
+                max(0.0, self.settings.order_target_notional),
+                buy_budget / max(1, buy_levels),
             )
-            if buy_notional > 0 and direction_allows_buy:
+            for index, spread in enumerate(spreads[:buy_levels]):
+                bid_price = price_reference * (1.0 - spread)
+                ask_target = price_reference * (1.0 + spread)
+                pair_id = f"{context.symbol}:{policy_state.lower()}:buy:{index}:{context.timestamp_ms}"
                 proposals.append(
                     OrderProposal(
                         symbol=context.symbol,
                         side="BUY",
                         trigger="recovery_entry" if policy_state == "RECOVERY_ENTRY" else "target_rebuild_buy",
-                        ladder_group="entry",
-                        quantity=buy_notional / context.price if context.price > 0 else 0.0,
-                        notional=buy_notional,
+                        ladder_group="pair_market_making",
+                        quantity=per_level_notional / bid_price if bid_price > 0 else 0.0,
+                        notional=per_level_notional,
                         urgent=False,
+                        tier_index=index,
+                        target_spread_pct=spread,
+                        target_fraction=1.0 / max(1, buy_levels),
                         score=context.composite_decision.buy_score,
-                        reason_cn="价格位于折价买入区，按库存偏移生成建仓/补仓提案",
-                        source="inventory_skew",
-                        tiers_raw=self.settings.entry_ladder_tiers,
+                        reason_cn="价格进入折价区，按库存偏移生成成对买入挂单",
+                        source="pair_market_making",
+                        pair_id=pair_id,
+                        pair_role="bid",
+                        intended_counter_price=ask_target,
+                        expected_pair_net_edge_pct=self._pair_net_edge_pct(bid_price, ask_target),
                     )
                 )
 
-        if policy_state in {"INVENTORY_REBALANCE", "MARKET_MAKING"} and context.has_position:
-            sell_qty = context.target_inventory.allowed_sell_quantity * skew.sell_weight
-            direction_allows_sell = (
-                context.composite_decision.sell_score >= self.settings.sell_score_threshold * 0.85
-                if context.direction_decision is None
-                else context.direction_decision.allow_sell
-            )
-            if sell_qty > 0 and direction_allows_sell:
+        if allow_sell_pairs and sell_budget_qty > 0:
+            per_level_quantity = sell_budget_qty / max(1, sell_levels)
+            for index, spread in enumerate(spreads[:sell_levels]):
+                ask_price = price_reference * (1.0 + spread)
+                bid_target = price_reference * (1.0 - spread)
+                pair_id = f"{context.symbol}:{policy_state.lower()}:sell:{index}:{context.timestamp_ms}"
                 proposals.append(
                     OrderProposal(
                         symbol=context.symbol,
                         side="SELL",
                         trigger="target_rebalance_sell",
-                        ladder_group="exit",
-                        quantity=min(context.base_balance, sell_qty),
-                        notional=min(context.base_balance, sell_qty) * context.price,
+                        ladder_group="pair_market_making",
+                        quantity=per_level_quantity,
+                        notional=per_level_quantity * ask_price,
                         urgent=False,
+                        tier_index=index,
+                        target_spread_pct=spread,
+                        target_fraction=1.0 / max(1, sell_levels),
                         score=context.composite_decision.sell_score,
-                        reason_cn="价格位于溢价卖出区，按库存偏移生成减仓提案",
-                        source="inventory_skew",
-                        tiers_raw=self.settings.exit_ladder_tiers,
+                        reason_cn="价格进入溢价区，按库存偏移生成成对卖出挂单",
+                        source="pair_market_making",
+                        pair_id=pair_id,
+                        pair_role="ask",
+                        intended_counter_price=bid_target,
+                        expected_pair_net_edge_pct=self._pair_net_edge_pct(bid_target, ask_price),
                     )
                 )
         return proposals
+
+    def _pair_count(self) -> int:
+        return max(1, min(self.settings.order_levels_per_side, self.settings.order_max_open_per_side))
+
+    def _spread_levels(self) -> List[float]:
+        values: List[float] = []
+        for raw in str(self.settings.pair_spread_levels).split(","):
+            try:
+                value = float(raw.strip())
+            except (TypeError, ValueError):
+                continue
+            if value > 0:
+                values.append(value)
+        return values or [0.0035, 0.0055, 0.0080, 0.0110, 0.0150]
+
+    def _pair_net_edge_pct(self, buy_price: float, sell_price: float) -> float:
+        if buy_price <= 0 or sell_price <= 0:
+            return 0.0
+        gross_edge = sell_price / buy_price - 1.0
+        return gross_edge - self.settings.maker_fee_pct - self.settings.maker_fee_pct - self.settings.pair_edge_safety_buffer_pct
+
+    @staticmethod
+    def _float(value: object) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def _clamp(value: float) -> float:
@@ -351,11 +448,32 @@ class OrderProposalFilter:
                 f"提案金额 {proposal.notional:.2f} 低于有效下单金额 {min_notional:.2f}",
             )
         if proposal.side.upper() == "BUY":
-            if context.direction_decision is not None and not context.direction_decision.allow_buy:
+            if proposal.expected_pair_net_edge_pct < self.settings.min_pair_net_edge_pct:
+                return ProposalFilterResult(
+                    symbol=proposal.symbol,
+                    side=proposal.side,
+                    trigger=proposal.trigger,
+                    ladder_group=proposal.ladder_group,
+                    allowed=False,
+                    reason="pair_net_edge_too_small",
+                    reason_cn=(
+                        f"预期成对净边际 {proposal.expected_pair_net_edge_pct:.2%} 低于 "
+                        f"{self.settings.min_pair_net_edge_pct:.2%}"
+                    ),
+                    quantity=proposal.quantity,
+                    notional=proposal.notional,
+                    net_edge_pct=proposal.expected_pair_net_edge_pct,
+                    required_edge_pct=self.settings.min_pair_net_edge_pct,
+                    pair_id=proposal.pair_id,
+                    pair_role=proposal.pair_role,
+                    expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
+                )
+            buy_limit = context.price * (1.0 - proposal.target_spread_pct)
+            if context.direction_decision is not None and buy_limit > context.direction_decision.buy_zone_price:
                 return self._blocked(
                     proposal,
                     "direction_buy_zone_not_reached",
-                    context.direction_decision.reason_cn,
+                    f"买单价 {buy_limit:.4f} 仍高于折价买入区 {context.direction_decision.buy_zone_price:.4f}",
                 )
             reserved_quote = sum(
                 order.reserved_quote for order in context.open_orders if order.side.upper() == "BUY"
@@ -367,13 +485,13 @@ class OrderProposalFilter:
         if proposal.side.upper() == "SELL":
             if (
                 context.direction_decision is not None
-                and not context.direction_decision.allow_sell
+                and context.price * (1.0 + proposal.target_spread_pct) < context.direction_decision.sell_zone_price
                 and proposal.trigger not in {"stop_loss", "emergency_stop"}
             ):
                 return self._blocked(
                     proposal,
                     "direction_sell_zone_not_reached",
-                    context.direction_decision.reason_cn,
+                    f"卖单价 {context.price * (1.0 + proposal.target_spread_pct):.4f} 仍低于溢价卖出区 {context.direction_decision.sell_zone_price:.4f}",
                 )
             reserved_base = sum(
                 order.reserved_base for order in context.open_orders if order.side.upper() == "SELL"
@@ -381,28 +499,25 @@ class OrderProposalFilter:
             if proposal.quantity > max(0.0, context.base_balance - reserved_base):
                 return self._blocked(proposal, "base_balance_insufficient", "可卖持仓不足，不能提交卖单提案")
             if proposal.trigger not in {"stop_loss", "emergency_stop"}:
-                expected_buyback = context.price * (1.0 - self.settings.grid_buyback_step_pct)
-                guard = self.guard.inspect_release(
-                    context.price,
-                    expected_buyback,
-                    min_net_edge_pct=self.settings.order_proposal_min_net_edge_pct,
-                )
-                if not guard.allowed:
+                if proposal.expected_pair_net_edge_pct < self.settings.min_pair_net_edge_pct:
                     return ProposalFilterResult(
                         symbol=proposal.symbol,
                         side=proposal.side,
                         trigger=proposal.trigger,
                         ladder_group=proposal.ladder_group,
                         allowed=False,
-                        reason=guard.reason,
+                        reason="pair_net_edge_too_small",
                         reason_cn=(
-                            f"预期卖出/回补价差 {guard.net_edge_pct:.2%} 小于手续费和安全垫 "
-                            f"{guard.required_edge_pct:.2%}"
+                            f"预期成对净边际 {proposal.expected_pair_net_edge_pct:.2%} 低于 "
+                            f"{self.settings.min_pair_net_edge_pct:.2%}"
                         ),
                         quantity=proposal.quantity,
                         notional=proposal.notional,
-                        net_edge_pct=guard.net_edge_pct,
-                        required_edge_pct=guard.required_edge_pct,
+                        net_edge_pct=proposal.expected_pair_net_edge_pct,
+                        required_edge_pct=self.settings.min_pair_net_edge_pct,
+                        pair_id=proposal.pair_id,
+                        pair_role=proposal.pair_role,
+                        expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
                     )
             if self._has_duplicate_open_order(proposal, context.open_orders):
                 return self._blocked(proposal, "duplicate_open_ladder_order", "同一方向、触发源和梯队已有挂单，保持原挂单")
@@ -417,11 +532,14 @@ class OrderProposalFilter:
             reason_cn="订单提案通过保护、库存、金额和收益闸门",
             quantity=proposal.quantity,
             notional=proposal.notional,
+            pair_id=proposal.pair_id,
+            pair_role=proposal.pair_role,
+            expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
         )
 
     def _blocking_lock(self, proposal: OrderProposal, locks: Sequence[ProtectionLock]) -> ProtectionLock | None:
         for lock in locks:
-            if lock.lock_type in {"DRAWDOWN_GUARD", "STOPLOSS_GUARD", "AI_EXTREME_RISK"}:
+            if lock.lock_type in {"DRAWDOWN_GUARD", "STOPLOSS_GUARD", "AI_EXTREME_RISK", "LOW_PROFIT_PAIR_LOCK"}:
                 if proposal.trigger not in {"stop_loss", "emergency_stop"}:
                     return lock
             if lock.lock_type == "PAIR_LOCK_AFTER_STOP" and proposal.side.upper() == "BUY":
@@ -431,6 +549,8 @@ class OrderProposalFilter:
     @staticmethod
     def _has_duplicate_open_order(proposal: OrderProposal, open_orders: Sequence[ManagedOrder]) -> bool:
         for order in open_orders:
+            if proposal.pair_id and order.pair_id == proposal.pair_id and order.pair_role == proposal.pair_role:
+                return True
             if (
                 order.side.upper() == proposal.side.upper()
                 and order.trigger == proposal.trigger
@@ -451,6 +571,9 @@ class OrderProposalFilter:
             reason_cn=reason_cn,
             quantity=proposal.quantity,
             notional=proposal.notional,
+            pair_id=proposal.pair_id,
+            pair_role=proposal.pair_role,
+            expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
         )
 
 
@@ -490,7 +613,7 @@ class PolicyEngine:
         active_lock_types = {lock.lock_type for lock in locks if lock.active}
         if context.exit_reason in {"stop_loss", "emergency_stop"} or context.composite_decision.recommended_action == "RISK_EXIT":
             return "RISK_REDUCTION"
-        if {"STOPLOSS_GUARD", "DRAWDOWN_GUARD", "AI_EXTREME_RISK"} & active_lock_types:
+        if {"STOPLOSS_GUARD", "DRAWDOWN_GUARD", "AI_EXTREME_RISK", "LOW_PROFIT_PAIR_LOCK"} & active_lock_types:
             return "OBSERVE_ONLY"
         if "PAIR_LOCK_AFTER_STOP" in active_lock_types:
             return "PAIR_LOCKED_AFTER_STOP"
@@ -513,5 +636,6 @@ class PolicyEngine:
             "PAIR_LOCKED_AFTER_STOP": "风险退出后锁定交易对，等待恢复入场条件",
             "RECOVERY_ENTRY": "风险退出后恢复条件满足，允许受控重建仓位",
             "OBSERVE_ONLY": "保护层触发，仅观察或保留硬风险退出",
+            "LOW_PROFIT_PAIR_LOCK": "最近完成 pair 质量偏低，暂停新的成对挂单提案",
         }
         return labels.get(state, state)

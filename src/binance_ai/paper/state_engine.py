@@ -97,6 +97,10 @@ class PortfolioStateEngine:
             target_spread_pct=order.target_spread_pct,
             created_reference_price=order.created_reference_price,
             created_signal_action=order.created_signal_action,
+            pair_id=order.pair_id,
+            pair_role=order.pair_role,
+            intended_counter_price=order.intended_counter_price,
+            expected_pair_net_edge_pct=order.expected_pair_net_edge_pct,
         )
         open_orders[managed.client_order_id] = managed
         reserved_base_balances = dict(snapshot.reserved_base_balances)
@@ -108,6 +112,7 @@ class PortfolioStateEngine:
             reserved_quote_balance=snapshot.reserved_quote_balance + reserved_quote,
             reserved_base_balances=reserved_base_balances,
         )
+        updated = self._register_open_pair(updated, managed, timestamp_ms)
         event = self._event(timestamp_ms, order, "SUBMITTED", "OPEN", "paper_limit_order_open")
         return updated, {
             "status": "ORDER_OPEN",
@@ -118,6 +123,10 @@ class PortfolioStateEngine:
             "client_order_id": order.client_order_id,
             "trigger": order.trigger,
             "expires_at_ms": order.expires_at_ms,
+            "pair_id": order.pair_id,
+            "pair_role": order.pair_role,
+            "intended_counter_price": order.intended_counter_price,
+            "expected_pair_net_edge_pct": order.expected_pair_net_edge_pct,
         }, event
 
     def cancel_open_order(
@@ -146,6 +155,7 @@ class PortfolioStateEngine:
             reserved_quote_balance=max(0.0, snapshot.reserved_quote_balance - order.reserved_quote),
             reserved_base_balances=reserved_base_balances,
         )
+        updated = self._update_pair_after_cancel(updated, order, timestamp_ms, reason, status)
         event = OrderLifecycleEvent(
             timestamp_ms=timestamp_ms,
             symbol=order.symbol,
@@ -158,6 +168,10 @@ class PortfolioStateEngine:
             reason=reason,
             trigger=order.trigger,
             external_order_id=order.external_order_id,
+            pair_id=order.pair_id,
+            pair_role=order.pair_role,
+            intended_counter_price=order.intended_counter_price,
+            expected_pair_net_edge_pct=order.expected_pair_net_edge_pct,
         )
         return updated, event
 
@@ -187,6 +201,10 @@ class PortfolioStateEngine:
             target_spread_pct=managed.target_spread_pct,
             created_reference_price=managed.created_reference_price,
             created_signal_action=managed.created_signal_action,
+            pair_id=managed.pair_id,
+            pair_role=managed.pair_role,
+            intended_counter_price=managed.intended_counter_price,
+            expected_pair_net_edge_pct=managed.expected_pair_net_edge_pct,
         )
         updated, result = self.apply_order(
             released,
@@ -211,7 +229,12 @@ class PortfolioStateEngine:
             trigger=managed.trigger,
             external_order_id=managed.external_order_id,
             target_spread_pct=managed.target_spread_pct,
+            pair_id=managed.pair_id,
+            pair_role=managed.pair_role,
+            intended_counter_price=managed.intended_counter_price,
+            expected_pair_net_edge_pct=managed.expected_pair_net_edge_pct,
         )
+        updated = self._record_pair_fill(updated, managed, fill_price, timestamp_ms, result)
         result["client_order_id"] = managed.client_order_id
         result["limit_price"] = managed.limit_price
         result["trigger"] = managed.trigger
@@ -345,6 +368,10 @@ class PortfolioStateEngine:
             "timestamp_ms": applied_timestamp_ms,
             "client_order_id": order.client_order_id,
             "trigger": order.trigger,
+            "pair_id": order.pair_id,
+            "pair_role": order.pair_role,
+            "intended_counter_price": order.intended_counter_price,
+            "expected_pair_net_edge_pct": order.expected_pair_net_edge_pct,
         }
         if metadata:
             result.update(metadata)
@@ -393,4 +420,144 @@ class PortfolioStateEngine:
             reason=reason,
             trigger=order.trigger,
             target_spread_pct=order.target_spread_pct,
+            pair_id=order.pair_id,
+            pair_role=order.pair_role,
+            intended_counter_price=order.intended_counter_price,
+            expected_pair_net_edge_pct=order.expected_pair_net_edge_pct,
         )
+
+    def _register_open_pair(
+        self,
+        snapshot: PortfolioSnapshot,
+        order: ManagedOrder,
+        timestamp_ms: int,
+    ) -> PortfolioSnapshot:
+        if not order.pair_id:
+            return snapshot
+        open_pairs = dict(snapshot.open_order_pairs)
+        pair = dict(open_pairs.get(order.pair_id, {}))
+        pair.setdefault("pair_id", order.pair_id)
+        pair.setdefault("symbol", order.symbol)
+        pair.setdefault("status", "PAIR_OPEN")
+        pair.setdefault("created_at_ms", timestamp_ms)
+        pair["updated_at_ms"] = timestamp_ms
+        pair["expected_pair_net_edge_pct"] = order.expected_pair_net_edge_pct
+        pair["intended_counter_price"] = order.intended_counter_price
+        pair["orders"] = dict(pair.get("orders", {}))
+        pair["orders"][order.client_order_id] = {
+            "client_order_id": order.client_order_id,
+            "side": order.side,
+            "pair_role": order.pair_role,
+            "limit_price": order.limit_price,
+            "quantity": order.quantity,
+            "status": order.status,
+            "trigger": order.trigger,
+        }
+        open_pairs[order.pair_id] = pair
+        return replace(snapshot, open_order_pairs=open_pairs)
+
+    def _update_pair_after_cancel(
+        self,
+        snapshot: PortfolioSnapshot,
+        order: ManagedOrder,
+        timestamp_ms: int,
+        reason: str,
+        status: str,
+    ) -> PortfolioSnapshot:
+        if not order.pair_id:
+            return snapshot
+        open_pairs = dict(snapshot.open_order_pairs)
+        pair = dict(open_pairs.get(order.pair_id, {}))
+        if not pair:
+            return snapshot
+        orders = dict(pair.get("orders", {}))
+        item = dict(orders.get(order.client_order_id, {}))
+        item["status"] = status
+        item["reason"] = reason
+        item["updated_at_ms"] = timestamp_ms
+        orders[order.client_order_id] = item
+        pair["orders"] = orders
+        pair["updated_at_ms"] = timestamp_ms
+        if status in {"CANCELED", "EXPIRED", "REJECTED"}:
+            active = [value for value in orders.values() if str(value.get("status", "")).upper() == "OPEN"]
+            if active:
+                pair["status"] = "PAIR_OPEN"
+            else:
+                pair["status"] = "PAIR_CANCELED"
+                completed = [*snapshot.completed_order_pairs, pair]
+                open_pairs.pop(order.pair_id, None)
+                return replace(snapshot, open_order_pairs=open_pairs, completed_order_pairs=completed)
+        open_pairs[order.pair_id] = pair
+        return replace(snapshot, open_order_pairs=open_pairs)
+
+    def _record_pair_fill(
+        self,
+        snapshot: PortfolioSnapshot,
+        order: ManagedOrder,
+        fill_price: float,
+        timestamp_ms: int,
+        result: Dict[str, object],
+    ) -> PortfolioSnapshot:
+        if not order.pair_id:
+            return snapshot
+        open_pairs = dict(snapshot.open_order_pairs)
+        pair = dict(open_pairs.get(order.pair_id, {}))
+        orders = dict(pair.get("orders", {}))
+        item = dict(orders.get(order.client_order_id, {}))
+        item["status"] = "FILLED"
+        item["fill_price"] = fill_price
+        item["filled_at_ms"] = timestamp_ms
+        item["fee"] = float(result.get("fee", 0.0) or 0.0)
+        item["notional"] = float(result.get("notional", 0.0) or 0.0)
+        item["net_notional"] = float(result.get("net_notional", 0.0) or 0.0)
+        orders[order.client_order_id] = item
+        pair["orders"] = orders
+        pair["updated_at_ms"] = timestamp_ms
+        filled_roles = {
+            str(value.get("pair_role", "")).lower(): value
+            for value in orders.values()
+            if str(value.get("status", "")).upper() == "FILLED"
+        }
+        if "bid" in filled_roles and "ask" in filled_roles:
+            bid = filled_roles["bid"]
+            ask = filled_roles["ask"]
+            buy_price = float(bid.get("fill_price", 0.0) or 0.0)
+            sell_price = float(ask.get("fill_price", 0.0) or 0.0)
+            gross_edge_pct = (sell_price / buy_price - 1.0) if buy_price > 0 else 0.0
+            completed_edge_pct = gross_edge_pct - (2 * self.fee_rate) - 0.0005
+            pair["status"] = "PAIR_COMPLETED"
+            pair["completed_pair_net_edge_pct"] = completed_edge_pct
+            pair["gross_roundtrip_edge_pct"] = gross_edge_pct
+            pair["completed_at_ms"] = timestamp_ms
+            result["completed_pair_net_edge_pct"] = completed_edge_pct
+            result["gross_roundtrip_edge_pct"] = gross_edge_pct
+            stats = dict(snapshot.pair_profitability_stats)
+            symbol_stats = dict(stats.get(order.symbol, {}))
+            history = list(symbol_stats.get("completed_edges", []))
+            history.append(completed_edge_pct)
+            symbol_stats["completed_edges"] = history[-100:]
+            symbol_stats["positive_count"] = sum(1 for value in symbol_stats["completed_edges"] if value > 0)
+            symbol_stats["negative_count"] = sum(1 for value in symbol_stats["completed_edges"] if value <= 0)
+            symbol_stats["average_edge_pct"] = (
+                sum(symbol_stats["completed_edges"]) / len(symbol_stats["completed_edges"])
+                if symbol_stats["completed_edges"]
+                else 0.0
+            )
+            stats[order.symbol] = symbol_stats
+            completed = [*snapshot.completed_order_pairs, pair]
+            open_pairs.pop(order.pair_id, None)
+            updated_fills = list(snapshot.fills)
+            for fill in updated_fills:
+                if str(fill.get("pair_id", "")) == order.pair_id:
+                    fill["completed_pair_net_edge_pct"] = completed_edge_pct
+            return replace(
+                snapshot,
+                open_order_pairs=open_pairs,
+                completed_order_pairs=completed,
+                pair_profitability_stats=stats,
+                fills=updated_fills,
+            )
+        if any(str(value.get("status", "")).upper() == "FILLED" for value in orders.values()):
+            pair["status"] = "ONE_SIDE_FILLED_WAIT_COUNTER"
+        open_pairs[order.pair_id] = pair
+        return replace(snapshot, open_order_pairs=open_pairs)

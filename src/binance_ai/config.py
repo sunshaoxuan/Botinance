@@ -99,8 +99,11 @@ class Settings:
     order_passive_offset_pct: float = 0.0002
     order_urgent_cross_pct: float = 0.001
     order_max_open_per_symbol: int = 6
-    order_max_open_per_side: int = 2
+    order_max_open_per_side: int = 5
     order_ladder_enabled: bool = True
+    pair_market_making_enabled: bool = True
+    order_levels_per_side: int = 5
+    pair_spread_levels: str = "0.0035,0.0055,0.0080,0.0110,0.0150"
     target_position_fraction: float = 0.60
     target_inventory_enabled: bool = True
     target_position_strong_down: float = 0.20
@@ -117,6 +120,7 @@ class Settings:
     min_effective_order_notional: float = 5000.0
     order_target_notional: float = 8000.0
     max_daily_turnover_fraction: float = 1.0
+    max_daily_turnover_hard_block: bool = True
     max_daily_realized_loss_pct: float = 0.01
     buyback_cooldown_bars: int = 5
     buyback_cooldown_allow_emergency_stop: bool = True
@@ -158,6 +162,14 @@ class Settings:
     inventory_target_base_pct: float = 0.55
     inventory_range_multiplier: float = 1.5
     order_proposal_min_net_edge_pct: float = 0.0025
+    hanging_orders_enabled: bool = True
+    hanging_orders_cancel_pct: float = 0.02
+    maker_fee_pct: float = 0.001
+    pair_edge_safety_buffer_pct: float = 0.0005
+    cooldown_candles_after_pair_complete: int = 2
+    low_profit_pair_lookback: int = 6
+    low_profit_pair_min_avg_net_edge_pct: float = 0.0015
+    low_profit_pair_lock_candles: int = 12
     direction_engine_enabled: bool = False
     legacy_direct_order_fallback: bool = True
     trend_follow_enabled: bool = False
@@ -166,7 +178,7 @@ class Settings:
     volatility_buffer_atr_multiplier: float = 0.35
     buy_zone_min_discount_pct: float = 0.0025
     sell_zone_min_premium_pct: float = 0.0025
-    min_pair_net_edge_pct: float = 0.0035
+    min_pair_net_edge_pct: float = 0.0045
     allow_risk_sell_below_sell_zone: bool = True
 
     @property
@@ -254,8 +266,11 @@ def load_settings() -> Settings:
         order_passive_offset_pct=float(os.getenv("ORDER_PASSIVE_OFFSET_PCT", "0.0002")),
         order_urgent_cross_pct=float(os.getenv("ORDER_URGENT_CROSS_PCT", "0.001")),
         order_max_open_per_symbol=int(os.getenv("ORDER_MAX_OPEN_PER_SYMBOL", "6")),
-        order_max_open_per_side=int(os.getenv("ORDER_MAX_OPEN_PER_SIDE", "2")),
+        order_max_open_per_side=int(os.getenv("ORDER_MAX_OPEN_PER_SIDE", "5")),
         order_ladder_enabled=_parse_bool(os.getenv("ORDER_LADDER_ENABLED"), True),
+        pair_market_making_enabled=_parse_bool(os.getenv("PAIR_MARKET_MAKING_ENABLED"), True),
+        order_levels_per_side=int(os.getenv("ORDER_LEVELS_PER_SIDE", "5")),
+        pair_spread_levels=os.getenv("PAIR_SPREAD_LEVELS", "0.0035,0.0055,0.0080,0.0110,0.0150").strip(),
         target_position_fraction=float(os.getenv("TARGET_POSITION_FRACTION", "0.60")),
         target_inventory_enabled=_parse_bool(os.getenv("TARGET_INVENTORY_ENABLED"), True),
         target_position_strong_down=float(os.getenv("TARGET_POSITION_STRONG_DOWN", "0.20")),
@@ -271,7 +286,8 @@ def load_settings() -> Settings:
         min_net_edge_pct=float(os.getenv("MIN_NET_EDGE_PCT", "0.001")),
         min_effective_order_notional=float(os.getenv("MIN_EFFECTIVE_ORDER_NOTIONAL", "5000")),
         order_target_notional=float(os.getenv("ORDER_TARGET_NOTIONAL", "8000")),
-        max_daily_turnover_fraction=float(os.getenv("MAX_DAILY_TURNOVER_FRACTION", "1.0")),
+        max_daily_turnover_fraction=float(os.getenv("MAX_DAILY_TURNOVER_FRACTION", "3.0")),
+        max_daily_turnover_hard_block=_parse_bool(os.getenv("MAX_DAILY_TURNOVER_HARD_BLOCK"), False),
         max_daily_realized_loss_pct=float(os.getenv("MAX_DAILY_REALIZED_LOSS_PCT", "0.01")),
         buyback_cooldown_bars=int(os.getenv("BUYBACK_COOLDOWN_BARS", "5")),
         buyback_cooldown_allow_emergency_stop=_parse_bool(os.getenv("BUYBACK_COOLDOWN_ALLOW_EMERGENCY_STOP"), True),
@@ -313,6 +329,14 @@ def load_settings() -> Settings:
         inventory_target_base_pct=float(os.getenv("INVENTORY_TARGET_BASE_PCT", "0.55")),
         inventory_range_multiplier=float(os.getenv("INVENTORY_RANGE_MULTIPLIER", "1.5")),
         order_proposal_min_net_edge_pct=float(os.getenv("ORDER_PROPOSAL_MIN_NET_EDGE_PCT", os.getenv("MIN_EXPECTED_NET_EDGE_PCT", "0.0025"))),
+        hanging_orders_enabled=_parse_bool(os.getenv("HANGING_ORDERS_ENABLED"), True),
+        hanging_orders_cancel_pct=float(os.getenv("HANGING_ORDERS_CANCEL_PCT", "0.02")),
+        maker_fee_pct=float(os.getenv("MAKER_FEE_PCT", os.getenv("TRADING_FEE_RATE", "0.001"))),
+        pair_edge_safety_buffer_pct=float(os.getenv("PAIR_EDGE_SAFETY_BUFFER_PCT", "0.0005")),
+        cooldown_candles_after_pair_complete=int(os.getenv("COOLDOWN_CANDLES_AFTER_PAIR_COMPLETE", "2")),
+        low_profit_pair_lookback=int(os.getenv("LOW_PROFIT_PAIR_LOOKBACK", "6")),
+        low_profit_pair_min_avg_net_edge_pct=float(os.getenv("LOW_PROFIT_PAIR_MIN_AVG_NET_EDGE_PCT", "0.0015")),
+        low_profit_pair_lock_candles=int(os.getenv("LOW_PROFIT_PAIR_LOCK_CANDLES", "12")),
         direction_engine_enabled=_parse_bool(os.getenv("DIRECTION_ENGINE_ENABLED"), True),
         legacy_direct_order_fallback=_parse_bool(os.getenv("LEGACY_DIRECT_ORDER_FALLBACK"), False),
         trend_follow_enabled=_parse_bool(os.getenv("TREND_FOLLOW_ENABLED"), False),
@@ -321,6 +345,6 @@ def load_settings() -> Settings:
         volatility_buffer_atr_multiplier=float(os.getenv("VOLATILITY_BUFFER_ATR_MULTIPLIER", "0.35")),
         buy_zone_min_discount_pct=float(os.getenv("BUY_ZONE_MIN_DISCOUNT_PCT", "0.0025")),
         sell_zone_min_premium_pct=float(os.getenv("SELL_ZONE_MIN_PREMIUM_PCT", "0.0025")),
-        min_pair_net_edge_pct=float(os.getenv("MIN_PAIR_NET_EDGE_PCT", "0.0035")),
+        min_pair_net_edge_pct=float(os.getenv("MIN_PAIR_NET_EDGE_PCT", "0.0045")),
         allow_risk_sell_below_sell_zone=_parse_bool(os.getenv("ALLOW_RISK_SELL_BELOW_SELL_ZONE"), True),
     )

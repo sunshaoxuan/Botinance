@@ -101,8 +101,9 @@ class TargetInventoryEngine:
         active_allowed = True
         blocker = ""
         if recovery_turnover_limit > 0 and daily_turnover_used >= recovery_turnover_limit:
-            active_allowed = False
             blocker = "daily_turnover_budget_exhausted"
+            if self.settings.max_daily_turnover_hard_block:
+                active_allowed = False
         if daily_loss_limit > 0 and daily_realized_pnl <= -daily_loss_limit:
             active_allowed = False
             blocker = "daily_realized_loss_limit_reached"

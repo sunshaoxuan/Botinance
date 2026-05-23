@@ -5,7 +5,10 @@ import csv
 import json
 import os
 import re
+import subprocess
 import time
+from dataclasses import asdict
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -15,6 +18,13 @@ from urllib.parse import parse_qs, urlparse
 from binance_ai.config import load_settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.models import Candle
+from binance_ai.tools.sync_paper_from_account import (
+    base_asset_for_symbol,
+    build_paper_snapshot_from_balances,
+    clear_simulated_runtime,
+    infer_remaining_cost_basis_from_trades,
+    write_seed_manifest,
+)
 
 
 INTERVAL_MS: Dict[str, int] = {
@@ -3384,6 +3394,9 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "order_reprice_min_age_seconds": settings.order_reprice_min_age_seconds,
         "order_reprice_compare_mode": settings.order_reprice_compare_mode,
         "order_ladder_enabled": settings.order_ladder_enabled,
+        "pair_market_making_enabled": settings.pair_market_making_enabled,
+        "order_levels_per_side": settings.order_levels_per_side,
+        "pair_spread_levels": settings.pair_spread_levels,
         "target_position_fraction": settings.target_position_fraction,
         "target_inventory_enabled": settings.target_inventory_enabled,
         "target_position_strong_down": settings.target_position_strong_down,
@@ -3398,6 +3411,7 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "min_effective_order_notional": settings.min_effective_order_notional,
         "order_target_notional": settings.order_target_notional,
         "max_daily_turnover_fraction": settings.max_daily_turnover_fraction,
+        "max_daily_turnover_hard_block": settings.max_daily_turnover_hard_block,
         "max_daily_realized_loss_pct": settings.max_daily_realized_loss_pct,
         "policy_engine_enabled": settings.policy_engine_enabled,
         "pair_lock_after_risk_exit_candles": settings.pair_lock_after_risk_exit_candles,
@@ -3409,6 +3423,14 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "inventory_target_base_pct": settings.inventory_target_base_pct,
         "inventory_range_multiplier": settings.inventory_range_multiplier,
         "order_proposal_min_net_edge_pct": settings.order_proposal_min_net_edge_pct,
+        "hanging_orders_enabled": settings.hanging_orders_enabled,
+        "hanging_orders_cancel_pct": settings.hanging_orders_cancel_pct,
+        "maker_fee_pct": settings.maker_fee_pct,
+        "pair_edge_safety_buffer_pct": settings.pair_edge_safety_buffer_pct,
+        "cooldown_candles_after_pair_complete": settings.cooldown_candles_after_pair_complete,
+        "low_profit_pair_lookback": settings.low_profit_pair_lookback,
+        "low_profit_pair_min_avg_net_edge_pct": settings.low_profit_pair_min_avg_net_edge_pct,
+        "low_profit_pair_lock_candles": settings.low_profit_pair_lock_candles,
         "direction_engine_enabled": settings.direction_engine_enabled,
         "legacy_direct_order_fallback": settings.legacy_direct_order_fallback,
         "trend_follow_enabled": settings.trend_follow_enabled,
@@ -3466,6 +3488,10 @@ def _build_fill_trade_record(fill: Dict[str, Any], quote_asset: str, fee_rate: f
         "trigger": fill.get("trigger", ""),
         "reason": fill.get("reason", ""),
         "client_order_id": fill.get("client_order_id", ""),
+        "pair_id": fill.get("pair_id", ""),
+        "pair_role": fill.get("pair_role", ""),
+        "expected_pair_net_edge_pct": _coerce_float(fill.get("expected_pair_net_edge_pct")),
+        "completed_pair_net_edge_pct": _coerce_float(fill.get("completed_pair_net_edge_pct")),
     }
 
 
@@ -3524,6 +3550,10 @@ def _build_order_trade_record(order: Dict[str, Any], quote_asset: str, fee_rate:
         "spread_delta_pct": _coerce_float(order.get("spread_delta_pct")),
         "reprice_tolerance_pct": _coerce_float(order.get("reprice_tolerance_pct")),
         "created_reference_price": _coerce_float(order.get("created_reference_price")),
+        "pair_id": order.get("pair_id", ""),
+        "pair_role": order.get("pair_role", ""),
+        "expected_pair_net_edge_pct": _coerce_float(order.get("expected_pair_net_edge_pct")),
+        "intended_counter_price": _coerce_float(order.get("intended_counter_price")),
     }
 
 
@@ -4682,6 +4712,352 @@ def _build_policy_payload(latest_report: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _build_pair_payload(paper_state: Dict[str, Any]) -> Dict[str, Any]:
+    open_pairs = paper_state.get("open_order_pairs", {}) if isinstance(paper_state.get("open_order_pairs"), dict) else {}
+    completed_pairs = paper_state.get("completed_order_pairs", []) if isinstance(paper_state.get("completed_order_pairs"), list) else []
+    pair_locks = paper_state.get("pair_locks", {}) if isinstance(paper_state.get("pair_locks"), dict) else {}
+    pair_stats = paper_state.get("pair_profitability_stats", {}) if isinstance(paper_state.get("pair_profitability_stats"), dict) else {}
+    positive_count = 0
+    negative_count = 0
+    for stats in pair_stats.values():
+        if not isinstance(stats, dict):
+            continue
+        positive_count += _coerce_int(stats.get("positive_count"))
+        negative_count += _coerce_int(stats.get("negative_count"))
+    return {
+        "pair_state_summary": {
+            "open_pair_count": len(open_pairs),
+            "completed_pair_count": len(completed_pairs),
+            "open_pairs": list(open_pairs.values()),
+        },
+        "pair_profitability_summary": {
+            "stats": pair_stats,
+            "positive_pair_count": positive_count,
+            "negative_pair_count": negative_count,
+        },
+        "protection_summary_pairs": pair_locks,
+    }
+
+
+def build_ops_health_payload(runtime_dir: Path) -> Dict[str, Any]:
+    latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    paper_state = _load_json(runtime_dir / "paper_state.json", {})
+    return {
+        "status": "ok" if latest_report else "degraded",
+        "latest_report_timestamp_ms": _latest_report_timestamp_ms(latest_report),
+        "cycle_mode": latest_report.get("cycle_mode", ""),
+        "cycle_reason": latest_report.get("cycle_reason", ""),
+        "open_order_count": len((paper_state.get("open_orders") or {})),
+        "open_pair_count": len((paper_state.get("open_order_pairs") or {})),
+        "active_pair_locks": paper_state.get("pair_locks", {}),
+    }
+
+
+def build_ops_summary_payload(runtime_dir: Path, hours: int) -> Dict[str, Any]:
+    latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    paper_state = _load_json(runtime_dir / "paper_state.json", {})
+    history_path = runtime_dir / "cycle_reports.jsonl"
+    fills = _extract_recent_fills_from_file(history_path, limit=2000, scan_lines=None)
+    events = _extract_order_lifecycle_events_from_file(history_path, limit=2000, scan_lines=None)
+    cutoff_ms = int(time.time() * 1000) - max(1, hours) * 60 * 60 * 1000
+    recent_fills = [item for item in fills if _coerce_int(item.get("timestamp_ms")) >= cutoff_ms]
+    recent_events = [item for item in events if _coerce_int(item.get("timestamp_ms")) >= cutoff_ms]
+    rejected_count = sum(1 for item in recent_events if str(item.get("status", "")).upper() == "REJECTED")
+    canceled_count = sum(1 for item in recent_events if str(item.get("status", "")).upper() in {"CANCELED", "EXPIRED"})
+    fee_total = sum(_coerce_float(item.get("fee")) for item in recent_fills)
+    pair_stats = paper_state.get("pair_profitability_stats", {}) if isinstance(paper_state.get("pair_profitability_stats"), dict) else {}
+    positive_pairs = sum(_coerce_int(item.get("positive_count")) for item in pair_stats.values() if isinstance(item, dict))
+    negative_pairs = sum(_coerce_int(item.get("negative_count")) for item in pair_stats.values() if isinstance(item, dict))
+    return {
+        "status": "ok" if latest_report else "degraded",
+        "hours": hours,
+        "fill_count": len(recent_fills),
+        "cancel_count": canceled_count,
+        "reject_count": rejected_count,
+        "fee_total": fee_total,
+        "completed_pair_count": len(paper_state.get("completed_order_pairs", [])) if isinstance(paper_state.get("completed_order_pairs", []), list) else 0,
+        "positive_pair_count": positive_pairs,
+        "negative_pair_count": negative_pairs,
+        "current_pair_locks": paper_state.get("pair_locks", {}),
+        "current_open_pairs": list((paper_state.get("open_order_pairs") or {}).values()) if isinstance(paper_state.get("open_order_pairs"), dict) else [],
+    }
+
+
+def build_ops_pairs_payload(runtime_dir: Path, hours: int) -> Dict[str, Any]:
+    paper_state = _load_json(runtime_dir / "paper_state.json", {})
+    completed_pairs = paper_state.get("completed_order_pairs", []) if isinstance(paper_state.get("completed_order_pairs"), list) else []
+    open_pairs = list((paper_state.get("open_order_pairs") or {}).values()) if isinstance(paper_state.get("open_order_pairs"), dict) else []
+    cutoff_ms = int(time.time() * 1000) - max(1, hours) * 60 * 60 * 1000
+    recent_completed = [
+        item for item in completed_pairs
+        if isinstance(item, dict) and _coerce_int(item.get("completed_at_ms"), _coerce_int(item.get("updated_at_ms"))) >= cutoff_ms
+    ]
+    return {
+        "hours": hours,
+        "open_pairs": open_pairs,
+        "completed_pairs": recent_completed,
+    }
+
+
+def build_ops_orders_payload(runtime_dir: Path, status: str) -> Dict[str, Any]:
+    payload = build_order_records_payload(runtime_dir)
+    records = payload.get("trade_records", [])
+    normalized = status.strip().lower()
+    if normalized == "open":
+        filtered = [item for item in records if str(item.get("status", "")).upper() in {"OPEN", "NEW", "PARTIALLY_FILLED", "UNKNOWN"}]
+    elif normalized == "filled":
+        filtered = [item for item in records if str(item.get("status", "")).upper() in {"FILLED", "PAPER_FILLED"}]
+    elif normalized == "canceled":
+        filtered = [item for item in records if str(item.get("status", "")).upper() in {"CANCELED", "EXPIRED", "REJECTED"}]
+    else:
+        filtered = records
+    return {
+        "status_filter": normalized or "all",
+        "trade_records": filtered,
+        "trade_record_count": len(filtered),
+    }
+
+
+def _parse_ops_time_ms(value: str | None, default: int) -> int:
+    raw = (value or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except ValueError:
+        pass
+    normalized = raw.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return default
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return int(parsed.timestamp() * 1000)
+
+
+def _ops_time_window(query: Dict[str, List[str]], default_hours: int = 8) -> tuple[int, int]:
+    now_ms = int(time.time() * 1000)
+    hours = max(1, _coerce_int((query.get("hours") or [str(default_hours)])[0], default_hours))
+    from_ms = _parse_ops_time_ms((query.get("from_ms") or query.get("from") or [""])[0], now_ms - hours * 60 * 60 * 1000)
+    to_ms = _parse_ops_time_ms((query.get("to_ms") or query.get("to") or [""])[0], now_ms)
+    if to_ms < from_ms:
+        from_ms, to_ms = to_ms, from_ms
+    return from_ms, to_ms
+
+
+def _filter_records_by_window(records: List[Dict[str, Any]], from_ms: int, to_ms: int) -> List[Dict[str, Any]]:
+    filtered: List[Dict[str, Any]] = []
+    for record in records:
+        timestamp_ms = _coerce_int(record.get("timestamp_ms"), _coerce_int(record.get("time")))
+        if from_ms <= timestamp_ms <= to_ms:
+            filtered.append(record)
+    return filtered
+
+
+def _normalize_real_trade(raw: Dict[str, Any], symbol: str) -> Dict[str, Any]:
+    price = _coerce_float(raw.get("price"))
+    quantity = _coerce_float(raw.get("qty"))
+    quote_qty = _coerce_float(raw.get("quoteQty"), price * quantity)
+    return {
+        "source": "real",
+        "record_type": "real_trade",
+        "symbol": symbol,
+        "trade_id": str(raw.get("id", "")),
+        "order_id": str(raw.get("orderId", "")),
+        "side": "BUY" if bool(raw.get("isBuyer")) else "SELL",
+        "price": price,
+        "quantity": quantity,
+        "notional": quote_qty,
+        "fee": _coerce_float(raw.get("commission")),
+        "fee_asset": raw.get("commissionAsset", ""),
+        "is_maker": bool(raw.get("isMaker")),
+        "timestamp_ms": _coerce_int(raw.get("time")),
+        "raw": raw,
+    }
+
+
+def _load_real_trades(symbols: List[str], from_ms: int, to_ms: int, limit: int) -> List[Dict[str, Any]]:
+    settings = load_settings()
+    if not settings.api_key or not settings.api_secret:
+        return []
+    client = BinanceSpotClient(settings)
+    records: List[Dict[str, Any]] = []
+    try:
+        for symbol in symbols:
+            trades = client.get_my_trades(
+                symbol,
+                limit=max(1, min(1000, limit)),
+                start_time_ms=from_ms,
+                end_time_ms=to_ms,
+            )
+            records.extend(_normalize_real_trade(item, symbol) for item in trades)
+    finally:
+        client.close()
+    return sorted(records, key=lambda item: _coerce_int(item.get("timestamp_ms")), reverse=True)
+
+
+def build_ops_trades_payload(runtime_dir: Path, query: Dict[str, List[str]]) -> Dict[str, Any]:
+    from_ms, to_ms = _ops_time_window(query)
+    source = str((query.get("source") or ["all"])[0]).strip().lower() or "all"
+    status = str((query.get("status") or ["all"])[0]).strip().lower()
+    limit = max(1, min(5000, _coerce_int((query.get("limit") or ["1000"])[0], 1000)))
+    latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    settings_symbols = []
+    try:
+        settings_symbols = list(load_settings().trading_symbols)
+    except Exception:
+        settings_symbols = []
+    symbol_filter = str((query.get("symbol") or [""])[0]).strip().upper()
+    symbols = [symbol_filter] if symbol_filter else settings_symbols or list((latest_report.get("market_prices") or {}).keys())
+
+    simulated_records: List[Dict[str, Any]] = []
+    if source in {"all", "paper", "sim", "simulated"}:
+        payload = build_order_records_payload(runtime_dir)
+        simulated_records = payload.get("trade_records", []) if isinstance(payload.get("trade_records"), list) else []
+        simulated_records = [dict(item, source="simulated") for item in simulated_records if isinstance(item, dict)]
+        simulated_records = _filter_records_by_window(simulated_records, from_ms, to_ms)
+
+    real_records: List[Dict[str, Any]] = []
+    real_error = ""
+    if source in {"all", "real", "binance"}:
+        try:
+            real_records = _load_real_trades(symbols, from_ms, to_ms, limit)
+        except Exception as exc:  # noqa: BLE001
+            real_error = str(exc)
+
+    records = [*simulated_records, *real_records]
+    if symbol_filter:
+        records = [item for item in records if str(item.get("symbol", "")).upper() == symbol_filter]
+    if status not in {"", "all"}:
+        records = [item for item in records if str(item.get("status", item.get("event_type", ""))).lower() == status]
+    records = sorted(records, key=lambda item: _coerce_int(item.get("timestamp_ms")), reverse=True)[:limit]
+    return {
+        "from_ms": from_ms,
+        "to_ms": to_ms,
+        "source": source,
+        "symbol": symbol_filter,
+        "records": records,
+        "record_count": len(records),
+        "simulated_count": len([item for item in records if item.get("source") == "simulated"]),
+        "real_count": len([item for item in records if item.get("source") == "real"]),
+        "real_error": real_error,
+    }
+
+
+def _git_value(args: List[str], cwd: Path) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *args],
+            cwd=str(cwd),
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=8,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"ERROR:{exc}"
+    if completed.returncode != 0:
+        return f"ERROR:{completed.stderr.strip()}"
+    return completed.stdout.strip()
+
+
+def build_ops_version_payload(runtime_dir: Path, *, refresh: bool = False) -> Dict[str, Any]:
+    cwd = Path.cwd()
+    if refresh:
+        _git_value(["fetch", "--quiet", "origin"], cwd)
+    branch = _git_value(["rev-parse", "--abbrev-ref", "HEAD"], cwd)
+    head = _git_value(["rev-parse", "HEAD"], cwd)
+    upstream = _git_value(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], cwd)
+    upstream_head = _git_value(["rev-parse", "@{u}"], cwd) if not upstream.startswith("ERROR:") else ""
+    dirty = bool(_git_value(["status", "--porcelain"], cwd))
+    latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    return {
+        "repo_path": str(cwd),
+        "runtime_dir": str(runtime_dir),
+        "branch": branch,
+        "head": head,
+        "upstream": upstream,
+        "upstream_head": upstream_head,
+        "dirty": dirty,
+        "needs_pull": bool(upstream_head and not upstream_head.startswith("ERROR:") and head != upstream_head),
+        "latest_report_timestamp_ms": _latest_report_timestamp_ms(latest_report),
+        "cycle_mode": latest_report.get("cycle_mode", ""),
+        "cycle_reason": latest_report.get("cycle_reason", ""),
+    }
+
+
+def _ops_write_token() -> str:
+    return (os.environ.get("BOTINANCE_OPS_TOKEN") or os.environ.get("OPS_WRITE_TOKEN") or "").strip()
+
+
+def _seed_paper_from_real_account(runtime_dir: Path, *, archive_root: Path | None) -> Dict[str, Any]:
+    settings = load_settings()
+    if not settings.dry_run:
+        raise RuntimeError("Refusing to reset paper state while DRY_RUN=false.")
+    symbols = [item.strip().upper() for item in settings.trading_symbols if item.strip()]
+    if not symbols:
+        raise RuntimeError("No trading symbols configured.")
+    client = BinanceSpotClient(settings)
+    try:
+        balances = client.get_account_balances(include_locked=True)
+        prices = {symbol: client.get_symbol_price(symbol) for symbol in symbols}
+        cost_basis_by_symbol: Dict[str, Dict[str, object]] = {}
+        for symbol in symbols:
+            base_asset = base_asset_for_symbol(symbol, settings.quote_asset)
+            quantity = float(balances.get(base_asset, 0.0))
+            if quantity <= 0:
+                continue
+            try:
+                cost_basis_by_symbol[symbol] = infer_remaining_cost_basis_from_trades(
+                    client.get_my_trades(symbol, limit=1000),
+                    quantity,
+                )
+            except Exception as exc:  # noqa: BLE001
+                cost_basis_by_symbol[symbol] = {"source": "trade_history_error", "error": str(exc)}
+    finally:
+        client.close()
+
+    timestamp_ms = int(time.time() * 1000)
+    snapshot = build_paper_snapshot_from_balances(
+        balances=balances,
+        symbols=symbols,
+        quote_asset=settings.quote_asset,
+        prices=prices,
+        timestamp_ms=timestamp_ms,
+        cost_basis_by_symbol=cost_basis_by_symbol,
+    )
+    cleared_files = clear_simulated_runtime(runtime_dir, archive_root)
+    (runtime_dir / "paper_state.json").write_text(json.dumps(asdict(snapshot), ensure_ascii=True, indent=2), encoding="utf-8")
+    write_seed_manifest(
+        output_dir=runtime_dir,
+        snapshot=snapshot,
+        balances=balances,
+        prices=prices,
+        cost_basis_by_symbol=cost_basis_by_symbol,
+        stopped_monitor_pid=None,
+        cleared_files=cleared_files,
+    )
+    return {
+        "status": "reset_complete",
+        "cleared_files": cleared_files,
+        "quote_asset": snapshot.quote_asset,
+        "quote_balance": snapshot.quote_balance,
+        "initial_quote_balance": snapshot.initial_quote_balance,
+        "positions": {
+            symbol: {
+                "quantity": position.quantity,
+                "average_entry_price": position.average_entry_price,
+                "cost_basis_source": snapshot.activation_state.get(symbol, {}).get("cost_basis_source", ""),
+                "real_average_entry_price": snapshot.activation_state.get(symbol, {}).get("real_average_entry_price", 0.0),
+                "seed_price": snapshot.activation_state.get(symbol, {}).get("seed_price", 0.0),
+            }
+            for symbol, position in snapshot.positions.items()
+        },
+    }
+
+
 def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
@@ -4743,6 +5119,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     decision_state_payload = _build_decision_state_payload(paper_state, latest_report, runtime_config)
     target_inventory_payload = _build_target_inventory_payload(latest_report)
     policy_payload = _build_policy_payload(latest_report)
+    pair_payload = _build_pair_payload(paper_state)
     boti_pnl_breakdown = {
         "realized_pnl": _coerce_float(paper_state.get("realized_pnl"), _coerce_float(latest_report.get("realized_pnl"))),
         "unrealized_pnl": _coerce_float(latest_report.get("unrealized_pnl")),
@@ -4778,6 +5155,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         **decision_state_payload,
         **target_inventory_payload,
         **policy_payload,
+        **pair_payload,
         "boti_pnl_breakdown": boti_pnl_breakdown,
         "live_main_interval_bars": main_bars,
         "live_refresh_interval": "1m",
@@ -4817,7 +5195,9 @@ def build_order_records_payload(runtime_dir: Path) -> Dict[str, Any]:
     order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=1000, scan_lines=None)
     if not order_lifecycle_events:
         order_lifecycle_events = _extract_order_lifecycle_events([], latest_report, limit=1000)
-    recent_fills = _extract_recent_fills_from_file(history_path, limit=1000, scan_lines=None)
+    paper_fills = paper_state.get("fills", []) if isinstance(paper_state.get("fills", []), list) else []
+    file_fills = _extract_recent_fills_from_file(history_path, limit=1000, scan_lines=None)
+    recent_fills = _dedupe_fills([*paper_fills, *file_fills], limit=1000)
     trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate, limit=None)
     return {
         "recent_fills": recent_fills,
@@ -4858,6 +5238,60 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/dashboard/orders":
             self._send_json(build_order_records_payload(self.runtime_dir))
             return
+        if parsed.path == "/api/ops/health":
+            self._send_json(build_ops_health_payload(self.runtime_dir))
+            return
+        if parsed.path == "/api/ops/summary":
+            query = parse_qs(parsed.query)
+            hours = _coerce_int((query.get("hours") or ["8"])[0], 8)
+            self._send_json(build_ops_summary_payload(self.runtime_dir, hours))
+            return
+        if parsed.path == "/api/ops/pairs":
+            query = parse_qs(parsed.query)
+            hours = _coerce_int((query.get("hours") or ["24"])[0], 24)
+            self._send_json(build_ops_pairs_payload(self.runtime_dir, hours))
+            return
+        if parsed.path == "/api/ops/orders":
+            query = parse_qs(parsed.query)
+            status = str((query.get("status") or ["all"])[0])
+            self._send_json(build_ops_orders_payload(self.runtime_dir, status))
+            return
+        if parsed.path == "/api/ops/trades":
+            self._send_json(build_ops_trades_payload(self.runtime_dir, parse_qs(parsed.query)))
+            return
+        if parsed.path == "/api/ops/version":
+            query = parse_qs(parsed.query)
+            refresh = str((query.get("refresh") or ["false"])[0]).lower() in {"1", "true", "yes", "on"}
+            self._send_json(build_ops_version_payload(self.runtime_dir, refresh=refresh))
+            return
+        self.send_error(HTTPStatus.NOT_FOUND, "Not found")
+
+    def do_POST(self) -> None:  # noqa: N802
+        parsed = urlparse(self.path)
+        if parsed.path == "/api/ops/reset-paper":
+            if not self._ops_write_authorized():
+                self._send_json(
+                    {
+                        "status": "FORBIDDEN",
+                        "reason": "ops_write_token_required",
+                    },
+                    status=HTTPStatus.FORBIDDEN,
+                )
+                return
+            payload = self._read_json_body()
+            archive_root_raw = str(payload.get("archive_root") or "runtime_resets").strip()
+            archive_root = Path(archive_root_raw) if archive_root_raw else None
+            try:
+                self._send_json(_seed_paper_from_real_account(self.runtime_dir, archive_root=archive_root))
+            except Exception as exc:  # noqa: BLE001
+                self._send_json(
+                    {
+                        "status": "ERROR",
+                        "reason": str(exc),
+                    },
+                    status=HTTPStatus.INTERNAL_SERVER_ERROR,
+                )
+            return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 
     def log_message(self, format: str, *args: object) -> None:
@@ -4875,10 +5309,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
-    def _send_json(self, payload: Dict[str, Any]) -> None:
+    def _send_json(self, payload: Dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
         try:
-            self.send_response(HTTPStatus.OK)
+            self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Cache-Control", "no-store")
             self.send_header("Content-Length", str(len(body)))
@@ -4886,6 +5320,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):
             return
+
+    def _read_json_body(self) -> Dict[str, Any]:
+        length = _coerce_int(self.headers.get("Content-Length"))
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(length)
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _ops_write_authorized(self) -> bool:
+        token = _ops_write_token()
+        if not token:
+            return False
+        provided = (
+            self.headers.get("X-Botinance-Ops-Token")
+            or self.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+        )
+        return bool(provided and provided == token)
 
 
 def parse_args() -> argparse.Namespace:

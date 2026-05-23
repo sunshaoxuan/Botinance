@@ -21,6 +21,8 @@ from binance_ai.dashboard_server import (
     _sample_rows,
     build_decision_drawer_payload,
     build_dashboard_payload,
+    build_ops_trades_payload,
+    build_ops_version_payload,
     build_order_records_payload,
 )
 
@@ -718,6 +720,64 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(current_records[0]["status"], "OPEN")
         self.assertEqual(len(old_records), 1)
         self.assertEqual(old_records[0]["status"], "CANCELED")
+
+    def test_ops_trades_filters_simulated_records_by_time_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(runtime_dir / "latest_report.json", {"market_prices": {"XRPJPY": 220.0}})
+            _write_json(
+                runtime_dir / "paper_state.json",
+                {
+                    "quote_asset": "JPY",
+                    "quote_balance": 1000,
+                    "fills": [
+                        {
+                            "status": "PAPER_FILLED",
+                            "symbol": "XRPJPY",
+                            "side": "BUY",
+                            "quantity": 1.0,
+                            "fill_price": 220.0,
+                            "timestamp_ms": 2_000,
+                            "client_order_id": "inside",
+                        },
+                        {
+                            "status": "PAPER_FILLED",
+                            "symbol": "XRPJPY",
+                            "side": "SELL",
+                            "quantity": 1.0,
+                            "fill_price": 221.0,
+                            "timestamp_ms": 9_000,
+                            "client_order_id": "outside",
+                        },
+                    ],
+                },
+            )
+            _write_text(runtime_dir / "cycle_reports.jsonl", "")
+
+            payload = build_ops_trades_payload(
+                runtime_dir,
+                {
+                    "source": ["simulated"],
+                    "from_ms": ["1000"],
+                    "to_ms": ["3000"],
+                    "limit": ["10"],
+                },
+            )
+
+        self.assertEqual(payload["record_count"], 1)
+        self.assertEqual(payload["records"][0]["client_order_id"], "inside")
+        self.assertEqual(payload["records"][0]["source"], "simulated")
+
+    def test_ops_version_payload_reports_git_and_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(runtime_dir / "latest_report.json", {"timestamp_ms": 1234, "cycle_mode": "REFRESH"})
+
+            payload = build_ops_version_payload(runtime_dir)
+
+        self.assertIn("head", payload)
+        self.assertEqual(payload["runtime_dir"], str(runtime_dir))
+        self.assertEqual(payload["latest_report_timestamp_ms"], 1234)
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

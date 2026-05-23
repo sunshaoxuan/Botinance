@@ -451,9 +451,11 @@ class TradingEngine:
                     activation_state=self._activation_state_for_symbol(symbol),
                     timestamp_ms=cycle_timestamp_ms,
                     direction_decision=direction_decision if self.settings.direction_engine_enabled else None,
+                    pair_profitability_stats=self._pair_profitability_stats(symbol),
                 )
             )
             policy_decisions.append(policy_decision)
+            self._record_pair_policy_state(symbol=symbol, policy_decision=policy_decision, timestamp_ms=cycle_timestamp_ms)
             if self.settings.policy_engine_enabled:
                 if policy_decision.policy_state in {"PAIR_LOCKED_AFTER_STOP", "OBSERVE_ONLY"} and signal.action == SignalAction.BUY:
                     signal = replace(
@@ -530,7 +532,12 @@ class TradingEngine:
                         "proposal_filter_results": [asdict(item) for item in policy_decision.proposal_filter_results],
                     }
                     policy_handled = True
-                elif self.settings.direction_engine_enabled and not self.settings.legacy_direct_order_fallback:
+                elif (
+                    self.settings.direction_engine_enabled
+                    and not self.settings.legacy_direct_order_fallback
+                    and activation_decision.order is None
+                    and not risk_reentry_block_reason
+                ):
                     execution_result = {
                         "status": "BLOCKED",
                         "reason": "direction_policy_no_order",
@@ -1068,7 +1075,12 @@ class TradingEngine:
         events: List[OrderLifecycleEvent] = []
         orders: List[OrderRequest] = []
         for proposal in policy_decision.order_proposals:
-            order = self._order_from_policy_proposal(proposal, current_price=current_price, filters=filters)
+            order = self._order_from_policy_proposal(
+                proposal,
+                current_price=current_price,
+                filters=filters,
+                timestamp_ms=timestamp_ms,
+            )
             if order is None:
                 results.append(
                     {
@@ -1079,20 +1091,17 @@ class TradingEngine:
                     }
                 )
                 continue
-            result, result_events, result_orders = self._submit_ladder_orders(
+            result, event = self.executor.submit_limit_order(
                 order,
-                current_price=current_price,
+                current_price=order.limit_price or current_price,
                 filters=filters,
                 timestamp_ms=timestamp_ms,
                 entry_candle_close_time_ms=entry_candle_close_time_ms,
-                trigger=proposal.trigger,
-                urgent=proposal.urgent,
-                ladder_group=proposal.ladder_group,
-                tiers_raw=proposal.tiers_raw,
             )
             results.append(result)
-            events.extend(result_events)
-            orders.extend(result_orders)
+            orders.append(order)
+            if event is not None:
+                events.append(event)
 
         accepted = [item for item in results if str(item.get("status")) in {"ORDER_OPEN", "ORDER_LADDER_OPEN", "UNKNOWN"}]
         if len(results) == 1:
@@ -1107,6 +1116,11 @@ class TradingEngine:
             }
         payload["policy_state"] = policy_decision.policy_state
         payload["policy_reason"] = policy_decision.mode_reason_cn
+        if orders:
+            payload["trigger"] = orders[0].trigger
+            payload["side"] = orders[0].side
+            payload["pair_id"] = orders[0].pair_id
+            payload["pair_role"] = orders[0].pair_role
         payload["order_proposals"] = [asdict(item) for item in policy_decision.order_proposals]
         payload["proposal_filter_results"] = [asdict(item) for item in policy_decision.proposal_filter_results]
         payload["protection_locks"] = [asdict(item) for item in policy_decision.protection_locks]
@@ -1126,21 +1140,43 @@ class TradingEngine:
         *,
         current_price: float,
         filters,
+        timestamp_ms: int,
     ) -> OrderRequest | None:
         quantity = self.client.quantize_quantity(proposal.quantity, filters.step_size)
         if quantity <= 0 or quantity < filters.min_qty:
             return None
+        side = proposal.side.upper()
+        raw_limit = current_price * (1.0 - proposal.target_spread_pct) if side == "BUY" else current_price * (1.0 + proposal.target_spread_pct)
+        quantize_price = getattr(self.client, "quantize_price", None)
+        limit_price = (
+            quantize_price(raw_limit, getattr(filters, "tick_size", 0.0))
+            if callable(quantize_price)
+            else raw_limit
+        )
         return OrderRequest(
             symbol=proposal.symbol,
             side=proposal.side,
-            order_type="MARKET",
+            order_type="LIMIT",
             quantity=quantity,
+            limit_price=limit_price,
+            time_in_force=self.settings.order_time_in_force,
+            client_order_id=make_client_order_id(
+                symbol=proposal.symbol,
+                side=proposal.side,
+                trigger=proposal.pair_id or proposal.trigger,
+                tier_index=proposal.tier_index,
+                timestamp_ms=timestamp_ms,
+            ),
             trigger=proposal.trigger,
             ladder_group=proposal.ladder_group,
             target_fraction=proposal.target_fraction,
             target_spread_pct=proposal.target_spread_pct,
             created_reference_price=current_price,
             created_signal_action=proposal.side.upper(),
+            pair_id=proposal.pair_id,
+            pair_role=proposal.pair_role,
+            intended_counter_price=proposal.intended_counter_price,
+            expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
         )
 
     def _submit_ladder_orders(
@@ -1387,6 +1423,33 @@ class TradingEngine:
             return {}
         raw = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
         return raw if isinstance(raw, dict) else {}
+
+    def _pair_profitability_stats(self, symbol: str) -> Dict[str, object]:
+        if self.paper_portfolio is None:
+            return {}
+        raw = self.paper_portfolio.load_snapshot().pair_profitability_stats.get(symbol, {})
+        return raw if isinstance(raw, dict) else {}
+
+    def _record_pair_policy_state(
+        self,
+        *,
+        symbol: str,
+        policy_decision: PolicyDecision,
+        timestamp_ms: int,
+    ) -> None:
+        if self.paper_portfolio is None:
+            return
+        snapshot = self.paper_portfolio.load_snapshot()
+        pair_locks = dict(snapshot.pair_locks)
+        pair_locks[symbol] = {
+            "timestamp_ms": timestamp_ms,
+            "policy_state": policy_decision.policy_state,
+            "mode_reason_cn": policy_decision.mode_reason_cn,
+            "protection_locks": [asdict(item) for item in policy_decision.protection_locks],
+            "inventory_skew_summary": asdict(policy_decision.inventory_skew_summary) if policy_decision.inventory_skew_summary is not None else {},
+            "blockers": list(policy_decision.blockers),
+        }
+        self.paper_portfolio.save_snapshot(replace(snapshot, pair_locks=pair_locks))
 
     def _daily_risk_state(self, *, symbol: str, timestamp_ms: int) -> Dict[str, object]:
         if self.paper_portfolio is None:
@@ -1747,6 +1810,9 @@ class TradingEngine:
                     direction_mode=str((execution.get("direction_decision") or {}).get("mode", "") if isinstance(execution.get("direction_decision"), dict) else ""),
                     price_zone=str(execution.get("price_zone", "")),
                     direction_reason=str(execution.get("direction_reason") or ((execution.get("direction_decision") or {}).get("reason_cn", "") if isinstance(execution.get("direction_decision"), dict) else "")),
+                    pair_id=str(execution.get("pair_id", "")),
+                    pair_role=str(execution.get("pair_role", "")),
+                    expected_pair_net_edge_pct=float(execution.get("expected_pair_net_edge_pct", 0.0) or 0.0),
                 )
             )
         return ledger

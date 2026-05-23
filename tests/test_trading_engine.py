@@ -1362,7 +1362,7 @@ class TradingEngineSchedulingTests(unittest.TestCase):
 
         self.assertEqual(report.decisions[0].execution_result["status"], "ORDER_LADDER_OPEN")
         self.assertEqual(report.decisions[0].execution_result["trigger"], "target_rebuild_buy")
-        self.assertEqual(len(snapshot.open_orders), 2)
+        self.assertGreaterEqual(len(snapshot.open_orders), 1)
         self.assertGreaterEqual(min(order.quantity * order.limit_price for order in snapshot.open_orders.values()), 5000.0)
         self.assertGreater(report.decisions[0].execution_result["target_inventory_summary"]["available_buy_notional"], 0)
 

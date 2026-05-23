@@ -58,6 +58,10 @@ class OrderRequest:
     target_spread_pct: float = 0.0
     created_reference_price: float = 0.0
     created_signal_action: str = ""
+    pair_id: str = ""
+    pair_role: str = ""
+    intended_counter_price: float = 0.0
+    expected_pair_net_edge_pct: float = 0.0
 
 
 def make_client_order_id(
@@ -105,6 +109,10 @@ class ManagedOrder:
     target_spread_pct: float = 0.0
     created_reference_price: float = 0.0
     created_signal_action: str = ""
+    pair_id: str = ""
+    pair_role: str = ""
+    intended_counter_price: float = 0.0
+    expected_pair_net_edge_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -126,6 +134,10 @@ class OrderLifecycleEvent:
     current_spread_pct: float = 0.0
     reprice_tolerance_pct: float = 0.0
     open_order_action: str = ""
+    pair_id: str = ""
+    pair_role: str = ""
+    intended_counter_price: float = 0.0
+    expected_pair_net_edge_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -221,6 +233,10 @@ class OrderProposal:
     reason_cn: str = ""
     source: str = "policy"
     tiers_raw: str = ""
+    pair_id: str = ""
+    pair_role: str = ""
+    intended_counter_price: float = 0.0
+    expected_pair_net_edge_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -236,6 +252,9 @@ class ProposalFilterResult:
     notional: float = 0.0
     net_edge_pct: float = 0.0
     required_edge_pct: float = 0.0
+    pair_id: str = ""
+    pair_role: str = ""
+    expected_pair_net_edge_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -390,6 +409,9 @@ class DecisionLedgerEntry:
     direction_mode: str = ""
     price_zone: str = ""
     direction_reason: str = ""
+    pair_id: str = ""
+    pair_role: str = ""
+    expected_pair_net_edge_pct: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -467,6 +489,10 @@ class PortfolioSnapshot:
     reserved_quote_balance: float = 0.0
     reserved_base_balances: Dict[str, float] = field(default_factory=dict)
     fills: List[Dict[str, object]] = field(default_factory=list)
+    open_order_pairs: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    completed_order_pairs: List[Dict[str, object]] = field(default_factory=list)
+    pair_locks: Dict[str, Dict[str, object]] = field(default_factory=dict)
+    pair_profitability_stats: Dict[str, Dict[str, object]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

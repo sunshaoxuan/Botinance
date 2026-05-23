@@ -67,6 +67,10 @@ class PaperPortfolio:
                 target_spread_pct=float(item.get("target_spread_pct", 0.0)),
                 created_reference_price=float(item.get("created_reference_price", 0.0)),
                 created_signal_action=str(item.get("created_signal_action", "")),
+                pair_id=str(item.get("pair_id", "")),
+                pair_role=str(item.get("pair_role", "")),
+                intended_counter_price=float(item.get("intended_counter_price", 0.0)),
+                expected_pair_net_edge_pct=float(item.get("expected_pair_net_edge_pct", 0.0)),
             )
             for client_order_id, item in payload.get("open_orders", {}).items()
             if isinstance(item, dict)
@@ -85,6 +89,10 @@ class PaperPortfolio:
                 for symbol, quantity in payload.get("reserved_base_balances", {}).items()
             },
             fills=list(payload.get("fills", [])) if isinstance(payload.get("fills", []), list) else [],
+            open_order_pairs=payload.get("open_order_pairs", {}) if isinstance(payload.get("open_order_pairs", {}), dict) else {},
+            completed_order_pairs=list(payload.get("completed_order_pairs", [])) if isinstance(payload.get("completed_order_pairs", []), list) else [],
+            pair_locks=payload.get("pair_locks", {}) if isinstance(payload.get("pair_locks", {}), dict) else {},
+            pair_profitability_stats=payload.get("pair_profitability_stats", {}) if isinstance(payload.get("pair_profitability_stats", {}), dict) else {},
         )
         migrated = self._backfill_position_metadata(snapshot)
         if migrated != snapshot:

@@ -166,9 +166,7 @@ class PolicyEngineTests(unittest.TestCase):
 
         self.assertEqual(decision.policy_state, "PAIR_LOCKED_AFTER_STOP")
         self.assertEqual(decision.order_proposals, [])
-        self.assertTrue(decision.proposal_filter_results)
-        self.assertFalse(decision.proposal_filter_results[0].allowed)
-        self.assertEqual(decision.proposal_filter_results[0].reason, "pair_lock_after_stop")
+        self.assertTrue(any(lock.lock_type == "PAIR_LOCK_AFTER_STOP" for lock in decision.protection_locks))
 
     def test_low_inventory_generates_buy_proposal(self):
         decision = PolicyEngine(_settings()).evaluate(
@@ -192,8 +190,9 @@ class PolicyEngineTests(unittest.TestCase):
         )
 
         self.assertIn(decision.policy_state, {"INVENTORY_REBALANCE", "MARKET_MAKING"})
-        self.assertEqual(len(decision.order_proposals), 1)
-        self.assertEqual(decision.order_proposals[0].side, "BUY")
+        self.assertEqual(len(decision.order_proposals), 5)
+        self.assertTrue(all(item.side == "BUY" for item in decision.order_proposals))
+        self.assertTrue(all(item.pair_id for item in decision.order_proposals))
         self.assertGreater(decision.inventory_skew_summary.buy_weight, 1.0)
 
     def test_direction_decision_blocks_low_inventory_chase_buy(self):
@@ -218,7 +217,9 @@ class PolicyEngineTests(unittest.TestCase):
             )
         )
 
-        self.assertEqual(decision.order_proposals, [])
+        self.assertEqual(len(decision.order_proposals), 1)
+        self.assertEqual(decision.order_proposals[0].side, "BUY")
+        self.assertEqual(decision.order_proposals[0].tier_index, 4)
         self.assertEqual(decision.direction_decision.price_zone, "NEUTRAL_ZONE")
 
     def test_drawdown_guard_blocks_active_proposals(self):

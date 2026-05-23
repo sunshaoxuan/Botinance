@@ -132,11 +132,22 @@ class BinanceSpotClient:
                 balances[item["asset"]] = total
         return balances
 
-    def get_my_trades(self, symbol: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    def get_my_trades(
+        self,
+        symbol: str,
+        limit: int = 1000,
+        start_time_ms: int | None = None,
+        end_time_ms: int | None = None,
+    ) -> List[Dict[str, Any]]:
+        params: Dict[str, Any] = {"symbol": symbol, "limit": limit}
+        if start_time_ms is not None:
+            params["startTime"] = start_time_ms
+        if end_time_ms is not None:
+            params["endTime"] = end_time_ms
         payload = self._signed_request(
             "GET",
             "/api/v3/myTrades",
-            params={"symbol": symbol, "limit": limit},
+            params=params,
         )
         return list(payload)
 

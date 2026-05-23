@@ -91,12 +91,14 @@ class OrderExecutor:
 
         limit_reason = self._open_order_limit_violation(order)
         if limit_reason:
-            if limit_reason == "duplicate_open_ladder_order":
+            if limit_reason in {"duplicate_open_ladder_order", "duplicate_open_pair_order"}:
                 return {
                     "status": "REJECTED",
                     "reason": limit_reason,
                     "symbol": order.symbol,
                     "client_order_id": order.client_order_id,
+                    "pair_id": order.pair_id,
+                    "pair_role": order.pair_role,
                 }, None
             event = OrderLifecycleEvent(
                 timestamp_ms=timestamp_ms,
@@ -187,6 +189,10 @@ class OrderExecutor:
                 "external_order_id": external_order_id,
                 "response": payload,
                 "trigger": order.trigger,
+                "pair_id": order.pair_id,
+                "pair_role": order.pair_role,
+                "intended_counter_price": order.intended_counter_price,
+                "expected_pair_net_edge_pct": order.expected_pair_net_edge_pct,
             }, event
         except Exception as exc:  # noqa: BLE001 - order status is genuinely unknown after transport failures.
             if order.client_order_id:
@@ -225,7 +231,13 @@ class OrderExecutor:
                 reason=str(exc),
                 trigger=order.trigger,
             )
-            return {"status": "UNKNOWN", "reason": str(exc), "client_order_id": order.client_order_id}, event
+            return {
+                "status": "UNKNOWN",
+                "reason": str(exc),
+                "client_order_id": order.client_order_id,
+                "pair_id": order.pair_id,
+                "pair_role": order.pair_role,
+            }, event
 
     def _open_order_limit_violation(self, order: OrderRequest) -> str:
         open_orders = self.open_orders_for_symbol(order.symbol)
@@ -234,6 +246,8 @@ class OrderExecutor:
             return "max_open_orders_per_symbol_reached"
 
         for existing in open_orders:
+            if order.pair_id and existing.pair_id == order.pair_id and existing.pair_role == order.pair_role and existing.tier_index == order.tier_index:
+                return "duplicate_open_pair_order"
             if (
                 existing.side.upper() == order.side.upper()
                 and existing.trigger == order.trigger
@@ -586,6 +600,13 @@ class OrderExecutor:
         }
         if order.status == "UNKNOWN":
             return {"action": "UNKNOWN_WAIT", "reason": "order_status_unknown_wait", **base_payload}
+        if order.pair_id and self.settings.hanging_orders_enabled:
+            if self.settings.order_reprice_enabled and bool(reprice_diagnostic["should_reprice"]):
+                reason = "order_stale_reprice_requested" if stale else "order_reprice_deviation_requested"
+                return {"action": "REPRICE", "reason": reason, **base_payload}
+            if stale:
+                return {"action": "KEEP", "reason": "order_stale_observed", **base_payload}
+            return {"action": "KEEP", "reason": "hanging_pair_order_waiting_for_touch", **base_payload}
         if side == "BUY" and not ai_allow_entry:
             return {"action": "CANCEL", "reason": "ai_risk_worsened_cancel_open_buy", **base_payload}
         if side == "BUY" and signal == "SELL":
@@ -678,6 +699,10 @@ class OrderExecutor:
         fallback_target_spread = fallback.target_spread_pct if fallback is not None else 0.0
         fallback_reference_price = fallback.created_reference_price if fallback is not None else 0.0
         fallback_signal = fallback.created_signal_action if fallback is not None else ""
+        fallback_pair_id = fallback.pair_id if fallback is not None else ""
+        fallback_pair_role = fallback.pair_role if fallback is not None else ""
+        fallback_counter_price = fallback.intended_counter_price if fallback is not None else 0.0
+        fallback_pair_edge = fallback.expected_pair_net_edge_pct if fallback is not None else 0.0
         fallback_external = fallback.external_order_id if isinstance(fallback, ManagedOrder) else ""
         fallback_created = fallback.created_at_ms if isinstance(fallback, ManagedOrder) else timestamp_ms
         fallback_entry_close = fallback.entry_candle_close_time if isinstance(fallback, ManagedOrder) else 0
@@ -718,6 +743,10 @@ class OrderExecutor:
             target_spread_pct=fallback_target_spread,
             created_reference_price=fallback_reference_price,
             created_signal_action=fallback_signal,
+            pair_id=fallback_pair_id,
+            pair_role=fallback_pair_role,
+            intended_counter_price=fallback_counter_price,
+            expected_pair_net_edge_pct=fallback_pair_edge,
         )
 
     @staticmethod
@@ -749,6 +778,10 @@ class OrderExecutor:
             "target_spread_pct": order.target_spread_pct,
             "created_reference_price": order.created_reference_price,
             "created_signal_action": order.created_signal_action,
+            "pair_id": order.pair_id,
+            "pair_role": order.pair_role,
+            "intended_counter_price": order.intended_counter_price,
+            "expected_pair_net_edge_pct": order.expected_pair_net_edge_pct,
         }
         fields.update(updates)
         return ManagedOrder(**fields)
@@ -784,6 +817,10 @@ class OrderExecutor:
             trigger=managed.trigger,
             external_order_id=managed.external_order_id,
             target_spread_pct=managed.target_spread_pct,
+            pair_id=managed.pair_id,
+            pair_role=managed.pair_role,
+            intended_counter_price=managed.intended_counter_price,
+            expected_pair_net_edge_pct=managed.expected_pair_net_edge_pct,
         )
 
     @staticmethod
