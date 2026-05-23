@@ -1740,7 +1740,14 @@ INDEX_HTML = """<!doctype html>
       const originalTotalPnl = asNumber(c.realCostBasis.total_pnl, realUnrealized);
       const realizedOriginalPnl = asNumber(c.realCostBasis.realized_pnl, 0);
       const realized = asNumber(c.paper.realized_pnl, 0);
-      const botiNetPnl = asNumber(c.realCostBasis.boti_net_pnl, asNumber(c.paper.net_pnl, realized + botiUnrealized));
+      const botiOperationPnl = asNumber(
+        c.realCostBasis.boti_operation_pnl,
+        asNumber(payload.boti_pnl_breakdown?.operation_pnl, realized)
+      );
+      const botiMarkToMarketPnl = asNumber(
+        c.realCostBasis.boti_mark_to_market_pnl,
+        asNumber(c.paper.net_pnl, realized + botiUnrealized)
+      );
       const botiInitialEquity = asNumber(c.realCostBasis.boti_initial_equity, NaN);
       const realTotalEquity = asNumber(c.realCostBasis.current_total_equity, realAvg > 0 && qty > 0 && c.currentPrice > 0
         ? asNumber(c.paper.quote_balance, 0) + qty * c.currentPrice
@@ -1786,7 +1793,8 @@ INDEX_HTML = """<!doctype html>
           ["当前权益", fmtCurrency(realTotalEquity, c.quoteAsset)],
           ["原始已实现", fmtCurrency(realizedOriginalPnl, c.quoteAsset)],
           ["原始未实现", fmtCurrency(realUnrealized, c.quoteAsset)],
-          ["Boti接手后操作盈亏", fmtCurrency(botiNetPnl, c.quoteAsset)],
+          ["Boti接手后操作盈亏", fmtCurrency(botiOperationPnl, c.quoteAsset)],
+          ["接手后持仓浮动", fmtCurrency(botiMarkToMarketPnl, c.quoteAsset)],
           ["接手基线", Number.isFinite(botiInitialEquity) ? fmtCurrency(botiInitialEquity, c.quoteAsset) : "--"],
         ])}
       `;
@@ -3835,7 +3843,8 @@ def _build_real_cost_basis_summary(
         boti_initial_equity = _coerce_float(paper_state.get("initial_quote_balance")) + _coerce_float(
             paper_state.get("initial_market_value")
         )
-    boti_net_pnl = _coerce_float(paper_state.get("net_pnl"), current_total_equity - boti_initial_equity)
+    boti_operation_pnl = _coerce_float(paper_state.get("realized_pnl"), 0.0)
+    boti_mark_to_market_pnl = _coerce_float(paper_state.get("net_pnl"), current_total_equity - boti_initial_equity)
     if len(symbols) == 1:
         only_symbol = next(iter(symbols))
         symbols[only_symbol]["realized_pnl"] = realized_pnl
@@ -3851,7 +3860,9 @@ def _build_real_cost_basis_summary(
         "unrealized_pnl": unrealized_pnl,
         "total_pnl": total_pnl,
         "boti_initial_equity": boti_initial_equity,
-        "boti_net_pnl": boti_net_pnl,
+        "boti_operation_pnl": boti_operation_pnl,
+        "boti_mark_to_market_pnl": boti_mark_to_market_pnl,
+        "boti_net_pnl": boti_operation_pnl,
         "symbols": symbols,
     }
 
@@ -5123,7 +5134,9 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
     boti_pnl_breakdown = {
         "realized_pnl": _coerce_float(paper_state.get("realized_pnl"), _coerce_float(latest_report.get("realized_pnl"))),
         "unrealized_pnl": _coerce_float(latest_report.get("unrealized_pnl")),
-        "net_pnl": _coerce_float(latest_report.get("net_pnl")),
+        "operation_pnl": _coerce_float(paper_state.get("realized_pnl"), _coerce_float(latest_report.get("realized_pnl"))),
+        "mark_to_market_pnl": _coerce_float(latest_report.get("net_pnl")),
+        "net_pnl": _coerce_float(paper_state.get("realized_pnl"), _coerce_float(latest_report.get("realized_pnl"))),
         "total_equity": _coerce_float(latest_report.get("total_equity"), _coerce_float(paper_state.get("total_equity"))),
         "baseline": _coerce_float(paper_state.get("initial_quote_balance")),
     }

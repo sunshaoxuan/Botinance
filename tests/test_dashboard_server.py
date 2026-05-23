@@ -53,6 +53,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("冻结资产", INDEX_HTML)
         self.assertIn("交割成本总盈亏", INDEX_HTML)
         self.assertIn("Boti接手后操作盈亏", INDEX_HTML)
+        self.assertIn("接手后持仓浮动", INDEX_HTML)
         self.assertIn("real_cost_basis_summary", INDEX_HTML)
         self.assertIn("挂单已陈旧，继续等待触价", INDEX_HTML)
         self.assertIn("价差结构偏离，建议重定价", INDEX_HTML)
@@ -77,7 +78,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("图表后台加载", INDEX_HTML)
         self.assertIn("后台读取 ${chartInterval} K 线", INDEX_HTML)
         self.assertNotIn("chart-loading active", INDEX_HTML)
-        self.assertLess(INDEX_HTML.find("const realized ="), INDEX_HTML.find("const botiNetPnl ="))
+        self.assertLess(INDEX_HTML.find("const realized ="), INDEX_HTML.find("const botiOperationPnl ="))
         self.assertIn("dashboardRequestSeq", INDEX_HTML)
         self.assertIn("chartRenderSeq", INDEX_HTML)
         self.assertIn("drawerRequestSeq", INDEX_HTML)
@@ -367,8 +368,12 @@ class DashboardServerTests(unittest.TestCase):
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["unrealized_pnl"], 46.8)
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["total_pnl"], -653.2)
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["boti_initial_equity"], 1320.0)
-        self.assertAlmostEqual(payload["real_cost_basis_summary"]["boti_net_pnl"], 126.8)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["boti_operation_pnl"], 0.0)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["boti_mark_to_market_pnl"], 126.8)
+        self.assertAlmostEqual(payload["real_cost_basis_summary"]["boti_net_pnl"], 0.0)
         self.assertAlmostEqual(payload["real_cost_basis_summary"]["symbols"]["XRPJPY"]["sold_quantity"], 8.0)
+        self.assertAlmostEqual(payload["boti_pnl_breakdown"]["operation_pnl"], 0.0)
+        self.assertAlmostEqual(payload["boti_pnl_breakdown"]["net_pnl"], 0.0)
 
     def test_dashboard_payload_can_defer_chart_data(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
