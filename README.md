@@ -204,7 +204,7 @@ Health is considered bad if the dashboard is unreachable, the monitor process is
 
 The dashboard is a five-tab Botinance interface:
 
-- `实时交易`: main-interval candlesticks, volume bars, paper fills, exit lines, AI veto markers, live position state
+- `实时交易`: main-interval candlesticks, volume bars, paper fills, exit lines, AI veto markers, live position state, scenario state
 - `AI 决策`: GPT-5.5 assessment, rule signal, AI verdict, risk-gate explanation, evidence sources
 - `回测分析`: `runtime_backtest_walk` first, then fallback to `runtime_backtest_check`
 - `风险控制`: buy-decision chain, minimum notional checks, budget, rounded quantity, exit-risk lines, current blockers
@@ -284,6 +284,10 @@ Dashboard API additions:
 - `backtest_equity_curve`
 - `backtest_trades`
 - `backtest_manifest`
+- `scenario_decision`
+- `scenario_decisions`
+- `policy_state_summary`
+- `order_proposal_summary`
 
 ## Position activation
 
@@ -341,6 +345,46 @@ ORDER_CANCEL_DEVIATION_PCT=0.0015
 ```
 
 `ORDER_STALE_SECONDS` 是 Boti 对托管限价单的陈旧检查时间。Binance `GTC` 限价单不会自然过期；订单陈旧后默认只记录 `order_stale_observed` 并继续等待触价，只有风险变差、信号反转或满足重定价条件时才撤单。
+
+## Scenario adaptive strategy
+
+`P20` adds a scenario layer before policy proposals. Boti now classifies the current market into one primary scenario, then routes order proposals through the same pair-market-making, inventory-skew, protection, and limit-order lifecycle.
+
+Supported scenarios:
+
+- `RANGE_MARKET_MAKING`: five-level bid and ask pair proposals with inventory skew.
+- `UPTREND_PROBE_ENTRY`: small confirmation buy when MA6 expands above MA18 across at least two short intervals.
+- `UPTREND_PULLBACK_ENTRY`: controlled pullback buy anchored near MA18, VWAP, or fair value.
+- `UPTREND_HOLD_EXPANSION`: hold existing inventory during confirmed expansion and avoid early take profit.
+- `UPTREND_EXHAUSTION_TAKE_PROFIT`: pause chase buys and allow partial reduction when MA18 catches MA6 and MA6 flattens.
+- `DOWNTREND_DEFENSIVE`: only deep-discount, small defensive buy proposals.
+- `PANIC_RISK_REDUCTION`: risk exits and protection locks only.
+- `RECOVERY_AFTER_DROP`: limited recovery entry after MA6 recrosses MA18 with volume recovery.
+- `LOW_VOL_OBSERVE`: no new orders, keep existing GTC orders managed.
+
+Default scenario settings:
+
+```env
+SCENARIO_ENGINE_ENABLED=true
+TREND_PROBE_ENTRY_FRACTION=0.25
+RECOVERY_ENTRY_FRACTION=0.20
+UPTREND_EXPANSION_MIN_PERIODS=2
+UPTREND_EXHAUSTION_GAP_PCT=0.0015
+DOWNTREND_BUY_DISCOUNT_MULTIPLIER=1.8
+LOW_VOL_ATR_PCT=0.0008
+ORDER_TIER_MERGE_ENABLED=true
+ORDER_TIER_MERGE_MIN_NOTIONAL=5000
+```
+
+Runtime reports and `/api/dashboard` expose `scenario_decision` and `scenario_decisions`. The realtime dashboard includes a `场景判断` card with the main scenario, MA expansion count, ATR, volume ratio, allowed actions, blocked actions, and Chinese explanation.
+
+The active order path is:
+
+```text
+ScenarioEngine -> PolicyEngine -> InventorySkewOrderProposalEngine -> OrderProposalFilter -> OrderExecutor
+```
+
+When `POLICY_ENGINE_ENABLED=true` and `LEGACY_DIRECT_ORDER_FALLBACK=false`, old direct entry and rebalance branches remain diagnostic only and cannot bypass policy proposals.
 
 Stop the monitor and dashboard cleanly:
 
