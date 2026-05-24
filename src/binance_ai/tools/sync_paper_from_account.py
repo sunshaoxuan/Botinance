@@ -81,6 +81,43 @@ def build_paper_snapshot_from_balances(
     )
 
 
+def build_cash_baseline_snapshot_from_balances(
+    *,
+    balances: Dict[str, float],
+    symbols: Iterable[str],
+    quote_asset: str,
+    prices: Dict[str, float],
+) -> PortfolioSnapshot:
+    """Convert real-account inventory into a clean paper cash baseline."""
+    quote_balance = float(balances.get(quote_asset, 0.0))
+    liquidation_value = 0.0
+    for symbol in symbols:
+        normalized_symbol = symbol.upper()
+        base_asset = base_asset_for_symbol(normalized_symbol, quote_asset)
+        quantity = float(balances.get(base_asset, 0.0))
+        price = float(prices.get(normalized_symbol, 0.0))
+        if quantity <= 0 or price <= 0:
+            continue
+        liquidation_value += quantity * price
+
+    cash_baseline = quote_balance + liquidation_value
+    return PortfolioSnapshot(
+        quote_asset=quote_asset,
+        quote_balance=cash_baseline,
+        initial_quote_balance=cash_baseline,
+        positions={},
+        realized_pnl=0.0,
+        activation_state={
+            "_baseline": {
+                "mode": "cash_baseline_after_forced_paper_liquidation",
+                "liquidation_value": liquidation_value,
+                "original_quote_balance": quote_balance,
+                "note": "Inventory was converted to paper cash baseline and excluded from Boti operation PnL.",
+            }
+        },
+    )
+
+
 def infer_remaining_cost_basis_from_trades(
     trades: List[Dict[str, Any]],
     current_quantity: float,
@@ -184,11 +221,12 @@ def write_seed_manifest(
     cost_basis_by_symbol: Dict[str, Dict[str, object]],
     stopped_monitor_pid: int | None,
     cleared_files: List[str],
+    mode: str = "paper_state_seed_from_real_account",
 ) -> None:
     payload = {
         "seeded_at_ms": int(time.time() * 1000),
         "source": "binance_account_balances",
-        "mode": "paper_state_seed_from_real_account",
+        "mode": mode,
         "quote_asset": snapshot.quote_asset,
         "symbols": sorted(snapshot.positions),
         "balances": balances,
@@ -214,6 +252,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no-stop-monitor", action="store_true", help="Do not stop an existing monitor.pid process.")
     parser.add_argument("--symbols", default="", help="Comma-separated symbols. Defaults to TRADING_SYMBOLS.")
+    parser.add_argument(
+        "--cash-baseline",
+        action="store_true",
+        help="Convert current real inventory into paper cash and start from a clean cash baseline.",
+    )
     return parser.parse_args()
 
 
@@ -261,14 +304,24 @@ def main() -> None:
         client.close()
 
     timestamp_ms = int(time.time() * 1000)
-    snapshot = build_paper_snapshot_from_balances(
-        balances=balances,
-        symbols=symbols,
-        quote_asset=settings.quote_asset,
-        prices=prices,
-        timestamp_ms=timestamp_ms,
-        cost_basis_by_symbol=cost_basis_by_symbol,
-    )
+    if args.cash_baseline:
+        snapshot = build_cash_baseline_snapshot_from_balances(
+            balances=balances,
+            symbols=symbols,
+            quote_asset=settings.quote_asset,
+            prices=prices,
+        )
+        manifest_mode = "paper_cash_baseline_after_forced_liquidation"
+    else:
+        snapshot = build_paper_snapshot_from_balances(
+            balances=balances,
+            symbols=symbols,
+            quote_asset=settings.quote_asset,
+            prices=prices,
+            timestamp_ms=timestamp_ms,
+            cost_basis_by_symbol=cost_basis_by_symbol,
+        )
+        manifest_mode = "paper_state_seed_from_real_account"
     cleared_files = clear_simulated_runtime(output_dir, archive_root)
     (output_dir / "paper_state.json").write_text(
         json.dumps(asdict(snapshot), ensure_ascii=True, indent=2),
@@ -282,6 +335,7 @@ def main() -> None:
         cost_basis_by_symbol=cost_basis_by_symbol,
         stopped_monitor_pid=stopped_monitor_pid,
         cleared_files=cleared_files,
+        mode=manifest_mode,
     )
 
     summary = {

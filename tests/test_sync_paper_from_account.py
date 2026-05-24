@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from binance_ai.tools.sync_paper_from_account import (
+    build_cash_baseline_snapshot_from_balances,
     build_paper_snapshot_from_balances,
     clear_simulated_runtime,
     infer_remaining_cost_basis_from_trades,
@@ -29,6 +30,23 @@ class SyncPaperFromAccountTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.initial_quote_balance, 188.99 + 114.9 * 224.0)
         self.assertEqual(snapshot.realized_pnl, 0.0)
         self.assertEqual(snapshot.activation_state["XRPJPY"]["cost_basis_source"], "sync_current_price")
+
+    def test_build_cash_baseline_snapshot_converts_inventory_to_quote(self) -> None:
+        snapshot = build_cash_baseline_snapshot_from_balances(
+            balances={"JPY": 188.99, "XRP": 114.9, "BTC": 0.0},
+            symbols=["XRPJPY", "BTCJPY"],
+            quote_asset="JPY",
+            prices={"XRPJPY": 224.0, "BTCJPY": 15_000_000.0},
+        )
+
+        expected_cash = 188.99 + 114.9 * 224.0
+        self.assertEqual(snapshot.quote_asset, "JPY")
+        self.assertAlmostEqual(snapshot.quote_balance, expected_cash)
+        self.assertAlmostEqual(snapshot.initial_quote_balance, expected_cash)
+        self.assertEqual(snapshot.positions, {})
+        self.assertEqual(snapshot.fills, [])
+        self.assertEqual(snapshot.realized_pnl, 0.0)
+        self.assertEqual(snapshot.activation_state["_baseline"]["mode"], "cash_baseline_after_forced_paper_liquidation")
 
     def test_build_paper_snapshot_keeps_trade_cost_basis_as_metadata(self) -> None:
         snapshot = build_paper_snapshot_from_balances(

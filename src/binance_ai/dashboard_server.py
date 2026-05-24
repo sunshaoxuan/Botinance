@@ -20,6 +20,7 @@ from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.models import Candle
 from binance_ai.tools.sync_paper_from_account import (
     base_asset_for_symbol,
+    build_cash_baseline_snapshot_from_balances,
     build_paper_snapshot_from_balances,
     clear_simulated_runtime,
     infer_remaining_cost_basis_from_trades,
@@ -5013,7 +5014,12 @@ def _ops_write_token() -> str:
     return (os.environ.get("BOTINANCE_OPS_TOKEN") or os.environ.get("OPS_WRITE_TOKEN") or "").strip()
 
 
-def _seed_paper_from_real_account(runtime_dir: Path, *, archive_root: Path | None) -> Dict[str, Any]:
+def _seed_paper_from_real_account(
+    runtime_dir: Path,
+    *,
+    archive_root: Path | None,
+    cash_baseline: bool = False,
+) -> Dict[str, Any]:
     settings = load_settings()
     if not settings.dry_run:
         raise RuntimeError("Refusing to reset paper state while DRY_RUN=false.")
@@ -5041,14 +5047,24 @@ def _seed_paper_from_real_account(runtime_dir: Path, *, archive_root: Path | Non
         client.close()
 
     timestamp_ms = int(time.time() * 1000)
-    snapshot = build_paper_snapshot_from_balances(
-        balances=balances,
-        symbols=symbols,
-        quote_asset=settings.quote_asset,
-        prices=prices,
-        timestamp_ms=timestamp_ms,
-        cost_basis_by_symbol=cost_basis_by_symbol,
-    )
+    if cash_baseline:
+        snapshot = build_cash_baseline_snapshot_from_balances(
+            balances=balances,
+            symbols=symbols,
+            quote_asset=settings.quote_asset,
+            prices=prices,
+        )
+        manifest_mode = "paper_cash_baseline_after_forced_liquidation"
+    else:
+        snapshot = build_paper_snapshot_from_balances(
+            balances=balances,
+            symbols=symbols,
+            quote_asset=settings.quote_asset,
+            prices=prices,
+            timestamp_ms=timestamp_ms,
+            cost_basis_by_symbol=cost_basis_by_symbol,
+        )
+        manifest_mode = "paper_state_seed_from_real_account"
     cleared_files = clear_simulated_runtime(runtime_dir, archive_root)
     (runtime_dir / "paper_state.json").write_text(json.dumps(asdict(snapshot), ensure_ascii=True, indent=2), encoding="utf-8")
     write_seed_manifest(
@@ -5059,9 +5075,11 @@ def _seed_paper_from_real_account(runtime_dir: Path, *, archive_root: Path | Non
         cost_basis_by_symbol=cost_basis_by_symbol,
         stopped_monitor_pid=None,
         cleared_files=cleared_files,
+        mode=manifest_mode,
     )
     return {
         "status": "reset_complete",
+        "mode": manifest_mode,
         "cleared_files": cleared_files,
         "quote_asset": snapshot.quote_asset,
         "quote_balance": snapshot.quote_balance,
@@ -5076,6 +5094,7 @@ def _seed_paper_from_real_account(runtime_dir: Path, *, archive_root: Path | Non
             }
             for symbol, position in snapshot.positions.items()
         },
+        "baseline": snapshot.activation_state.get("_baseline", {}),
     }
 
 
@@ -5304,8 +5323,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             payload = self._read_json_body()
             archive_root_raw = str(payload.get("archive_root") or "runtime_resets").strip()
             archive_root = Path(archive_root_raw) if archive_root_raw else None
+            cash_baseline = bool(payload.get("cash_baseline") or payload.get("force_cash_baseline"))
             try:
-                self._send_json(_seed_paper_from_real_account(self.runtime_dir, archive_root=archive_root))
+                self._send_json(
+                    _seed_paper_from_real_account(
+                        self.runtime_dir,
+                        archive_root=archive_root,
+                        cash_baseline=cash_baseline,
+                    )
+                )
             except Exception as exc:  # noqa: BLE001
                 self._send_json(
                     {
