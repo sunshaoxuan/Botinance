@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Dict, Iterable, List, Sequence
 
 from binance_ai.config import Settings
@@ -15,6 +15,7 @@ from binance_ai.models import (
     PolicyDecision,
     ProposalFilterResult,
     ProtectionLock,
+    ScenarioDecision,
     SignalAction,
     SymbolFilters,
     TradeSignal,
@@ -41,6 +42,7 @@ class PolicyContext:
     activation_state: Dict[str, object]
     timestamp_ms: int
     direction_decision: DirectionDecision | None = None
+    scenario_decision: ScenarioDecision | None = None
     pair_profitability_stats: Dict[str, object] | None = None
 
 
@@ -280,6 +282,9 @@ class InventorySkewOrderProposalEngine:
         if not self.settings.pair_market_making_enabled:
             return []
 
+        scenario = context.scenario_decision
+        if scenario is not None and not scenario.generate_new_orders:
+            return []
         pending_buyback = self._float(context.activation_state.get("pending_buyback_quantity"))
         cooldown_until = int(self._float(context.activation_state.get("buyback_cooldown_until_candle")))
         cooldown_active = cooldown_until > context.timestamp_ms
@@ -304,11 +309,48 @@ class InventorySkewOrderProposalEngine:
         if risk_reentry_blocked:
             allow_buy_pairs = False
 
+        buy_size_fraction = 1.0
+        sell_size_fraction = 1.0
+        buy_discount_multiplier = 1.0
+        buy_trigger = "recovery_entry" if policy_state == "RECOVERY_ENTRY" else "target_rebuild_buy"
+        sell_trigger = "target_rebalance_sell"
+        buy_reason = "价格进入折价区，按库存偏移生成成对买入挂单"
+        sell_reason = "价格进入溢价区，按库存偏移生成成对卖出挂单"
+        max_buy_levels = len(spreads)
+        max_sell_levels = len(spreads)
+        if scenario is not None:
+            buy_size_fraction = max(0.0, min(1.0, scenario.buy_size_fraction))
+            sell_size_fraction = max(0.0, min(1.0, scenario.sell_size_fraction))
+            buy_discount_multiplier = max(1.0, scenario.buy_discount_multiplier)
+            state = scenario.scenario_state
+            if state in {"UPTREND_PROBE_ENTRY", "UPTREND_PULLBACK_ENTRY", "RECOVERY_AFTER_DROP"}:
+                allow_buy_pairs = allow_buy_pairs or context.target_inventory.available_buy_notional > 0
+                allow_sell_pairs = False if state != "UPTREND_PULLBACK_ENTRY" else allow_sell_pairs
+                buy_trigger = "trend_probe_entry" if state == "UPTREND_PROBE_ENTRY" else "recovery_entry" if state == "RECOVERY_AFTER_DROP" else "pullback_entry"
+                buy_reason = scenario.reason_cn
+                max_buy_levels = min(max_buy_levels, 2)
+            elif state == "UPTREND_HOLD_EXPANSION":
+                allow_buy_pairs = False
+                allow_sell_pairs = context.target_inventory.current_fraction > context.target_inventory.upper_fraction
+                sell_reason = scenario.reason_cn
+            elif state == "UPTREND_EXHAUSTION_TAKE_PROFIT":
+                allow_buy_pairs = False
+                allow_sell_pairs = context.target_inventory.allowed_sell_quantity > 0
+                sell_trigger = "uptrend_take_profit"
+                sell_reason = scenario.reason_cn
+                max_sell_levels = min(max_sell_levels, 2)
+            elif state == "DOWNTREND_DEFENSIVE":
+                allow_buy_pairs = context.target_inventory.current_fraction < context.target_inventory.lower_fraction and context.target_inventory.available_buy_notional > 0
+                allow_sell_pairs = context.target_inventory.current_fraction > context.target_inventory.target_fraction
+                buy_trigger = "defensive_deep_discount_buy"
+                buy_reason = scenario.reason_cn
+                max_buy_levels = min(max_buy_levels, 1)
+
         pair_count = self._pair_count()
-        buy_budget = max(0.0, context.target_inventory.available_buy_notional * max(0.0, skew.buy_weight))
-        sell_budget_qty = max(0.0, min(context.base_balance, context.target_inventory.allowed_sell_quantity * max(0.0, skew.sell_weight)))
-        buy_levels = min(pair_count, len(spreads))
-        sell_levels = min(pair_count, len(spreads))
+        buy_budget = max(0.0, context.target_inventory.available_buy_notional * max(0.0, skew.buy_weight) * buy_size_fraction)
+        sell_budget_qty = max(0.0, min(context.base_balance, context.target_inventory.allowed_sell_quantity * max(0.0, skew.sell_weight) * sell_size_fraction))
+        buy_levels = min(pair_count, max_buy_levels)
+        sell_levels = min(pair_count, max_sell_levels)
 
         if allow_buy_pairs and buy_budget > 0:
             per_level_notional = min(
@@ -316,14 +358,17 @@ class InventorySkewOrderProposalEngine:
                 buy_budget / max(1, buy_levels),
             )
             for index, spread in enumerate(spreads[:buy_levels]):
+                spread = spread * buy_discount_multiplier
+                if scenario is not None and scenario.buy_anchor_price > 0 and scenario.buy_anchor_price < context.price:
+                    spread = max(spread, context.price / scenario.buy_anchor_price - 1.0)
                 bid_price = price_reference * (1.0 - spread)
                 ask_target = price_reference * (1.0 + spread)
-                pair_id = f"{context.symbol}:{policy_state.lower()}:buy:{index}:{context.timestamp_ms}"
+                pair_id = f"{context.symbol}:{policy_state.lower()}:{buy_trigger}:buy:{index}:{context.timestamp_ms}"
                 proposals.append(
                     OrderProposal(
                         symbol=context.symbol,
                         side="BUY",
-                        trigger="recovery_entry" if policy_state == "RECOVERY_ENTRY" else "target_rebuild_buy",
+                        trigger=buy_trigger,
                         ladder_group="pair_market_making",
                         quantity=per_level_notional / bid_price if bid_price > 0 else 0.0,
                         notional=per_level_notional,
@@ -332,7 +377,7 @@ class InventorySkewOrderProposalEngine:
                         target_spread_pct=spread,
                         target_fraction=1.0 / max(1, buy_levels),
                         score=context.composite_decision.buy_score,
-                        reason_cn="价格进入折价区，按库存偏移生成成对买入挂单",
+                        reason_cn=buy_reason,
                         source="pair_market_making",
                         pair_id=pair_id,
                         pair_role="bid",
@@ -346,12 +391,12 @@ class InventorySkewOrderProposalEngine:
             for index, spread in enumerate(spreads[:sell_levels]):
                 ask_price = price_reference * (1.0 + spread)
                 bid_target = price_reference * (1.0 - spread)
-                pair_id = f"{context.symbol}:{policy_state.lower()}:sell:{index}:{context.timestamp_ms}"
+                pair_id = f"{context.symbol}:{policy_state.lower()}:{sell_trigger}:sell:{index}:{context.timestamp_ms}"
                 proposals.append(
                     OrderProposal(
                         symbol=context.symbol,
                         side="SELL",
-                        trigger="target_rebalance_sell",
+                        trigger=sell_trigger,
                         ladder_group="pair_market_making",
                         quantity=per_level_quantity,
                         notional=per_level_quantity * ask_price,
@@ -360,7 +405,7 @@ class InventorySkewOrderProposalEngine:
                         target_spread_pct=spread,
                         target_fraction=1.0 / max(1, sell_levels),
                         score=context.composite_decision.sell_score,
-                        reason_cn="价格进入溢价区，按库存偏移生成成对卖出挂单",
+                        reason_cn=sell_reason,
                         source="pair_market_making",
                         pair_id=pair_id,
                         pair_role="ask",
@@ -368,7 +413,49 @@ class InventorySkewOrderProposalEngine:
                         expected_pair_net_edge_pct=self._pair_net_edge_pct(bid_target, ask_price),
                     )
                 )
-        return proposals
+        return self._merge_small_tiers(proposals)
+
+    def _merge_small_tiers(self, proposals: List[OrderProposal]) -> List[OrderProposal]:
+        if not self.settings.order_tier_merge_enabled:
+            return proposals
+        threshold = max(self.settings.order_tier_merge_min_notional, self.settings.min_effective_order_notional)
+        if threshold <= 0:
+            return proposals
+        merged: List[OrderProposal] = []
+        pending: List[OrderProposal] = []
+        for proposal in proposals:
+            if proposal.notional >= threshold or proposal.urgent:
+                if pending:
+                    merged.append(self._merge_group(pending))
+                    pending = []
+                merged.append(proposal)
+                continue
+            pending.append(proposal)
+            if sum(item.notional for item in pending) >= threshold:
+                merged.append(self._merge_group(pending))
+                pending = []
+        if pending:
+            merged.append(self._merge_group(pending))
+        return merged
+
+    @staticmethod
+    def _merge_group(group: Sequence[OrderProposal]) -> OrderProposal:
+        first = group[0]
+        notional = sum(item.notional for item in group)
+        quantity = sum(item.quantity for item in group)
+        spread = sum(item.target_spread_pct * item.notional for item in group) / notional if notional > 0 else first.target_spread_pct
+        edge = min(item.expected_pair_net_edge_pct for item in group)
+        tiers = ",".join(str(item.tier_index) for item in group)
+        return replace(
+            first,
+            quantity=quantity,
+            notional=notional,
+            target_spread_pct=spread,
+            target_fraction=sum(item.target_fraction for item in group),
+            reason_cn=f"{first.reason_cn}；已合并小档位 {tiers}",
+            pair_id=f"{first.pair_id}:merged:{tiers}",
+            expected_pair_net_edge_pct=edge,
+        )
 
     def _pair_count(self) -> int:
         return max(1, min(self.settings.order_levels_per_side, self.settings.order_max_open_per_side))
@@ -470,11 +557,17 @@ class OrderProposalFilter:
                 )
             buy_limit = context.price * (1.0 - proposal.target_spread_pct)
             if context.direction_decision is not None and buy_limit > context.direction_decision.buy_zone_price:
-                return self._blocked(
-                    proposal,
-                    "direction_buy_zone_not_reached",
-                    f"买单价 {buy_limit:.4f} 仍高于折价买入区 {context.direction_decision.buy_zone_price:.4f}",
-                )
+                scenario_state = context.scenario_decision.scenario_state if context.scenario_decision is not None else ""
+                if proposal.trigger not in {"trend_probe_entry", "pullback_entry", "recovery_entry"} or scenario_state not in {
+                    "UPTREND_PROBE_ENTRY",
+                    "UPTREND_PULLBACK_ENTRY",
+                    "RECOVERY_AFTER_DROP",
+                }:
+                    return self._blocked(
+                        proposal,
+                        "direction_buy_zone_not_reached",
+                        f"买单价 {buy_limit:.4f} 仍高于折价买入区 {context.direction_decision.buy_zone_price:.4f}",
+                    )
             reserved_quote = sum(
                 order.reserved_quote for order in context.open_orders if order.side.upper() == "BUY"
             )
@@ -606,6 +699,8 @@ class PolicyEngine:
             proposal_filter_results=filter_results,
             inventory_skew_summary=skew,
             direction_decision=context.direction_decision,
+            scenario_decision=context.scenario_decision,
+            merged_order_proposals=list(raw_proposals),
             blockers=blockers,
         )
 

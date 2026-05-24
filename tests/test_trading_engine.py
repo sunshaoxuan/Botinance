@@ -189,9 +189,10 @@ class TradingEngineSchedulingTests(unittest.TestCase):
 
             report = engine.run_cycle()
 
-        self.assertEqual(report.decisions[0].execution_result["status"], "BLOCKED")
-        self.assertEqual(report.decisions[0].execution_result["reason"], "direction_policy_no_order")
-        self.assertIn("拒绝追涨买入", report.decisions[0].execution_result["direction_reason"])
+        self.assertIn(report.decisions[0].execution_result["status"], {"ORDER_OPEN", "ORDER_LADDER_OPEN"})
+        self.assertEqual(report.decisions[0].execution_result["policy_state"], "INVENTORY_REBALANCE")
+        self.assertEqual(report.decisions[0].execution_result["trigger"], "target_rebuild_buy")
+        self.assertEqual(report.decisions[0].order.ladder_group, "pair_market_making")
         self.assertFalse(report.direction_decisions[0].allow_buy)
 
     def test_dust_position_does_not_block_cash_rebuild_buy(self) -> None:

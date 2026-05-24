@@ -206,6 +206,23 @@ class DirectionDecision:
 
 
 @dataclass(frozen=True)
+class ScenarioDecision:
+    symbol: str
+    scenario_state: str
+    reason_cn: str
+    indicators: Dict[str, object] = field(default_factory=dict)
+    order_templates: List[Dict[str, object]] = field(default_factory=list)
+    allowed_actions: List[str] = field(default_factory=list)
+    blocked_actions: List[str] = field(default_factory=list)
+    buy_anchor_price: float = 0.0
+    sell_anchor_price: float = 0.0
+    buy_size_fraction: float = 1.0
+    sell_size_fraction: float = 1.0
+    buy_discount_multiplier: float = 1.0
+    generate_new_orders: bool = True
+
+
+@dataclass(frozen=True)
 class ProtectionLock:
     symbol: str
     lock_type: str
@@ -281,6 +298,8 @@ class PolicyDecision:
     proposal_filter_results: List[ProposalFilterResult] = field(default_factory=list)
     inventory_skew_summary: InventorySkewSummary | None = None
     direction_decision: DirectionDecision | None = None
+    scenario_decision: ScenarioDecision | None = None
+    merged_order_proposals: List[OrderProposal] = field(default_factory=list)
     blockers: List[str] = field(default_factory=list)
 
 
@@ -434,6 +453,7 @@ class CycleReport:
     composite_decisions: List[CompositeDecision]
     policy_decisions: List[PolicyDecision]
     direction_decisions: List[DirectionDecision]
+    scenario_decisions: List[ScenarioDecision]
     order_lifecycle_events: List[OrderLifecycleEvent]
     open_orders: List[ManagedOrder]
     ai_risk_assessments: List[AiRiskAssessment]

@@ -1079,6 +1079,7 @@ INDEX_HTML = """<!doctype html>
             <div class="card" id="sellDecisionCard"></div>
             <div class="card" id="riskGateCard"></div>
             <div class="card" id="openOrderCard"></div>
+            <div class="card" id="scenarioCard"></div>
             <div class="card" id="entryPlanCard"></div>
             <div class="card" id="executionCard"></div>
           </aside>
@@ -1230,7 +1231,7 @@ INDEX_HTML = """<!doctype html>
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
       "profitCurveLabel",
-      "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "entryPlanCard", "executionCard", "tradeFillsTable",
+      "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "scenarioCard", "entryPlanCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "entryPlanFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1686,12 +1687,13 @@ INDEX_HTML = """<!doctype html>
       const openOrderGroups = payload.open_order_groups || payload.order_ladder_summary || {};
       const targetInventory = (payload.target_inventory_summary || {})[symbol] || executionResult.target_inventory_summary || {};
       const directionDecision = (payload.direction_decision || executionResult.direction_decision || (latest.direction_decisions || [])[0] || {});
+      const scenarioDecision = (payload.scenario_decision || executionResult.scenario_decision || (latest.scenario_decisions || [])[0] || {});
       const effectiveOrderGuard = (payload.effective_order_guard || {})[symbol] || {};
       const dailyRiskBudget = (payload.daily_risk_budget || {})[symbol] || {};
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
       const profitCurve = payload.live_profit_curve || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, targetInventory, directionDecision, effectiveOrderGuard, dailyRiskBudget, orderEvents, orderMarkers, profitCurve };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, targetInventory, directionDecision, scenarioDecision, effectiveOrderGuard, dailyRiskBudget, orderEvents, orderMarkers, profitCurve };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1848,6 +1850,21 @@ INDEX_HTML = """<!doctype html>
         <div class="card-label"><span>当前挂单组</span>${statusChip("无挂单", "wait")}</div>
         <div class="card-value">--</div>
         <div class="card-note prose">当前没有等待成交的限价单。</div>
+      `;
+
+      const scenario = c.scenarioDecision || {};
+      const scenarioIndicators = scenario.indicators || {};
+      els.scenarioCard.innerHTML = `
+        <div class="card-label"><span>场景判断</span>${statusChip(escapeHtml(scenario.scenario_state || "未知"), "wait")}</div>
+        <div class="card-value small">${escapeHtml(scenario.scenario_state || "--")}</div>
+        ${miniKvRows([
+          ["MA扩散", scenarioIndicators.ma_expanding_periods !== undefined ? `${scenarioIndicators.ma_expanding_periods} 个周期` : "--"],
+          ["ATR", scenarioIndicators.atr_pct !== undefined ? fmtPercent(scenarioIndicators.atr_pct) : "--"],
+          ["量能", scenarioIndicators.volume_ratio !== undefined ? `${fmtNumber(scenarioIndicators.volume_ratio, 2)}x` : "--"],
+          ["允许动作", (scenario.allowed_actions || []).join(" / ") || "--"],
+          ["禁止动作", (scenario.blocked_actions || []).join(" / ") || "--"],
+        ])}
+        <div class="card-note detail">${escapeHtml(scenario.reason_cn || "暂无场景说明")}</div>
       `;
 
       const firstEntryTier = entryPlan.tiers[0] || {};
@@ -3463,6 +3480,15 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "sell_zone_min_premium_pct": settings.sell_zone_min_premium_pct,
         "min_pair_net_edge_pct": settings.min_pair_net_edge_pct,
         "allow_risk_sell_below_sell_zone": settings.allow_risk_sell_below_sell_zone,
+        "scenario_engine_enabled": settings.scenario_engine_enabled,
+        "trend_probe_entry_fraction": settings.trend_probe_entry_fraction,
+        "recovery_entry_fraction": settings.recovery_entry_fraction,
+        "uptrend_expansion_min_periods": settings.uptrend_expansion_min_periods,
+        "uptrend_exhaustion_gap_pct": settings.uptrend_exhaustion_gap_pct,
+        "downtrend_buy_discount_multiplier": settings.downtrend_buy_discount_multiplier,
+        "low_vol_atr_pct": settings.low_vol_atr_pct,
+        "order_tier_merge_enabled": settings.order_tier_merge_enabled,
+        "order_tier_merge_min_notional": settings.order_tier_merge_min_notional,
     }
 
 
@@ -4718,6 +4744,7 @@ def _build_policy_payload(latest_report: Dict[str, Any]) -> Dict[str, Any]:
             "reason": item.get("mode_reason_cn", ""),
             "inventory_skew_summary": item.get("inventory_skew_summary", {}),
             "direction_decision": item.get("direction_decision", {}),
+            "scenario_decision": item.get("scenario_decision", {}),
             "accepted_proposal_count": len(proposals),
             "rejected_proposal_count": len(rejected),
         }
@@ -4727,6 +4754,7 @@ def _build_policy_payload(latest_report: Dict[str, Any]) -> Dict[str, Any]:
         }
         order_proposal_summary[symbol] = {
             "proposals": proposals,
+            "merged_proposals": item.get("merged_order_proposals", []),
             "filter_results": filters,
             "blocked_reasons_cn": [str(result.get("reason_cn", "")) for result in rejected],
         }
@@ -5215,6 +5243,8 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "policy_decisions": latest_report.get("policy_decisions", []),
         "direction_decisions": latest_report.get("direction_decisions", []),
         "direction_decision": (latest_report.get("direction_decisions", [{}]) or [{}])[0],
+        "scenario_decisions": latest_report.get("scenario_decisions", []),
+        "scenario_decision": (latest_report.get("scenario_decisions", [{}]) or [{}])[0],
         "decision_ledger": decision_ledger,
         "position_activation_state": paper_state.get("activation_state", {}),
         "runtime_config": runtime_config,

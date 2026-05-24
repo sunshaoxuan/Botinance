@@ -12,12 +12,13 @@ from binance_ai.direction import DirectionDecisionEngine
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, DirectionDecision, LlmAnalysis, OrderLifecycleEvent, OrderProposal, OrderRequest, PolicyDecision, PositionDiagnostic, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, DirectionDecision, LlmAnalysis, OrderLifecycleEvent, OrderProposal, OrderRequest, PolicyDecision, PositionDiagnostic, ScenarioDecision, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.policy.engine import PolicyContext, PolicyEngine
 from binance_ai.position_activation import PositionActivationDecision, PositionActivationEngine
 from binance_ai.risk.engine import RiskEngine
+from binance_ai.scenario import ScenarioEngine
 from binance_ai.strategy.base import Strategy
 from binance_ai.target_inventory import TargetInventoryDecision, TargetInventoryEngine
 from binance_ai.trade_guard import TradeProfitabilityGuard
@@ -53,6 +54,7 @@ class TradingEngine:
         self.composite_decision = CompositeDecisionEngine(settings)
         self.policy_engine = PolicyEngine(settings)
         self.direction_decision = DirectionDecisionEngine(settings)
+        self.scenario_engine = ScenarioEngine(settings)
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -73,6 +75,7 @@ class TradingEngine:
         composite_decisions: List[CompositeDecision] = []
         policy_decisions: List[PolicyDecision] = []
         direction_decisions: List[DirectionDecision] = []
+        scenario_decisions: List[ScenarioDecision] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
         symbol_contexts: List[Dict[str, object]] = []
@@ -85,6 +88,10 @@ class TradingEngine:
                     self.settings.mtf_entry_interval,
                     self.settings.mtf_trend_interval,
                     "1m",
+                    "3m",
+                    "5m",
+                    "30m",
+                    "1h",
                 ],
                 limit=self.settings.kline_limit,
             )
@@ -422,6 +429,23 @@ class TradingEngine:
                             reason=protection_reason,
                             regime=composite_decision.scenario,
                         )
+            scenario_decision = self.scenario_engine.evaluate(
+                symbol=symbol,
+                price=price,
+                candles_by_interval=context["candles_by_interval"],
+                target_inventory=target_inventory,
+                ai_assessment=ai_assessment,
+                has_position=has_position,
+            )
+            if not self.settings.scenario_engine_enabled:
+                scenario_decision = ScenarioDecision(
+                    symbol=symbol,
+                    scenario_state="RANGE_MARKET_MAKING",
+                    reason_cn="场景引擎关闭，沿用区间做市模板",
+                    allowed_actions=["BUY", "SELL"],
+                    order_templates=[{"name": "pair_market_making", "source": "disabled"}],
+                )
+            scenario_decisions.append(scenario_decision)
             direction_decision = self.direction_decision.evaluate(
                 symbol=symbol,
                 price=price,
@@ -451,6 +475,7 @@ class TradingEngine:
                     activation_state=self._activation_state_for_symbol(symbol),
                     timestamp_ms=cycle_timestamp_ms,
                     direction_decision=direction_decision if self.settings.direction_engine_enabled else None,
+                    scenario_decision=scenario_decision if self.settings.scenario_engine_enabled else None,
                     pair_profitability_stats=self._pair_profitability_stats(symbol),
                 )
             )
@@ -840,6 +865,11 @@ class TradingEngine:
             execution_result.setdefault("expected_net_edge_pct", direction_decision.expected_net_edge_pct)
             execution_result.setdefault("paired_order_state", direction_decision.paired_order_state)
             execution_result.setdefault("policy_decision", asdict(policy_decision))
+            execution_result.setdefault("scenario_decision", asdict(scenario_decision))
+            execution_result.setdefault("scenario_state", scenario_decision.scenario_state)
+            execution_result.setdefault("scenario_reason_cn", scenario_decision.reason_cn)
+            execution_result.setdefault("scenario_indicators", scenario_decision.indicators)
+            execution_result.setdefault("scenario_order_templates", scenario_decision.order_templates)
             execution_result.setdefault("policy_state", policy_decision.policy_state)
             execution_result.setdefault("protection_locks", [asdict(item) for item in policy_decision.protection_locks])
             execution_result.setdefault("proposal_filter_results", [asdict(item) for item in policy_decision.proposal_filter_results])
@@ -884,6 +914,7 @@ class TradingEngine:
             composite_decisions=composite_decisions,
             policy_decisions=policy_decisions,
             direction_decisions=direction_decisions,
+            scenario_decisions=scenario_decisions,
             order_lifecycle_events=order_lifecycle_events,
             open_orders=self.executor.all_open_orders(),
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],

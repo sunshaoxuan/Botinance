@@ -190,9 +190,11 @@ class PolicyEngineTests(unittest.TestCase):
         )
 
         self.assertIn(decision.policy_state, {"INVENTORY_REBALANCE", "MARKET_MAKING"})
-        self.assertEqual(len(decision.order_proposals), 5)
+        self.assertEqual(len(decision.merged_order_proposals), 2)
+        self.assertEqual(len(decision.order_proposals), 2)
         self.assertTrue(all(item.side == "BUY" for item in decision.order_proposals))
         self.assertTrue(all(item.pair_id for item in decision.order_proposals))
+        self.assertGreaterEqual(decision.order_proposals[0].notional, 5000.0)
         self.assertGreater(decision.inventory_skew_summary.buy_weight, 1.0)
 
     def test_direction_decision_blocks_low_inventory_chase_buy(self):

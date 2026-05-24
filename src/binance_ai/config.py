@@ -180,6 +180,15 @@ class Settings:
     sell_zone_min_premium_pct: float = 0.0025
     min_pair_net_edge_pct: float = 0.0045
     allow_risk_sell_below_sell_zone: bool = True
+    scenario_engine_enabled: bool = True
+    trend_probe_entry_fraction: float = 0.25
+    recovery_entry_fraction: float = 0.20
+    uptrend_expansion_min_periods: int = 2
+    uptrend_exhaustion_gap_pct: float = 0.0015
+    downtrend_buy_discount_multiplier: float = 1.8
+    low_vol_atr_pct: float = 0.0008
+    order_tier_merge_enabled: bool = True
+    order_tier_merge_min_notional: float = 5000.0
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -347,4 +356,13 @@ def load_settings() -> Settings:
         sell_zone_min_premium_pct=float(os.getenv("SELL_ZONE_MIN_PREMIUM_PCT", "0.0025")),
         min_pair_net_edge_pct=float(os.getenv("MIN_PAIR_NET_EDGE_PCT", "0.0045")),
         allow_risk_sell_below_sell_zone=_parse_bool(os.getenv("ALLOW_RISK_SELL_BELOW_SELL_ZONE"), True),
+        scenario_engine_enabled=_parse_bool(os.getenv("SCENARIO_ENGINE_ENABLED"), True),
+        trend_probe_entry_fraction=float(os.getenv("TREND_PROBE_ENTRY_FRACTION", "0.25")),
+        recovery_entry_fraction=float(os.getenv("RECOVERY_ENTRY_FRACTION", "0.20")),
+        uptrend_expansion_min_periods=int(os.getenv("UPTREND_EXPANSION_MIN_PERIODS", "2")),
+        uptrend_exhaustion_gap_pct=float(os.getenv("UPTREND_EXHAUSTION_GAP_PCT", "0.0015")),
+        downtrend_buy_discount_multiplier=float(os.getenv("DOWNTREND_BUY_DISCOUNT_MULTIPLIER", "1.8")),
+        low_vol_atr_pct=float(os.getenv("LOW_VOL_ATR_PCT", "0.0008")),
+        order_tier_merge_enabled=_parse_bool(os.getenv("ORDER_TIER_MERGE_ENABLED"), True),
+        order_tier_merge_min_notional=float(os.getenv("ORDER_TIER_MERGE_MIN_NOTIONAL", "5000")),
     )
