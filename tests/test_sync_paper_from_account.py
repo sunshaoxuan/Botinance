@@ -7,8 +7,11 @@ from pathlib import Path
 from binance_ai.tools.sync_paper_from_account import (
     build_cash_baseline_snapshot_from_balances,
     build_paper_snapshot_from_balances,
+    calculate_cash_baseline_equity,
     clear_simulated_runtime,
     infer_remaining_cost_basis_from_trades,
+    parse_asset_minimums,
+    validate_account_sync_requirements,
 )
 
 
@@ -47,6 +50,36 @@ class SyncPaperFromAccountTests(unittest.TestCase):
         self.assertEqual(snapshot.fills, [])
         self.assertEqual(snapshot.realized_pnl, 0.0)
         self.assertEqual(snapshot.activation_state["_baseline"]["mode"], "cash_baseline_after_forced_paper_liquidation")
+
+    def test_validate_account_sync_requirements_rejects_stale_balances(self) -> None:
+        balances = {"JPY": 188.99, "XRP": 114.9}
+        cash = calculate_cash_baseline_equity(
+            balances=balances,
+            symbols=["XRPJPY"],
+            quote_asset="JPY",
+            prices={"XRPJPY": 224.0},
+        )
+        self.assertAlmostEqual(cash, 188.99 + 114.9 * 224.0)
+
+        with self.assertRaisesRegex(RuntimeError, "Account sync validation failed"):
+            validate_account_sync_requirements(
+                balances=balances,
+                cash_baseline=cash,
+                min_cash_baseline=cash + 1.0,
+                min_assets={},
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "XRP balance"):
+            validate_account_sync_requirements(
+                balances=balances,
+                cash_baseline=cash,
+                min_assets={"XRP": 115.0},
+            )
+
+    def test_parse_asset_minimums(self) -> None:
+        self.assertEqual(parse_asset_minimums(["xrp:115", "jpy:200"]), {"XRP": 115.0, "JPY": 200.0})
+        with self.assertRaises(ValueError):
+            parse_asset_minimums(["XRP"])
 
     def test_build_paper_snapshot_keeps_trade_cost_basis_as_metadata(self) -> None:
         snapshot = build_paper_snapshot_from_balances(

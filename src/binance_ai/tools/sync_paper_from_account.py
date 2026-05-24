@@ -90,17 +90,13 @@ def build_cash_baseline_snapshot_from_balances(
 ) -> PortfolioSnapshot:
     """Convert real-account inventory into a clean paper cash baseline."""
     quote_balance = float(balances.get(quote_asset, 0.0))
-    liquidation_value = 0.0
-    for symbol in symbols:
-        normalized_symbol = symbol.upper()
-        base_asset = base_asset_for_symbol(normalized_symbol, quote_asset)
-        quantity = float(balances.get(base_asset, 0.0))
-        price = float(prices.get(normalized_symbol, 0.0))
-        if quantity <= 0 or price <= 0:
-            continue
-        liquidation_value += quantity * price
-
-    cash_baseline = quote_balance + liquidation_value
+    cash_baseline = calculate_cash_baseline_equity(
+        balances=balances,
+        symbols=symbols,
+        quote_asset=quote_asset,
+        prices=prices,
+    )
+    liquidation_value = cash_baseline - quote_balance
     return PortfolioSnapshot(
         quote_asset=quote_asset,
         quote_balance=cash_baseline,
@@ -116,6 +112,58 @@ def build_cash_baseline_snapshot_from_balances(
             }
         },
     )
+
+
+def calculate_cash_baseline_equity(
+    *,
+    balances: Dict[str, float],
+    symbols: Iterable[str],
+    quote_asset: str,
+    prices: Dict[str, float],
+) -> float:
+    cash_baseline = float(balances.get(quote_asset, 0.0))
+    for symbol in symbols:
+        normalized_symbol = symbol.upper()
+        base_asset = base_asset_for_symbol(normalized_symbol, quote_asset)
+        quantity = float(balances.get(base_asset, 0.0))
+        price = float(prices.get(normalized_symbol, 0.0))
+        if quantity > 0 and price > 0:
+            cash_baseline += quantity * price
+    return cash_baseline
+
+
+def parse_asset_minimums(raw_values: Iterable[str]) -> Dict[str, float]:
+    parsed: Dict[str, float] = {}
+    for raw in raw_values:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        if ":" not in value:
+            raise ValueError(f"Invalid asset minimum '{value}', expected ASSET:AMOUNT.")
+        asset, amount = value.split(":", 1)
+        asset = asset.strip().upper()
+        if not asset:
+            raise ValueError(f"Invalid asset minimum '{value}', empty asset.")
+        parsed[asset] = float(amount)
+    return parsed
+
+
+def validate_account_sync_requirements(
+    *,
+    balances: Dict[str, float],
+    cash_baseline: float,
+    min_cash_baseline: float = 0.0,
+    min_assets: Dict[str, float] | None = None,
+) -> None:
+    failures: List[str] = []
+    if min_cash_baseline > 0 and cash_baseline < min_cash_baseline:
+        failures.append(f"cash_baseline {cash_baseline:.8f} < required {min_cash_baseline:.8f}")
+    for asset, required in (min_assets or {}).items():
+        actual = float(balances.get(asset.upper(), 0.0))
+        if actual < required:
+            failures.append(f"{asset.upper()} balance {actual:.8f} < required {required:.8f}")
+    if failures:
+        raise RuntimeError("Account sync validation failed: " + "; ".join(failures))
 
 
 def infer_remaining_cost_basis_from_trades(
@@ -222,6 +270,7 @@ def write_seed_manifest(
     stopped_monitor_pid: int | None,
     cleared_files: List[str],
     mode: str = "paper_state_seed_from_real_account",
+    validation: Dict[str, object] | None = None,
 ) -> None:
     payload = {
         "seeded_at_ms": int(time.time() * 1000),
@@ -234,6 +283,7 @@ def write_seed_manifest(
         "cost_basis_by_symbol": cost_basis_by_symbol,
         "stopped_monitor_pid": stopped_monitor_pid,
         "cleared_simulated_files": cleared_files,
+        "validation": validation or {},
         "note": "Paper cost basis uses Binance myTrades FIFO when available; otherwise it falls back to the current market price and disables loss-recovery grid sells.",
     }
     (output_dir / "account_seed_manifest.json").write_text(
@@ -256,6 +306,19 @@ def parse_args() -> argparse.Namespace:
         "--cash-baseline",
         action="store_true",
         help="Convert current real inventory into paper cash and start from a clean cash baseline.",
+    )
+    parser.add_argument(
+        "--min-cash-baseline",
+        type=float,
+        default=0.0,
+        help="Abort reset unless converted account equity is at least this quote amount.",
+    )
+    parser.add_argument(
+        "--require-asset-min",
+        action="append",
+        default=[],
+        metavar="ASSET:AMOUNT",
+        help="Abort reset unless the account balance includes at least this asset amount. Can be repeated.",
     )
     return parser.parse_args()
 
@@ -304,6 +367,24 @@ def main() -> None:
         client.close()
 
     timestamp_ms = int(time.time() * 1000)
+    cash_baseline_equity = calculate_cash_baseline_equity(
+        balances=balances,
+        symbols=symbols,
+        quote_asset=settings.quote_asset,
+        prices=prices,
+    )
+    min_assets = parse_asset_minimums(args.require_asset_min)
+    validate_account_sync_requirements(
+        balances=balances,
+        cash_baseline=cash_baseline_equity,
+        min_cash_baseline=float(args.min_cash_baseline or 0.0),
+        min_assets=min_assets,
+    )
+    validation = {
+        "cash_baseline": cash_baseline_equity,
+        "min_cash_baseline": float(args.min_cash_baseline or 0.0),
+        "min_assets": min_assets,
+    }
     if args.cash_baseline:
         snapshot = build_cash_baseline_snapshot_from_balances(
             balances=balances,
@@ -336,6 +417,7 @@ def main() -> None:
         stopped_monitor_pid=stopped_monitor_pid,
         cleared_files=cleared_files,
         mode=manifest_mode,
+        validation=validation,
     )
 
     summary = {
@@ -345,6 +427,7 @@ def main() -> None:
         "quote_asset": snapshot.quote_asset,
         "quote_balance": snapshot.quote_balance,
         "initial_quote_balance": snapshot.initial_quote_balance,
+        "validation": validation,
         "positions": {
             symbol: {
                 "quantity": position.quantity,

@@ -22,8 +22,11 @@ from binance_ai.tools.sync_paper_from_account import (
     base_asset_for_symbol,
     build_cash_baseline_snapshot_from_balances,
     build_paper_snapshot_from_balances,
+    calculate_cash_baseline_equity,
     clear_simulated_runtime,
     infer_remaining_cost_basis_from_trades,
+    parse_asset_minimums,
+    validate_account_sync_requirements,
     write_seed_manifest,
 )
 
@@ -5019,6 +5022,8 @@ def _seed_paper_from_real_account(
     *,
     archive_root: Path | None,
     cash_baseline: bool = False,
+    min_cash_baseline: float = 0.0,
+    min_assets: Dict[str, float] | None = None,
 ) -> Dict[str, Any]:
     settings = load_settings()
     if not settings.dry_run:
@@ -5047,6 +5052,23 @@ def _seed_paper_from_real_account(
         client.close()
 
     timestamp_ms = int(time.time() * 1000)
+    cash_baseline_equity = calculate_cash_baseline_equity(
+        balances=balances,
+        symbols=symbols,
+        quote_asset=settings.quote_asset,
+        prices=prices,
+    )
+    validate_account_sync_requirements(
+        balances=balances,
+        cash_baseline=cash_baseline_equity,
+        min_cash_baseline=min_cash_baseline,
+        min_assets=min_assets,
+    )
+    validation = {
+        "cash_baseline": cash_baseline_equity,
+        "min_cash_baseline": min_cash_baseline,
+        "min_assets": min_assets or {},
+    }
     if cash_baseline:
         snapshot = build_cash_baseline_snapshot_from_balances(
             balances=balances,
@@ -5076,6 +5098,7 @@ def _seed_paper_from_real_account(
         stopped_monitor_pid=None,
         cleared_files=cleared_files,
         mode=manifest_mode,
+        validation=validation,
     )
     return {
         "status": "reset_complete",
@@ -5084,6 +5107,7 @@ def _seed_paper_from_real_account(
         "quote_asset": snapshot.quote_asset,
         "quote_balance": snapshot.quote_balance,
         "initial_quote_balance": snapshot.initial_quote_balance,
+        "validation": validation,
         "positions": {
             symbol: {
                 "quantity": position.quantity,
@@ -5324,12 +5348,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             archive_root_raw = str(payload.get("archive_root") or "runtime_resets").strip()
             archive_root = Path(archive_root_raw) if archive_root_raw else None
             cash_baseline = bool(payload.get("cash_baseline") or payload.get("force_cash_baseline"))
+            min_cash_baseline = _coerce_float(payload.get("min_cash_baseline"), 0.0)
+            raw_min_assets = payload.get("require_asset_min") or payload.get("min_assets") or []
+            if isinstance(raw_min_assets, str):
+                raw_min_assets = [raw_min_assets]
+            min_assets = parse_asset_minimums(raw_min_assets)
             try:
                 self._send_json(
                     _seed_paper_from_real_account(
                         self.runtime_dir,
                         archive_root=archive_root,
                         cash_baseline=cash_baseline,
+                        min_cash_baseline=min_cash_baseline,
+                        min_assets=min_assets,
                     )
                 )
             except Exception as exc:  # noqa: BLE001
