@@ -64,6 +64,14 @@ class ScenarioEngine:
             blocked = ["NEW_BUY", "NEW_SELL"]
             generate = False
             templates = [{"name": "observe_only", "levels": 0, "source": "low_vol"}]
+            if inventory == "LOW_INVENTORY" and target_inventory.available_buy_notional >= self.settings.min_effective_order_notional:
+                reason = "ATR 处于低波动区间，但当前低仓位且现金充足，允许深折价 GTC 建仓挂单"
+                allowed = ["DEEP_DISCOUNT_BUY", "KEEP_OPEN_ORDERS"]
+                blocked = ["MARKET_BUY", "CHASE_BUY", "NEW_SELL"]
+                buy_fraction = 0.35
+                buy_discount_multiplier = max(1.0, self.settings.downtrend_buy_discount_multiplier)
+                generate = True
+                templates = [{"name": "low_vol_deep_discount_entry", "levels": 1, "source": "low_vol_low_inventory"}]
         elif expanding >= max(1, self.settings.uptrend_expansion_min_periods):
             gap = float(main_metrics.get("ma_gap_pct", 0.0))
             if contracting >= 2 and gap <= self.settings.uptrend_exhaustion_gap_pct:

@@ -223,6 +223,57 @@ class ScenarioDecision:
 
 
 @dataclass(frozen=True)
+class ExternalSignalSnapshot:
+    source: str
+    symbol: str
+    fetched_at_ms: int
+    mark_price: float = 0.0
+    index_price: float = 0.0
+    last_price: float = 0.0
+    open_interest: float = 0.0
+    open_interest_change_pct: float = 0.0
+    funding_rate: float = 0.0
+    long_short_ratio: float = 0.0
+    taker_buy_sell_ratio: float = 0.0
+    price_change_pct: float = 0.0
+    source_latency_ms: int = 0
+    stale: bool = False
+    error: str = ""
+
+
+@dataclass(frozen=True)
+class MarketSignalVote:
+    source: str
+    symbol: str
+    direction_vote: str
+    confidence: float
+    risk_flags: List[str] = field(default_factory=list)
+    source_latency_ms: int = 0
+    stale: bool = False
+    reason_cn: str = ""
+    score_breakdown: Dict[str, float] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ExternalConsensus:
+    symbol: str
+    direction_vote: str
+    confidence: float
+    local_weight: float
+    external_weight: float
+    available_sources: int
+    required_sources: int
+    bullish_score: float = 0.0
+    bearish_score: float = 0.0
+    risk_score: float = 0.0
+    reason_cn: str = ""
+    risk_flags: List[str] = field(default_factory=list)
+    votes: List[MarketSignalVote] = field(default_factory=list)
+    snapshots: List[ExternalSignalSnapshot] = field(default_factory=list)
+    health: Dict[str, object] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class ProtectionLock:
     symbol: str
     lock_type: str
@@ -454,6 +505,10 @@ class CycleReport:
     policy_decisions: List[PolicyDecision]
     direction_decisions: List[DirectionDecision]
     scenario_decisions: List[ScenarioDecision]
+    external_signal_snapshots: List[ExternalSignalSnapshot]
+    external_signal_votes: List[MarketSignalVote]
+    external_consensus: List[ExternalConsensus]
+    blended_scenario_decisions: List[ScenarioDecision]
     order_lifecycle_events: List[OrderLifecycleEvent]
     open_orders: List[ManagedOrder]
     ai_risk_assessments: List[AiRiskAssessment]

@@ -118,6 +118,23 @@ class ScenarioEngineTests(unittest.TestCase):
         self.assertFalse(decision.generate_new_orders)
         self.assertIn("NEW_BUY", decision.blocked_actions)
 
+    def test_low_vol_low_inventory_allows_deep_discount_entry(self):
+        settings = _settings(low_vol_atr_pct=0.01, min_effective_order_notional=500.0)
+        values = [100.0 + (index % 2) * 0.01 for index in range(80)]
+        decision = ScenarioEngine(settings).evaluate(
+            symbol="XRPJPY",
+            price=values[-1],
+            candles_by_interval={"1m": _candles(values), "3m": _candles(values), "5m": _candles(values), "30m": _candles(values), "1h": _candles(values)},
+            target_inventory=_target(current_fraction=0.0, available_buy_notional=2000.0),
+            ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.1, 1.0, ""),
+            has_position=False,
+        )
+
+        self.assertEqual(decision.scenario_state, "LOW_VOL_OBSERVE")
+        self.assertTrue(decision.generate_new_orders)
+        self.assertIn("DEEP_DISCOUNT_BUY", decision.allowed_actions)
+        self.assertIn("CHASE_BUY", decision.blocked_actions)
+
     def test_panic_risk_reduction_blocks_normal_orders(self):
         settings = _settings()
         values = [100.0 - index * 0.25 for index in range(80)]

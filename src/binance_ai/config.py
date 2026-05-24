@@ -189,6 +189,18 @@ class Settings:
     low_vol_atr_pct: float = 0.0008
     order_tier_merge_enabled: bool = True
     order_tier_merge_min_notional: float = 5000.0
+    external_signal_enabled: bool = True
+    external_signal_refresh_seconds: int = 60
+    external_signal_stale_seconds: int = 180
+    external_signal_local_weight: float = 0.60
+    external_signal_external_weight: float = 0.40
+    external_signal_sources: str = "binance_futures,okx,bybit"
+    external_symbol_binance_futures_xrpjpy: str = "XRPUSDT"
+    external_symbol_okx_xrpjpy: str = "XRP-USDT-SWAP"
+    external_symbol_bybit_xrpjpy: str = "XRPUSDT"
+    external_signal_min_sources: int = 2
+    external_signal_can_change_direction: bool = True
+    external_signal_can_trigger_risk_off: bool = True
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -365,4 +377,16 @@ def load_settings() -> Settings:
         low_vol_atr_pct=float(os.getenv("LOW_VOL_ATR_PCT", "0.0008")),
         order_tier_merge_enabled=_parse_bool(os.getenv("ORDER_TIER_MERGE_ENABLED"), True),
         order_tier_merge_min_notional=float(os.getenv("ORDER_TIER_MERGE_MIN_NOTIONAL", "5000")),
+        external_signal_enabled=_parse_bool(os.getenv("EXTERNAL_SIGNAL_ENABLED"), True),
+        external_signal_refresh_seconds=int(os.getenv("EXTERNAL_SIGNAL_REFRESH_SECONDS", "60")),
+        external_signal_stale_seconds=int(os.getenv("EXTERNAL_SIGNAL_STALE_SECONDS", "180")),
+        external_signal_local_weight=float(os.getenv("EXTERNAL_SIGNAL_LOCAL_WEIGHT", "0.60")),
+        external_signal_external_weight=float(os.getenv("EXTERNAL_SIGNAL_EXTERNAL_WEIGHT", "0.40")),
+        external_signal_sources=os.getenv("EXTERNAL_SIGNAL_SOURCES", "binance_futures,okx,bybit").strip(),
+        external_symbol_binance_futures_xrpjpy=os.getenv("EXTERNAL_SYMBOL_BINANCE_FUTURES_XRPJPY", "XRPUSDT").strip().upper(),
+        external_symbol_okx_xrpjpy=os.getenv("EXTERNAL_SYMBOL_OKX_XRPJPY", "XRP-USDT-SWAP").strip().upper(),
+        external_symbol_bybit_xrpjpy=os.getenv("EXTERNAL_SYMBOL_BYBIT_XRPJPY", "XRPUSDT").strip().upper(),
+        external_signal_min_sources=int(os.getenv("EXTERNAL_SIGNAL_MIN_SOURCES", "2")),
+        external_signal_can_change_direction=_parse_bool(os.getenv("EXTERNAL_SIGNAL_CAN_CHANGE_DIRECTION"), True),
+        external_signal_can_trigger_risk_off=_parse_bool(os.getenv("EXTERNAL_SIGNAL_CAN_TRIGGER_RISK_OFF"), True),
     )

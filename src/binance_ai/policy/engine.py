@@ -345,6 +345,12 @@ class InventorySkewOrderProposalEngine:
                 buy_trigger = "defensive_deep_discount_buy"
                 buy_reason = scenario.reason_cn
                 max_buy_levels = min(max_buy_levels, 1)
+            elif state == "LOW_VOL_OBSERVE" and "DEEP_DISCOUNT_BUY" in scenario.allowed_actions:
+                allow_buy_pairs = context.target_inventory.current_fraction < context.target_inventory.lower_fraction and context.target_inventory.available_buy_notional > 0
+                allow_sell_pairs = False
+                buy_trigger = "low_vol_deep_discount_buy"
+                buy_reason = scenario.reason_cn
+                max_buy_levels = min(max_buy_levels, 1)
 
         pair_count = self._pair_count()
         buy_budget = max(0.0, context.target_inventory.available_buy_notional * max(0.0, skew.buy_weight) * buy_size_fraction)

@@ -12,6 +12,7 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.engine.trading_engine import TradingEngine
 from binance_ai.execution.executor import OrderExecutor
+from binance_ai.external_signals import ExternalMarketSignalEngine
 from binance_ai.llm.market_analyst import MarketAnalyst
 from binance_ai.llm.ollama import FallbackChatClient, OllamaChatClient
 from binance_ai.llm.openai_compat import OpenAICompatibleChatClient
@@ -74,6 +75,7 @@ def build_engine(output_dir: Path) -> TradingEngine:
         state_path=output_dir / "decision_state.json",
         price_move_threshold_pct=settings.decision_price_move_threshold_pct,
     )
+    external_signal_engine = ExternalMarketSignalEngine(settings) if settings.external_signal_enabled else None
     return TradingEngine(
         settings,
         client,
@@ -85,6 +87,7 @@ def build_engine(output_dir: Path) -> TradingEngine:
         paper_portfolio=paper_portfolio,
         market_analyst=market_analyst,
         news_service=news_service,
+        external_signal_engine=external_signal_engine,
     )
 
 

@@ -6,6 +6,7 @@ from binance_ai.models import (
     Candle,
     CompositeDecision,
     DirectionDecision,
+    ScenarioDecision,
     SignalAction,
     SymbolFilters,
     TradeSignal,
@@ -137,6 +138,22 @@ def _direction(**updates):
     return DirectionDecision(**payload)
 
 
+def _scenario(**updates):
+    payload = dict(
+        symbol="XRPJPY",
+        scenario_state="LOW_VOL_OBSERVE",
+        reason_cn="低波动低仓位深折价建仓",
+        allowed_actions=["DEEP_DISCOUNT_BUY", "KEEP_OPEN_ORDERS"],
+        blocked_actions=["MARKET_BUY", "CHASE_BUY", "NEW_SELL"],
+        buy_size_fraction=0.35,
+        sell_size_fraction=1.0,
+        buy_discount_multiplier=1.8,
+        generate_new_orders=True,
+    )
+    payload.update(updates)
+    return ScenarioDecision(**payload)
+
+
 class PolicyEngineTests(unittest.TestCase):
     def test_pair_lock_after_risk_exit_filters_buy_proposal(self):
         settings = _settings()
@@ -223,6 +240,34 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertEqual(decision.order_proposals[0].side, "BUY")
         self.assertEqual(decision.order_proposals[0].tier_index, 4)
         self.assertEqual(decision.direction_decision.price_zone, "NEUTRAL_ZONE")
+
+    def test_low_vol_low_inventory_generates_deep_discount_buy_proposal(self):
+        decision = PolicyEngine(_settings(order_target_notional=8000.0, min_effective_order_notional=5000.0)).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=100.0,
+                candles=_candles(100.0),
+                signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "test"),
+                exit_reason=None,
+                has_position=False,
+                base_balance=0.0,
+                quote_balance=12000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(current_fraction=0.0, available_buy_notional=10000.0),
+                composite_decision=_composite(recommended_action="HOLD"),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.1, 1.0, ""),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(buy_zone_price=99.5),
+                scenario_decision=_scenario(),
+            )
+        )
+
+        self.assertEqual(decision.policy_state, "INVENTORY_REBALANCE")
+        self.assertEqual(len(decision.order_proposals), 1)
+        self.assertEqual(decision.order_proposals[0].trigger, "low_vol_deep_discount_buy")
+        self.assertGreaterEqual(decision.order_proposals[0].notional, 5000.0)
 
     def test_drawdown_guard_blocks_active_proposals(self):
         decision = PolicyEngine(_settings()).evaluate(

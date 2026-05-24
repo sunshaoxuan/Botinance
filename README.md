@@ -381,8 +381,39 @@ Runtime reports and `/api/dashboard` expose `scenario_decision` and `scenario_de
 The active order path is:
 
 ```text
-ScenarioEngine -> PolicyEngine -> InventorySkewOrderProposalEngine -> OrderProposalFilter -> OrderExecutor
+ScenarioEngine -> ExternalMarketSignalEngine -> PolicyEngine -> InventorySkewOrderProposalEngine -> OrderProposalFilter -> OrderExecutor
 ```
+
+## External market signal voting
+
+`P21` adds a read-only external consensus layer between the scenario layer and policy proposals. The first version reads public futures data from Binance Futures, OKX, and Bybit, then maps `XRP/JPY` to high-liquidity XRP perpetual markets.
+
+Default mapping:
+
+- Binance Futures: `XRPUSDT`
+- OKX: `XRP-USDT-SWAP`
+- Bybit: `XRPUSDT`
+
+The external layer votes on `BULLISH`, `BEARISH`, `NEUTRAL`, or `RISK_OFF`. Local P20 scenario weight remains `60%`; external consensus uses `40%`. Missing sources are marked stale and the available sources are reweighted. External consensus can adjust scenario size and risk posture, but it cannot bypass protection locks, net-edge filters, or GTC limit-order lifecycle.
+
+Default external signal settings:
+
+```env
+EXTERNAL_SIGNAL_ENABLED=true
+EXTERNAL_SIGNAL_REFRESH_SECONDS=60
+EXTERNAL_SIGNAL_STALE_SECONDS=180
+EXTERNAL_SIGNAL_LOCAL_WEIGHT=0.60
+EXTERNAL_SIGNAL_EXTERNAL_WEIGHT=0.40
+EXTERNAL_SIGNAL_SOURCES=binance_futures,okx,bybit
+EXTERNAL_SYMBOL_BINANCE_FUTURES_XRPJPY=XRPUSDT
+EXTERNAL_SYMBOL_OKX_XRPJPY=XRP-USDT-SWAP
+EXTERNAL_SYMBOL_BYBIT_XRPJPY=XRPUSDT
+EXTERNAL_SIGNAL_MIN_SOURCES=2
+EXTERNAL_SIGNAL_CAN_CHANGE_DIRECTION=true
+EXTERNAL_SIGNAL_CAN_TRIGGER_RISK_OFF=true
+```
+
+Runtime reports and `/api/dashboard` expose `external_signal_snapshots`, `external_signal_votes`, `external_consensus`, `external_signal_health`, and `blended_scenario_decisions`. The realtime dashboard includes an `外部共识` card.
 
 When `POLICY_ENGINE_ENABLED=true` and `LEGACY_DIRECT_ORDER_FALLBACK=false`, old direct entry and rebalance branches remain diagnostic only and cannot bypass policy proposals.
 

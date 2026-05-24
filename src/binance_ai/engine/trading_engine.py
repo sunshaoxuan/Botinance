@@ -11,8 +11,9 @@ from binance_ai.data.market_data import MarketDataService
 from binance_ai.direction import DirectionDecisionEngine
 from binance_ai.engine.decision_scheduler import DecisionScheduler
 from binance_ai.execution.executor import OrderExecutor
+from binance_ai.external_signals import ExternalMarketSignalEngine
 from binance_ai.llm.market_analyst import MarketAnalyst, build_market_snapshot
-from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, DirectionDecision, LlmAnalysis, OrderLifecycleEvent, OrderProposal, OrderRequest, PolicyDecision, PositionDiagnostic, ScenarioDecision, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
+from binance_ai.models import AccountSnapshot, AiRiskAssessment, BuyDecisionDiagnostic, CompositeDecision, CycleDecision, CycleReport, DecisionLedgerEntry, DirectionDecision, ExternalConsensus, ExternalSignalSnapshot, LlmAnalysis, MarketSignalVote, OrderLifecycleEvent, OrderProposal, OrderRequest, PolicyDecision, PositionDiagnostic, ScenarioDecision, SchedulingDiagnostic, SellDecisionDiagnostic, SignalAction, make_client_order_id
 from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.policy.engine import PolicyContext, PolicyEngine
@@ -37,6 +38,7 @@ class TradingEngine:
         paper_portfolio: PaperPortfolio | None = None,
         market_analyst: MarketAnalyst | None = None,
         news_service: NewsService | None = None,
+        external_signal_engine: ExternalMarketSignalEngine | None = None,
     ) -> None:
         self.settings = settings
         self.client = client
@@ -55,6 +57,7 @@ class TradingEngine:
         self.policy_engine = PolicyEngine(settings)
         self.direction_decision = DirectionDecisionEngine(settings)
         self.scenario_engine = ScenarioEngine(settings)
+        self.external_signal_engine = external_signal_engine
 
     def run_cycle(self) -> CycleReport:
         self.risk.ensure_symbol_limit()
@@ -76,6 +79,10 @@ class TradingEngine:
         policy_decisions: List[PolicyDecision] = []
         direction_decisions: List[DirectionDecision] = []
         scenario_decisions: List[ScenarioDecision] = []
+        external_signal_snapshots: List[ExternalSignalSnapshot] = []
+        external_signal_votes: List[MarketSignalVote] = []
+        external_consensus_results: List[ExternalConsensus] = []
+        blended_scenario_decisions: List[ScenarioDecision] = []
         mark_prices: Dict[str, float] = {}
         market_snapshots: List[Dict[str, object]] = []
         symbol_contexts: List[Dict[str, object]] = []
@@ -446,6 +453,19 @@ class TradingEngine:
                     order_templates=[{"name": "pair_market_making", "source": "disabled"}],
                 )
             scenario_decisions.append(scenario_decision)
+            blended_scenario_decision = scenario_decision
+            external_consensus = None
+            if self.settings.external_signal_enabled and self.external_signal_engine is not None:
+                external_consensus, source_snapshots, source_votes, blended_scenario_decision = self.external_signal_engine.evaluate(
+                    symbol=symbol,
+                    price=price,
+                    local_scenario=scenario_decision,
+                    timestamp_ms=cycle_timestamp_ms,
+                )
+                external_signal_snapshots.extend(source_snapshots)
+                external_signal_votes.extend(source_votes)
+                external_consensus_results.append(external_consensus)
+            blended_scenario_decisions.append(blended_scenario_decision)
             direction_decision = self.direction_decision.evaluate(
                 symbol=symbol,
                 price=price,
@@ -475,7 +495,7 @@ class TradingEngine:
                     activation_state=self._activation_state_for_symbol(symbol),
                     timestamp_ms=cycle_timestamp_ms,
                     direction_decision=direction_decision if self.settings.direction_engine_enabled else None,
-                    scenario_decision=scenario_decision if self.settings.scenario_engine_enabled else None,
+                    scenario_decision=blended_scenario_decision if self.settings.scenario_engine_enabled else None,
                     pair_profitability_stats=self._pair_profitability_stats(symbol),
                 )
             )
@@ -866,10 +886,14 @@ class TradingEngine:
             execution_result.setdefault("paired_order_state", direction_decision.paired_order_state)
             execution_result.setdefault("policy_decision", asdict(policy_decision))
             execution_result.setdefault("scenario_decision", asdict(scenario_decision))
+            execution_result.setdefault("blended_scenario_decision", asdict(blended_scenario_decision))
             execution_result.setdefault("scenario_state", scenario_decision.scenario_state)
             execution_result.setdefault("scenario_reason_cn", scenario_decision.reason_cn)
             execution_result.setdefault("scenario_indicators", scenario_decision.indicators)
             execution_result.setdefault("scenario_order_templates", scenario_decision.order_templates)
+            if external_consensus is not None:
+                execution_result.setdefault("external_consensus", asdict(external_consensus))
+                execution_result.setdefault("external_signal_health", external_consensus.health)
             execution_result.setdefault("policy_state", policy_decision.policy_state)
             execution_result.setdefault("protection_locks", [asdict(item) for item in policy_decision.protection_locks])
             execution_result.setdefault("proposal_filter_results", [asdict(item) for item in policy_decision.proposal_filter_results])
@@ -915,6 +939,10 @@ class TradingEngine:
             policy_decisions=policy_decisions,
             direction_decisions=direction_decisions,
             scenario_decisions=scenario_decisions,
+            external_signal_snapshots=external_signal_snapshots,
+            external_signal_votes=external_signal_votes,
+            external_consensus=external_consensus_results,
+            blended_scenario_decisions=blended_scenario_decisions,
             order_lifecycle_events=order_lifecycle_events,
             open_orders=self.executor.all_open_orders(),
             ai_risk_assessments=[ai_risk_map[str(context["symbol"]).upper()] for context in symbol_contexts],

@@ -1080,6 +1080,7 @@ INDEX_HTML = """<!doctype html>
             <div class="card" id="riskGateCard"></div>
             <div class="card" id="openOrderCard"></div>
             <div class="card" id="scenarioCard"></div>
+            <div class="card" id="externalSignalCard"></div>
             <div class="card" id="entryPlanCard"></div>
             <div class="card" id="executionCard"></div>
           </aside>
@@ -1231,7 +1232,7 @@ INDEX_HTML = """<!doctype html>
     const ids = [
       "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
       "profitCurveLabel",
-      "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "scenarioCard", "entryPlanCard", "executionCard", "tradeFillsTable",
+      "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "scenarioCard", "externalSignalCard", "entryPlanCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
       "btProfitFactor", "btExpectancy", "btTradeCount", "btSourceLabel", "btSegments", "btTrades", "btManifest",
       "buyDecisionFull", "entryPlanFull", "exitRiskCard", "riskParametersCard", "systemStateCard", "schedulingFull", "payloadHealthCard",
@@ -1688,12 +1689,15 @@ INDEX_HTML = """<!doctype html>
       const targetInventory = (payload.target_inventory_summary || {})[symbol] || executionResult.target_inventory_summary || {};
       const directionDecision = (payload.direction_decision || executionResult.direction_decision || (latest.direction_decisions || [])[0] || {});
       const scenarioDecision = (payload.scenario_decision || executionResult.scenario_decision || (latest.scenario_decisions || [])[0] || {});
+      const blendedScenarioDecision = (payload.blended_scenario_decision || executionResult.blended_scenario_decision || (latest.blended_scenario_decisions || [])[0] || scenarioDecision || {});
+      const externalConsensus = (payload.external_consensus || executionResult.external_consensus || latest.external_consensus || [])[0] || {};
+      const externalVotes = payload.external_signal_votes || latest.external_signal_votes || [];
       const effectiveOrderGuard = (payload.effective_order_guard || {})[symbol] || {};
       const dailyRiskBudget = (payload.daily_risk_budget || {})[symbol] || {};
       const orderEvents = payload.order_lifecycle_events || latest.order_lifecycle_events || [];
       const orderMarkers = payload.order_markers || [];
       const profitCurve = payload.live_profit_curve || [];
-      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, targetInventory, directionDecision, scenarioDecision, effectiveOrderGuard, dailyRiskBudget, orderEvents, orderMarkers, profitCurve };
+      return { latest, paper, primary, symbol, position, quoteAsset, currentPrice, decision, strategy, signal, executionResult, executionStatus, executionReason, llm, aiRisk, buyDiag, sellDiag, positionDiag, activationState, schedule, fills, tradeRecords, realCostBasis, bars, markers, vetoes, openOrders, openOrderGroups, targetInventory, directionDecision, scenarioDecision, blendedScenarioDecision, externalConsensus, externalVotes, effectiveOrderGuard, dailyRiskBudget, orderEvents, orderMarkers, profitCurve };
     }
 
     function syncChartIntervalOptions(payload) {
@@ -1867,15 +1871,40 @@ INDEX_HTML = """<!doctype html>
         <div class="card-note detail">${escapeHtml(scenario.reason_cn || "暂无场景说明")}</div>
       `;
 
+      const externalConsensus = c.externalConsensus || {};
+      const externalVotes = c.externalVotes || [];
+      const externalHealth = externalConsensus.health || {};
+      const sourceText = externalVotes.length
+        ? externalVotes.map((vote) => `${vote.source || "--"}:${vote.direction_vote || "--"} ${fmtPercent(vote.confidence || 0)}`).join(" / ")
+        : "暂无外部合约数据";
+      els.externalSignalCard.innerHTML = `
+        <div class="card-label"><span>外部共识</span>${statusChip(escapeHtml(externalConsensus.direction_vote || "未启用"), externalConsensus.direction_vote === "BULLISH" ? "buy" : externalConsensus.direction_vote === "BEARISH" || externalConsensus.direction_vote === "RISK_OFF" ? "sell" : "wait")}</div>
+        <div class="card-value small">${escapeHtml(externalConsensus.direction_vote || "--")}</div>
+        ${miniKvRows([
+          ["置信度", externalConsensus.confidence !== undefined ? fmtPercent(externalConsensus.confidence) : "--"],
+          ["本地/外部", `${fmtPercent(externalConsensus.local_weight || 0.6)} / ${fmtPercent(externalConsensus.external_weight || 0.4)}`],
+          ["可用源", externalConsensus.available_sources !== undefined ? `${externalConsensus.available_sources}/${externalConsensus.required_sources || 0}` : "--"],
+          ["风险分", externalConsensus.risk_score !== undefined ? fmtPercent(externalConsensus.risk_score) : "--"],
+          ["延迟", externalHealth.sources ? externalHealth.sources.map((item) => `${item.source}:${item.latency_ms || 0}ms`).join(" / ") : "--"],
+        ])}
+        <div class="card-note detail">${escapeHtml(externalConsensus.reason_cn || sourceText)}</div>
+      `;
+
       const firstEntryTier = entryPlan.tiers[0] || {};
       const directionReason = c.directionDecision.reason_cn || c.targetInventory.reason || entryPlan.status;
+      const policyDecision = c.executionResult.policy_decision || {};
+      const policyProposalCount = (policyDecision.order_proposals || []).length;
+      const policyMergedProposalCount = (policyDecision.merged_order_proposals || []).length;
       els.entryPlanCard.innerHTML = `
-        <div class="card-label"><span>方向决策 / 建仓/补仓计划</span>${statusChip(escapeHtml(c.directionDecision.price_zone || "未知区间"), c.directionDecision.allow_buy ? "buy" : c.directionDecision.allow_sell ? "sell" : "wait")}</div>
+        <div class="card-label"><span>方向允许性 / 最终下单</span>${statusChip(policyProposalCount > 0 ? "已生成提案" : "未下单", policyProposalCount > 0 ? "buy" : "wait")}</div>
         <div class="card-value">${escapeHtml(c.directionDecision.recommended_action || "HOLD")}</div>
         ${miniKvRows([
           ["公平价", c.directionDecision.fair_value ? fmtCurrency(c.directionDecision.fair_value, c.quoteAsset) : "--"],
           ["买入区", c.directionDecision.buy_zone_price ? `<= ${fmtCurrency(c.directionDecision.buy_zone_price, c.quoteAsset)}` : "--"],
           ["卖出区", c.directionDecision.sell_zone_price ? `>= ${fmtCurrency(c.directionDecision.sell_zone_price, c.quoteAsset)}` : "--"],
+          ["价格区间", escapeHtml(c.directionDecision.price_zone || "--")],
+          ["候选提案", `${policyMergedProposalCount} 个`],
+          ["通过提案", `${policyProposalCount} 个`],
           ["净边际", c.directionDecision.expected_net_edge_pct !== undefined ? fmtPercent(c.directionDecision.expected_net_edge_pct) : "--"],
           ["目标仓位", c.targetInventory.target_fraction !== undefined ? fmtPercent(c.targetInventory.target_fraction) : fmtPercent(entryPlan.targetFraction)],
           ["当前仓位", c.targetInventory.current_fraction !== undefined ? fmtPercent(c.targetInventory.current_fraction) : "--"],
@@ -2170,7 +2199,28 @@ INDEX_HTML = """<!doctype html>
         <td>${fmtNumber(e.filled_quantity || e.quantity, 8)}</td>
         <td>${escapeHtml(reasonLabel(e.reason || e.trigger))}<br><span class="muted">${escapeHtml(triggerLabel(e.trigger))}</span></td>
       </tr>`);
+      const externalConsensus = c.externalConsensus || {};
+      const blendedScenario = c.blendedScenarioDecision || {};
+      const externalVoteRows = (c.externalVotes || []).map((vote) => `<tr>
+        <td>${escapeHtml(vote.source || "--")}</td>
+        <td>${labelWithRaw(signalLabel(vote.direction_vote), vote.direction_vote)}</td>
+        <td>${escapeHtml(fmtPercent(vote.confidence || 0))}</td>
+        <td>${escapeHtml((vote.risk_flags || []).join(" / ") || "--")}</td>
+        <td>${escapeHtml(vote.source_latency_ms !== undefined ? `${vote.source_latency_ms}ms` : "--")}</td>
+        <td>${escapeHtml(vote.reason_cn || "--")}</td>
+      </tr>`);
       return `
+        <div class="drawer-section">
+          <div class="drawer-section-title">本地 60 / 外部 40 融合明细</div>
+          ${kvRows([
+            ["本地场景", labelWithRaw(blendedScenario.scenario_state || c.scenarioDecision.scenario_state || "--", c.scenarioDecision.scenario_state || "")],
+            ["外部共识", labelWithRaw(signalLabel(externalConsensus.direction_vote), externalConsensus.direction_vote || "--")],
+            ["外部置信度", escapeHtml(externalConsensus.confidence !== undefined ? fmtPercent(externalConsensus.confidence) : "--")],
+            ["可用来源", escapeHtml(externalConsensus.available_sources !== undefined ? `${externalConsensus.available_sources}/${externalConsensus.required_sources || 0}` : "--")],
+            ["融合后说明", escapeHtml(blendedScenario.reason_cn || externalConsensus.reason_cn || "暂无融合说明")],
+          ])}
+          ${table(["来源", "方向", "置信度", "风险标记", "延迟", "原因"], externalVoteRows, "暂无外部票选明细")}
+        </div>
         <div class="drawer-section">
           <div class="drawer-section-title">历史决策账本 <span class="drawer-count">已加载 ${ledger.length} 条，显示 ${ledgerShown} 条${meta.scan_lines ? `，扫描 ${meta.scan_lines} 行` : ""}</span></div>
           ${table(["时间", "轮次", "交易对", "价格", "买入判断", "卖出判断", "最终动作"], ledgerRows, "暂无历史决策账本")}
@@ -3489,6 +3539,13 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "low_vol_atr_pct": settings.low_vol_atr_pct,
         "order_tier_merge_enabled": settings.order_tier_merge_enabled,
         "order_tier_merge_min_notional": settings.order_tier_merge_min_notional,
+        "external_signal_enabled": settings.external_signal_enabled,
+        "external_signal_refresh_seconds": settings.external_signal_refresh_seconds,
+        "external_signal_stale_seconds": settings.external_signal_stale_seconds,
+        "external_signal_local_weight": settings.external_signal_local_weight,
+        "external_signal_external_weight": settings.external_signal_external_weight,
+        "external_signal_sources": settings.external_signal_sources,
+        "external_signal_min_sources": settings.external_signal_min_sources,
     }
 
 
@@ -5245,6 +5302,12 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "direction_decision": (latest_report.get("direction_decisions", [{}]) or [{}])[0],
         "scenario_decisions": latest_report.get("scenario_decisions", []),
         "scenario_decision": (latest_report.get("scenario_decisions", [{}]) or [{}])[0],
+        "external_signal_snapshots": latest_report.get("external_signal_snapshots", []),
+        "external_signal_votes": latest_report.get("external_signal_votes", []),
+        "external_consensus": latest_report.get("external_consensus", []),
+        "external_signal_health": ((latest_report.get("external_consensus", [{}]) or [{}])[0] or {}).get("health", {}),
+        "blended_scenario_decisions": latest_report.get("blended_scenario_decisions", []),
+        "blended_scenario_decision": (latest_report.get("blended_scenario_decisions", [{}]) or [{}])[0],
         "decision_ledger": decision_ledger,
         "position_activation_state": paper_state.get("activation_state", {}),
         "runtime_config": runtime_config,
@@ -5273,6 +5336,12 @@ def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
     return {
         "decision_ledger": decision_ledger,
         "order_lifecycle_events": order_lifecycle_events,
+        "external_signal_snapshots": latest_report.get("external_signal_snapshots", []),
+        "external_signal_votes": latest_report.get("external_signal_votes", []),
+        "external_consensus": latest_report.get("external_consensus", []),
+        "external_signal_health": ((latest_report.get("external_consensus", [{}]) or [{}])[0] or {}).get("health", {}),
+        "blended_scenario_decisions": latest_report.get("blended_scenario_decisions", []),
+        "blended_scenario_decision": (latest_report.get("blended_scenario_decisions", [{}]) or [{}])[0],
         "decision_drawer_meta": {
             "scan_lines": scan_lines,
             "decision_ledger_count": len(decision_ledger),
