@@ -1022,7 +1022,18 @@ class OrderExecutorTests(unittest.TestCase):
                 signal_action="HOLD",
                 ai_allow_entry=False,
             )["reason"],
-            "ai_risk_worsened_cancel_open_buy",
+            "ai_risk_observed_keep_open_buy",
+        )
+        self.assertEqual(
+            executor.classify_open_order_action(
+                buy_order,
+                current_price=200.0,
+                timestamp_ms=2_000,
+                signal_action="HOLD",
+                ai_allow_entry=False,
+                ai_extreme_risk=True,
+            )["reason"],
+            "ai_extreme_risk_cancel_open_buy",
         )
         self.assertEqual(
             executor.classify_open_order_action(

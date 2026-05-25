@@ -1386,15 +1386,17 @@ class TradingEngine:
         events: List[OrderLifecycleEvent] = []
         actions: List[Dict[str, object]] = []
         for open_order in open_orders:
+            ai_extreme_risk = self._ai_extreme_risk(ai_assessment)
             ai_allow_open_order = ai_assessment.allow_entry
             if str(getattr(open_order, "trigger", "")) == "grid_buyback" and not self.settings.ai_can_cancel_buyback:
-                ai_allow_open_order = not self._ai_extreme_risk(ai_assessment)
+                ai_allow_open_order = not ai_extreme_risk
             open_order_action = self.executor.classify_open_order_action(
                 open_order,
                 current_price=price,
                 timestamp_ms=timestamp_ms,
                 signal_action=signal_action,
                 ai_allow_entry=ai_allow_open_order,
+                ai_extreme_risk=ai_extreme_risk,
             )
             action = str(open_order_action.get("action", "KEEP"))
             reason = str(open_order_action.get("reason", "open_order_waiting_for_touch"))

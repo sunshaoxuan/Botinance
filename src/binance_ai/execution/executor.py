@@ -584,6 +584,7 @@ class OrderExecutor:
         timestamp_ms: int,
         signal_action: str = "",
         ai_allow_entry: bool = True,
+        ai_extreme_risk: bool = False,
     ) -> Dict[str, object]:
         side = order.side.upper()
         signal = signal_action.upper()
@@ -607,8 +608,10 @@ class OrderExecutor:
             if stale:
                 return {"action": "KEEP", "reason": "order_stale_observed", **base_payload}
             return {"action": "KEEP", "reason": "hanging_pair_order_waiting_for_touch", **base_payload}
+        if side == "BUY" and ai_extreme_risk:
+            return {"action": "CANCEL", "reason": "ai_extreme_risk_cancel_open_buy", **base_payload}
         if side == "BUY" and not ai_allow_entry:
-            return {"action": "CANCEL", "reason": "ai_risk_worsened_cancel_open_buy", **base_payload}
+            return {"action": "KEEP", "reason": "ai_risk_observed_keep_open_buy", **base_payload}
         if side == "BUY" and signal == "SELL":
             return {"action": "CANCEL", "reason": "signal_reversed_cancel_open_buy", **base_payload}
         if side == "SELL" and signal == "BUY":

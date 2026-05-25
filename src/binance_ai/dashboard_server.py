@@ -1548,6 +1548,8 @@ INDEX_HTML = """<!doctype html>
         open_order_waiting_for_touch: "挂单等待触价成交",
         order_status_unknown_wait: "订单状态待确认，继续查询",
         ai_risk_worsened_cancel_open_buy: "AI 风险变差，撤买单",
+        ai_risk_observed_keep_open_buy: "AI 普通风险，保留买单",
+        ai_extreme_risk_cancel_open_buy: "AI 极端风险，撤买单",
         signal_reversed_cancel_open_buy: "信号反转，撤买单",
         signal_reversed_cancel_open_sell: "信号反转，撤卖单",
         paper_limit_order_expired: "交易所过期",
