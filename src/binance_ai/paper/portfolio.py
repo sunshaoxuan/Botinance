@@ -4,7 +4,7 @@ import json
 import time
 from dataclasses import asdict
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Iterable, List
 
 from binance_ai.models import AccountSnapshot, ManagedOrder, OrderLifecycleEvent, OrderRequest, PortfolioSnapshot, PositionSnapshot
 from binance_ai.paper.state_engine import PortfolioStateEngine
@@ -234,7 +234,7 @@ class PaperPortfolio:
             return snapshot
 
         fills: Dict[str, Dict[str, object]] = {}
-        for raw_line in history_path.read_text(encoding="utf-8").splitlines():
+        for raw_line in self._recent_history_lines(history_path):
             line = raw_line.strip()
             if not line:
                 continue
@@ -287,4 +287,21 @@ class PaperPortfolio:
             reserved_quote_balance=snapshot.reserved_quote_balance,
             reserved_base_balances=snapshot.reserved_base_balances,
             fills=snapshot.fills,
+            open_order_pairs=snapshot.open_order_pairs,
+            completed_order_pairs=snapshot.completed_order_pairs,
+            pair_locks=snapshot.pair_locks,
+            pair_profitability_stats=snapshot.pair_profitability_stats,
         )
+
+    def _recent_history_lines(self, history_path: Path, max_bytes: int = 2_000_000, max_lines: int = 5000) -> Iterable[str]:
+        try:
+            size = history_path.stat().st_size
+            with history_path.open("rb") as handle:
+                if size > max_bytes:
+                    handle.seek(-max_bytes, 2)
+                    handle.readline()
+                raw = handle.read()
+        except OSError:
+            return []
+        lines: List[str] = raw.decode("utf-8", errors="ignore").splitlines()
+        return lines[-max_lines:]
