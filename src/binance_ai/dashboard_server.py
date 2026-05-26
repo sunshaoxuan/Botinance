@@ -1252,6 +1252,7 @@ INDEX_HTML = """<!doctype html>
       copy.live_refresh_bars = (payload.live_refresh_bars || []).slice(-160);
       copy.live_profit_curve = (payload.live_profit_curve || []).slice(-600);
       copy.trade_records = (payload.trade_records || []).slice(0, 200);
+      copy.trade_records_complete = false;
       return copy;
     }
 
@@ -2394,7 +2395,11 @@ INDEX_HTML = """<!doctype html>
 
     function preserveChartPayload(payload, previousPayload, chartInterval, cachedBars) {
       const previous = previousPayload || {};
-      const keepCompleteTradeRecords = previous.trade_records_complete === true && payload.trade_records_complete === false;
+      const previousFillCount = previous.recent_fills?.length || 0;
+      const payloadFillCount = payload.recent_fills?.length || 0;
+      const keepCompleteTradeRecords = previous.trade_records_complete === true
+        && payload.trade_records_complete === false
+        && payloadFillCount <= previousFillCount;
       const bars = cachedBars?.length
         ? cachedBars
         : payload.live_chart_bars?.length
@@ -3132,6 +3137,7 @@ INDEX_HTML = """<!doctype html>
         if (requestSeq !== orderRequestSeq || !lastPayloadSnapshot) return;
         lastOrderRecordsLoadedAt = Date.now();
         lastPayloadSnapshot = { ...lastPayloadSnapshot, ...orderPayload };
+        saveSnapshotCache(lastPayloadSnapshot);
         const c = context(lastPayloadSnapshot);
         renderFills(c.tradeRecords, c.quoteAsset);
       } catch (err) {
