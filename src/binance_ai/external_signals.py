@@ -46,10 +46,11 @@ class ExternalMarketSignalEngine:
         bybit_client: BybitPublicClient | None = None,
     ) -> None:
         self.settings = settings
+        timeout_seconds = max(1, int(settings.external_signal_timeout_seconds))
         self.clients = {
-            "binance_futures": binance_client or BinanceFuturesPublicClient(),
-            "okx": okx_client or OkxPublicClient(),
-            "bybit": bybit_client or BybitPublicClient(),
+            "binance_futures": binance_client or BinanceFuturesPublicClient(timeout_seconds=timeout_seconds),
+            "okx": okx_client or OkxPublicClient(timeout_seconds=timeout_seconds),
+            "bybit": bybit_client or BybitPublicClient(timeout_seconds=timeout_seconds),
         }
         self._cache: Dict[str, Tuple[int, ExternalConsensus]] = {}
 

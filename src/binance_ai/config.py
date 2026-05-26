@@ -192,6 +192,7 @@ class Settings:
     external_signal_enabled: bool = True
     external_signal_refresh_seconds: int = 60
     external_signal_stale_seconds: int = 180
+    external_signal_timeout_seconds: int = 3
     external_signal_local_weight: float = 0.60
     external_signal_external_weight: float = 0.40
     external_signal_sources: str = "binance_futures,okx,bybit"
@@ -380,6 +381,7 @@ def load_settings() -> Settings:
         external_signal_enabled=_parse_bool(os.getenv("EXTERNAL_SIGNAL_ENABLED"), True),
         external_signal_refresh_seconds=int(os.getenv("EXTERNAL_SIGNAL_REFRESH_SECONDS", "60")),
         external_signal_stale_seconds=int(os.getenv("EXTERNAL_SIGNAL_STALE_SECONDS", "180")),
+        external_signal_timeout_seconds=int(os.getenv("EXTERNAL_SIGNAL_TIMEOUT_SECONDS", "3")),
         external_signal_local_weight=float(os.getenv("EXTERNAL_SIGNAL_LOCAL_WEIGHT", "0.60")),
         external_signal_external_weight=float(os.getenv("EXTERNAL_SIGNAL_EXTERNAL_WEIGHT", "0.40")),
         external_signal_sources=os.getenv("EXTERNAL_SIGNAL_SOURCES", "binance_futures,okx,bybit").strip(),

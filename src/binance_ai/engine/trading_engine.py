@@ -455,7 +455,11 @@ class TradingEngine:
             scenario_decisions.append(scenario_decision)
             blended_scenario_decision = scenario_decision
             external_consensus = None
-            if self.settings.external_signal_enabled and self.external_signal_engine is not None:
+            if (
+                self.settings.external_signal_enabled
+                and self.external_signal_engine is not None
+                and scheduling.should_run_decision
+            ):
                 external_consensus, source_snapshots, source_votes, blended_scenario_decision = self.external_signal_engine.evaluate(
                     symbol=symbol,
                     price=price,

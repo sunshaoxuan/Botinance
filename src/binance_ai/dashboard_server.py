@@ -3544,6 +3544,7 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "external_signal_enabled": settings.external_signal_enabled,
         "external_signal_refresh_seconds": settings.external_signal_refresh_seconds,
         "external_signal_stale_seconds": settings.external_signal_stale_seconds,
+        "external_signal_timeout_seconds": settings.external_signal_timeout_seconds,
         "external_signal_local_weight": settings.external_signal_local_weight,
         "external_signal_external_weight": settings.external_signal_external_weight,
         "external_signal_sources": settings.external_signal_sources,
