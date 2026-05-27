@@ -13,6 +13,16 @@ if ([string]::IsNullOrWhiteSpace($OutputDir)) {
   $OutputDir = "runtime_visual"
 }
 
+$startScript = Join-Path $RootDir "Start-Botinance.ps1"
+if (Test-Path $startScript) {
+  & $startScript `
+    -OutputDir $OutputDir `
+    -SleepSeconds $SleepSeconds `
+    -HostAddress $HostAddress `
+    -Port $Port
+  exit $LASTEXITCODE
+}
+
 $env:PYTHONPATH = "src"
 python -m binance_ai.service_manager start `
   --output-dir $OutputDir `
