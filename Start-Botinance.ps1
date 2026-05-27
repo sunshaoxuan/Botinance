@@ -93,10 +93,44 @@ function Start-PostgresContainer {
   $docker = Get-Command docker -ErrorAction SilentlyContinue
   if (-not $docker) {
     Write-StartLog "docker command not found; Botinance will keep file fallback"
-    return
+    return $false
   }
-  Write-StartLog "starting PostgreSQL container"
-  & docker compose -f (Join-Path $RootDir "docker-compose.yml") up -d postgres | Out-Null
+  & docker info *> $null
+  if ($LASTEXITCODE -ne 0) {
+    $dockerDesktop = @(
+      "C:\Program Files\Docker\Docker\Docker Desktop.exe",
+      "$env:LOCALAPPDATA\Docker\Docker Desktop.exe"
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($dockerDesktop) {
+      Write-StartLog "starting Docker Desktop"
+      Start-Process -FilePath $dockerDesktop | Out-Null
+      $deadline = (Get-Date).AddSeconds(90)
+      do {
+        Start-Sleep -Seconds 3
+        & docker info *> $null
+        if ($LASTEXITCODE -eq 0) {
+          break
+        }
+      } while ((Get-Date) -lt $deadline)
+    }
+  }
+  & docker info *> $null
+  if ($LASTEXITCODE -ne 0) {
+    Write-StartLog "docker engine is not ready; Botinance will keep file fallback"
+    return $false
+  }
+  try {
+    Write-StartLog "starting PostgreSQL container"
+    & docker compose -f (Join-Path $RootDir "docker-compose.yml") up -d postgres | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      Write-StartLog "docker compose failed with exit code $LASTEXITCODE; Botinance will keep file fallback"
+      return $false
+    }
+    return $true
+  } catch {
+    Write-StartLog "docker compose failed: $($_.Exception.Message); Botinance will keep file fallback"
+    return $false
+  }
 }
 
 function Import-RuntimeToPostgres {
@@ -116,8 +150,13 @@ $PythonExe = Resolve-Python
 Ensure-DbPassword
 Enable-PostgresRuntimeEnv
 Ensure-PythonPostgresDriver -Python $PythonExe
-Start-PostgresContainer
-Import-RuntimeToPostgres -Python $PythonExe
+$postgresReady = Start-PostgresContainer
+if ($postgresReady) {
+  Import-RuntimeToPostgres -Python $PythonExe
+} else {
+  $env:DB_WRITE_MODE = "file"
+  $env:DB_READ_MODE = "file"
+}
 
 $env:PYTHONPATH = "src"
 & $PythonExe -m binance_ai.service_manager start `
