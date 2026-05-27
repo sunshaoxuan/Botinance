@@ -54,7 +54,12 @@ function Ensure-DbPassword {
     return
   }
   $bytes = New-Object byte[] 24
-  [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  try {
+    $rng.GetBytes($bytes)
+  } finally {
+    $rng.Dispose()
+  }
   $generated = [Convert]::ToBase64String($bytes).TrimEnd("=")
   [Environment]::SetEnvironmentVariable("BOTINANCE_DB_PASSWORD", $generated, "User")
   $env:BOTINANCE_DB_PASSWORD = $generated
