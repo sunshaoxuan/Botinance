@@ -139,8 +139,7 @@ function Import-RuntimeToPostgres {
   Write-StartLog "migrating runtime JSON data into PostgreSQL"
   $env:PYTHONPATH = "src"
   & $Python -m binance_ai.storage.migrate_runtime `
-    --runtime-dir $OutputDir `
-    --database-url "postgresql://$($env:DB_USER):$($env:BOTINANCE_DB_PASSWORD)@$($env:DB_HOST):$($env:DB_PORT)/$($env:DB_NAME)" | Out-Null
+    --runtime-dir $OutputDir | Out-Null
   if ($LASTEXITCODE -ne 0) {
     Write-StartLog "runtime migration failed; Botinance can still fall back to files"
   }

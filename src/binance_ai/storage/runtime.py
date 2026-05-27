@@ -7,6 +7,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Protocol
+from urllib.parse import quote
 
 from binance_ai.config import Settings, load_settings
 
@@ -39,7 +40,8 @@ def table_name(prefix: str, timestamp_ms: int) -> str:
 
 def database_url_from_settings(settings: Settings) -> str:
     password = os.getenv(settings.db_password_env, "")
-    auth = settings.db_user if not password else f"{settings.db_user}:{password}"
+    user = quote(settings.db_user, safe="")
+    auth = user if not password else f"{user}:{quote(password, safe='')}"
     return f"postgresql://{auth}@{settings.db_host}:{settings.db_port}/{settings.db_name}"
 
 
