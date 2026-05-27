@@ -177,6 +177,18 @@ Windows PowerShell uses the same Python service manager:
 .\stop_visual_dashboard.ps1
 ```
 
+Optional PostgreSQL runtime storage:
+
+```bash
+export BOTINANCE_DB_PASSWORD='choose-a-local-secret'
+docker compose up -d postgres
+PYTHONPATH=src python3 -m binance_ai.storage.migrate_runtime \
+  --runtime-dir runtime_visual \
+  --database-url "postgresql://botinance:${BOTINANCE_DB_PASSWORD}@127.0.0.1:5432/botinance"
+```
+
+When `DB_READ_MODE=prefer_db`, the order table and ops summary query PostgreSQL first and fall back to JSON files if the database is unavailable. Storage health is available at `/api/ops/storage`.
+
 Production Windows hosts should sync code through Git instead of file copy:
 
 ```powershell

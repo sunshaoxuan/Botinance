@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 from binance_ai.config import load_settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.models import Candle
+from binance_ai.storage.runtime import build_runtime_store
 from binance_ai.tools.sync_paper_from_account import (
     base_asset_for_symbol,
     build_cash_baseline_snapshot_from_balances,
@@ -4890,6 +4891,12 @@ def build_ops_health_payload(runtime_dir: Path) -> Dict[str, Any]:
 
 
 def build_ops_summary_payload(runtime_dir: Path, hours: int) -> Dict[str, Any]:
+    settings = load_settings()
+    if settings.db_read_mode == "prefer_db":
+        try:
+            return build_runtime_store(settings).query_ops_summary(hours)
+        except Exception:
+            pass
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
@@ -5376,13 +5383,40 @@ def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
     }
 
 
-def build_order_records_payload(runtime_dir: Path) -> Dict[str, Any]:
+def build_order_records_payload(runtime_dir: Path, status: str = "all") -> Dict[str, Any]:
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
     quote_asset = paper_state.get("quote_asset", "JPY")
     fee_rate = _dashboard_fee_rate()
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
+    settings = load_settings()
+    if settings.db_read_mode == "prefer_db" and settings.dashboard_order_source == "postgres":
+        try:
+            db_payload = build_runtime_store(settings).query_order_records(limit=1000, status=status)
+            recent_fills = _dedupe_fills(db_payload.get("recent_fills", []), limit=1000)
+            order_lifecycle_events = db_payload.get("order_lifecycle_events", [])
+            trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate, limit=None)
+            meta = dict(db_payload.get("order_records_meta") or {})
+            meta.update(
+                {
+                    "recent_fill_count": len(recent_fills),
+                    "order_lifecycle_event_count": len(order_lifecycle_events),
+                    "trade_record_count": len(trade_records),
+                }
+            )
+            return {
+                "recent_fills": recent_fills,
+                "order_lifecycle_events": order_lifecycle_events,
+                "trade_records": trade_records,
+                "trade_records_complete": True,
+                "storage_source": "postgres",
+                "order_records_meta": meta,
+            }
+        except Exception as exc:  # noqa: BLE001
+            storage_warning = str(exc)[:240]
+    else:
+        storage_warning = ""
     scan_lines = _coerce_int(os.environ.get("DASHBOARD_ORDER_SCAN_LINES"), 20000)
     order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=1000, scan_lines=scan_lines)
     if not order_lifecycle_events:
@@ -5396,6 +5430,8 @@ def build_order_records_payload(runtime_dir: Path) -> Dict[str, Any]:
         "order_lifecycle_events": order_lifecycle_events,
         "trade_records": trade_records,
         "trade_records_complete": True,
+        "storage_source": "file_fallback" if storage_warning else "file",
+        "storage_warning": storage_warning,
         "order_records_meta": {
             "scan_lines": scan_lines,
             "recent_fill_count": len(recent_fills),
@@ -5403,6 +5439,23 @@ def build_order_records_payload(runtime_dir: Path) -> Dict[str, Any]:
             "trade_record_count": len(trade_records),
         },
     }
+
+
+def build_ops_storage_payload(runtime_dir: Path) -> Dict[str, Any]:
+    settings = load_settings()
+    status = build_runtime_store(settings).storage_status()
+    status.update(
+        {
+            "runtime_dir": str(runtime_dir),
+            "dashboard_order_source": settings.dashboard_order_source,
+            "json_compat_files": {
+                "latest_report": (runtime_dir / "latest_report.json").exists(),
+                "paper_state": (runtime_dir / "paper_state.json").exists(),
+                "cycle_reports": (runtime_dir / "cycle_reports.jsonl").exists(),
+            },
+        }
+    )
+    return status
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -5428,10 +5481,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(build_decision_drawer_payload(self.runtime_dir))
             return
         if parsed.path == "/api/dashboard/orders":
-            self._send_json(build_order_records_payload(self.runtime_dir))
+            query = parse_qs(parsed.query)
+            status = str((query.get("status") or ["all"])[0])
+            self._send_json(build_order_records_payload(self.runtime_dir, status=status))
             return
         if parsed.path == "/api/ops/health":
             self._send_json(build_ops_health_payload(self.runtime_dir))
+            return
+        if parsed.path == "/api/ops/storage":
+            self._send_json(build_ops_storage_payload(self.runtime_dir))
             return
         if parsed.path == "/api/ops/summary":
             query = parse_qs(parsed.query)

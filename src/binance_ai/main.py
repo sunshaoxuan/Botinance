@@ -20,11 +20,13 @@ from binance_ai.news.service import NewsService
 from binance_ai.paper.portfolio import PaperPortfolio
 from binance_ai.reporting.recorder import ReportRecorder
 from binance_ai.risk.engine import RiskEngine
+from binance_ai.storage.runtime import build_runtime_store
 from binance_ai.strategy.momentum import MovingAverageMomentumStrategy
 
 
 def build_engine(output_dir: Path) -> TradingEngine:
     settings = load_settings()
+    runtime_store = build_runtime_store(settings)
     client = BinanceSpotClient(settings)
     market_data = MarketDataService(client)
     strategy = MovingAverageMomentumStrategy(
@@ -69,6 +71,7 @@ def build_engine(output_dir: Path) -> TradingEngine:
             initial_quote_balance=settings.paper_quote_balance,
             state_path=output_dir / "paper_state.json",
             fee_rate=settings.trading_fee_rate,
+            runtime_store=runtime_store,
         )
     executor = OrderExecutor(settings, client, paper_portfolio=paper_portfolio)
     scheduler = DecisionScheduler(
@@ -111,8 +114,10 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     output_dir = Path(args.output_dir)
+    settings = load_settings()
+    runtime_store = build_runtime_store(settings)
     engine = build_engine(output_dir=output_dir)
-    recorder = ReportRecorder(output_dir)
+    recorder = ReportRecorder(output_dir, runtime_store=runtime_store)
     try:
         while True:
             report = engine.run_cycle()

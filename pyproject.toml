@@ -7,7 +7,9 @@ name = "binance-ai-trader"
 version = "0.1.0"
 description = "API-first Binance spot trading skeleton with AI-ready architecture"
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+  "psycopg[binary]>=3.1",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

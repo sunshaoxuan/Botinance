@@ -8,15 +8,24 @@ from typing import Dict, Iterable, List
 
 from binance_ai.models import AccountSnapshot, ManagedOrder, OrderLifecycleEvent, OrderRequest, PortfolioSnapshot, PositionSnapshot
 from binance_ai.paper.state_engine import PortfolioStateEngine
+from binance_ai.storage.runtime import SafeRuntimeStore
 
 
 class PaperPortfolio:
-    def __init__(self, quote_asset: str, initial_quote_balance: float, state_path: Path, fee_rate: float = 0.0) -> None:
+    def __init__(
+        self,
+        quote_asset: str,
+        initial_quote_balance: float,
+        state_path: Path,
+        fee_rate: float = 0.0,
+        runtime_store: SafeRuntimeStore | None = None,
+    ) -> None:
         self.quote_asset = quote_asset
         self.initial_quote_balance = initial_quote_balance
         self.state_path = state_path
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.engine = PortfolioStateEngine(quote_asset, fee_rate=fee_rate)
+        self.runtime_store = runtime_store
 
     def load_snapshot(self) -> PortfolioSnapshot:
         if not self.state_path.exists():
@@ -104,6 +113,8 @@ class PaperPortfolio:
             json.dumps(asdict(snapshot), ensure_ascii=True, indent=2),
             encoding="utf-8",
         )
+        if self.runtime_store is not None:
+            self.runtime_store.write_portfolio_snapshot(snapshot)
 
     def account_snapshot(self) -> AccountSnapshot:
         return self.engine.account_snapshot(self.load_snapshot())
