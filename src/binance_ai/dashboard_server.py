@@ -2397,9 +2397,13 @@ INDEX_HTML = """<!doctype html>
       const previous = previousPayload || {};
       const previousFillCount = previous.recent_fills?.length || 0;
       const payloadFillCount = payload.recent_fills?.length || 0;
-      const keepCompleteTradeRecords = previous.trade_records_complete === true
-        && payload.trade_records_complete === false
-        && payloadFillCount <= previousFillCount;
+      const incomingHasIncompleteOrders = payload.trade_records_complete === false;
+      const keepCompleteTradeRecords = previous.trade_records_complete === true && incomingHasIncompleteOrders;
+      const orderRecordsNeedRefresh = incomingHasIncompleteOrders && (
+        previous.trade_records_complete !== true ||
+        payloadFillCount > previousFillCount ||
+        !(previous.trade_records || []).length
+      );
       const bars = cachedBars?.length
         ? cachedBars
         : payload.live_chart_bars?.length
@@ -2421,6 +2425,7 @@ INDEX_HTML = """<!doctype html>
         recent_fills: keepCompleteTradeRecords ? previous.recent_fills || [] : payload.recent_fills || previous.recent_fills || [],
         order_lifecycle_events: keepCompleteTradeRecords ? previous.order_lifecycle_events || [] : payload.order_lifecycle_events || previous.order_lifecycle_events || [],
         trade_records_complete: keepCompleteTradeRecords ? true : payload.trade_records_complete === true,
+        order_records_refresh_needed: orderRecordsNeedRefresh,
         order_records_meta: keepCompleteTradeRecords ? previous.order_records_meta || {} : payload.order_records_meta || previous.order_records_meta || {},
       };
     }
@@ -3164,7 +3169,9 @@ INDEX_HTML = """<!doctype html>
         if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
         const hydratedPayload = preserveChartPayload(payload, previousPayload, chartInterval, cachedBars);
         updateDom(hydratedPayload, { renderChart: false });
-        refreshOrderRecords(!hydratedPayload.trade_records_complete || !hydratedPayload.trade_records?.length);
+        if (hydratedPayload.order_records_refresh_needed || !hydratedPayload.trade_records_complete || !hydratedPayload.trade_records?.length) {
+          refreshOrderRecords(true);
+        }
         if (cachedBars.length) {
           scheduleChartRender(hydratedPayload, { showLoading: false });
         }
