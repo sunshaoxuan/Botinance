@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 import json
 
-from binance_ai.models import OrderRequest
+from binance_ai.models import OrderRequest, PortfolioSnapshot, PositionSnapshot
 from binance_ai.paper.portfolio import PaperPortfolio
 
 
@@ -60,6 +60,68 @@ class PaperPortfolioTests(unittest.TestCase):
             summary = portfolio.equity_summary({"XRPJPY": 220.0})
             self.assertAlmostEqual(summary["realized_pnl"], 19.58)
             self.assertAlmostEqual(summary["net_pnl"], 19.58)
+
+    def test_initial_inventory_release_sell_is_excluded_until_first_buy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=1000.0,
+                state_path=Path(tmpdir) / "paper_state.json",
+                fee_rate=0.001,
+            )
+            portfolio.save_snapshot(
+                PortfolioSnapshot(
+                    quote_asset="JPY",
+                    quote_balance=100.0,
+                    initial_quote_balance=1100.0,
+                    positions={
+                        "XRPJPY": PositionSnapshot(
+                            quantity=5.0,
+                            average_entry_price=200.0,
+                            highest_price=200.0,
+                        )
+                    },
+                    activation_state={
+                        "XRPJPY": {
+                            "initial_inventory_release": {
+                                "enabled": True,
+                                "remaining_quantity": 5.0,
+                                "excluded_realized_pnl": 0.0,
+                                "completed": False,
+                            }
+                        }
+                    },
+                )
+            )
+
+            first_sell = portfolio.apply_order(
+                OrderRequest(symbol="XRPJPY", side="SELL", order_type="MARKET", quantity=2.0),
+                fill_price=220.0,
+            )
+
+            self.assertEqual(first_sell["status"], "PAPER_FILLED")
+            self.assertAlmostEqual(first_sell["raw_realized_pnl_delta"], 39.56)
+            self.assertAlmostEqual(first_sell["excluded_realized_pnl_delta"], 39.56)
+            self.assertAlmostEqual(first_sell["realized_pnl_delta"], 0.0)
+            snapshot = portfolio.load_snapshot()
+            self.assertAlmostEqual(snapshot.realized_pnl, 0.0)
+            release = snapshot.activation_state["XRPJPY"]["initial_inventory_release"]
+            self.assertAlmostEqual(release["remaining_quantity"], 3.0)
+
+            buy = portfolio.apply_order(
+                OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=1.0),
+                fill_price=210.0,
+            )
+            self.assertEqual(buy["status"], "PAPER_FILLED")
+            snapshot = portfolio.load_snapshot()
+            self.assertFalse(snapshot.activation_state["XRPJPY"]["initial_inventory_release"]["enabled"])
+
+            second_sell = portfolio.apply_order(
+                OrderRequest(symbol="XRPJPY", side="SELL", order_type="MARKET", quantity=1.0),
+                fill_price=230.0,
+            )
+            self.assertGreater(second_sell["realized_pnl_delta"], 0.0)
+            self.assertAlmostEqual(second_sell["excluded_realized_pnl_delta"], 0.0)
 
     def test_apply_order_blocks_notional_below_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

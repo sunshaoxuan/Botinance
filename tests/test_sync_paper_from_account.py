@@ -33,6 +33,9 @@ class SyncPaperFromAccountTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.initial_quote_balance, 188.99 + 114.9 * 224.0)
         self.assertEqual(snapshot.realized_pnl, 0.0)
         self.assertEqual(snapshot.activation_state["XRPJPY"]["cost_basis_source"], "sync_current_price")
+        release = snapshot.activation_state["XRPJPY"]["initial_inventory_release"]
+        self.assertTrue(release["enabled"])
+        self.assertAlmostEqual(release["remaining_quantity"], 114.9)
 
     def test_build_cash_baseline_snapshot_converts_inventory_to_quote(self) -> None:
         snapshot = build_cash_baseline_snapshot_from_balances(

@@ -65,6 +65,13 @@ def build_paper_snapshot_from_balances(
         symbol_activation_state = {
             "cost_basis_source": str(cost_basis.get("source") or "sync_current_price"),
             "seed_price": price,
+            "initial_inventory_release": {
+                "enabled": True,
+                "remaining_quantity": quantity,
+                "excluded_realized_pnl": 0.0,
+                "completed": False,
+                "note": "Initial real-account inventory release is excluded from Boti operation PnL until the first paper BUY.",
+            },
         }
         if cost_basis.get("average_entry_price"):
             symbol_activation_state["real_average_entry_price"] = float(cost_basis["average_entry_price"])

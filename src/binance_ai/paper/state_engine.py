@@ -298,6 +298,8 @@ class PortfolioStateEngine:
                 "final_notional": notional,
             }
 
+        activation_state = dict(snapshot.activation_state)
+
         if order.side == "BUY":
             gross_cost = notional + fee
             if gross_cost > snapshot.quote_balance:
@@ -327,7 +329,23 @@ class PortfolioStateEngine:
                     highest_price=max(existing.highest_price or existing.average_entry_price, fill_price),
                 )
             positions[order.symbol] = updated_position
-            updated_snapshot = replace(snapshot, quote_balance=snapshot.quote_balance - gross_cost, positions=positions)
+            symbol_state = dict(activation_state.get(order.symbol, {}))
+            initial_release = symbol_state.get("initial_inventory_release")
+            if isinstance(initial_release, dict) and initial_release.get("enabled"):
+                symbol_state["initial_inventory_release"] = {
+                    **initial_release,
+                    "enabled": False,
+                    "completed": True,
+                    "closed_by": "first_paper_buy",
+                    "closed_at_ms": applied_timestamp_ms,
+                }
+                activation_state[order.symbol] = symbol_state
+            updated_snapshot = replace(
+                snapshot,
+                quote_balance=snapshot.quote_balance - gross_cost,
+                positions=positions,
+                activation_state=activation_state,
+            )
         else:
             existing = positions.get(order.symbol)
             if existing is None or order.quantity > existing.quantity:
@@ -335,7 +353,32 @@ class PortfolioStateEngine:
             proceeds = order.quantity * fill_price
             cost_basis = order.quantity * existing.average_entry_price
             net_proceeds = proceeds - fee
-            realized_pnl_delta = net_proceeds - cost_basis
+            raw_realized_pnl_delta = net_proceeds - cost_basis
+            realized_pnl_delta = raw_realized_pnl_delta
+            excluded_realized_pnl_delta = 0.0
+            excluded_quantity = 0.0
+            symbol_state = dict(activation_state.get(order.symbol, {}))
+            initial_release = symbol_state.get("initial_inventory_release")
+            if isinstance(initial_release, dict) and initial_release.get("enabled"):
+                release_remaining = max(0.0, float(initial_release.get("remaining_quantity", 0.0) or 0.0))
+                excluded_quantity = min(order.quantity, release_remaining)
+                if excluded_quantity > 0 and order.quantity > 0:
+                    excluded_ratio = excluded_quantity / order.quantity
+                    excluded_realized_pnl_delta = raw_realized_pnl_delta * excluded_ratio
+                    realized_pnl_delta = raw_realized_pnl_delta - excluded_realized_pnl_delta
+                    next_remaining = max(0.0, release_remaining - excluded_quantity)
+                    symbol_state["initial_inventory_release"] = {
+                        **initial_release,
+                        "remaining_quantity": next_remaining,
+                        "excluded_realized_pnl": float(initial_release.get("excluded_realized_pnl", 0.0) or 0.0)
+                        + excluded_realized_pnl_delta,
+                        "last_excluded_quantity": excluded_quantity,
+                        "last_excluded_at_ms": applied_timestamp_ms,
+                        "completed": next_remaining <= 1e-12,
+                    }
+                    if next_remaining <= 1e-12:
+                        symbol_state["initial_inventory_release"]["enabled"] = False
+                    activation_state[order.symbol] = symbol_state
             remaining = existing.quantity - order.quantity
             if remaining <= 0:
                 positions.pop(order.symbol, None)
@@ -352,6 +395,7 @@ class PortfolioStateEngine:
                 quote_balance=snapshot.quote_balance + net_proceeds,
                 positions=positions,
                 realized_pnl=snapshot.realized_pnl + realized_pnl_delta,
+                activation_state=activation_state,
             )
 
         result = {
@@ -365,6 +409,9 @@ class PortfolioStateEngine:
             "fee_rate": self.fee_rate,
             "net_notional": notional + fee if order.side == "BUY" else notional - fee,
             "realized_pnl_delta": realized_pnl_delta,
+            "raw_realized_pnl_delta": raw_realized_pnl_delta if order.side == "SELL" else realized_pnl_delta,
+            "excluded_realized_pnl_delta": excluded_realized_pnl_delta if order.side == "SELL" else 0.0,
+            "excluded_initial_inventory_quantity": excluded_quantity if order.side == "SELL" else 0.0,
             "timestamp_ms": applied_timestamp_ms,
             "client_order_id": order.client_order_id,
             "trigger": order.trigger,
