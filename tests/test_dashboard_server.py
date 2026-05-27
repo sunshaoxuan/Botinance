@@ -632,7 +632,7 @@ class DashboardServerTests(unittest.TestCase):
         self.assertIn("CANCELED", order_statuses)
         self.assertIn("BUY", order_sides)
         self.assertIn("SELL", order_sides)
-        self.assertEqual(orders_payload["order_records_meta"]["scan_lines"], "all")
+        self.assertGreaterEqual(orders_payload["order_records_meta"]["scan_lines"], 1202)
 
     def test_trade_records_collapse_repeated_open_order_observations(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

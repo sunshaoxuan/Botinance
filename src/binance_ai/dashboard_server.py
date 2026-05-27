@@ -1225,6 +1225,7 @@ INDEX_HTML = """<!doctype html>
     let orderRequestSeq = 0;
     let lastOrderRecordsLoadedAt = 0;
     let tickInFlight = false;
+    let orderRecordsInFlight = false;
     const chartBarsCache = {};
     const SNAPSHOT_CACHE_KEY = "boti.lastDashboardSnapshot.v2";
 
@@ -3134,9 +3135,11 @@ INDEX_HTML = """<!doctype html>
 
     async function refreshOrderRecords(force = false) {
       if (!lastPayloadSnapshot) return;
+      if (orderRecordsInFlight) return;
       const now = Date.now();
       if (!force && now - lastOrderRecordsLoadedAt < 15000) return;
       const requestSeq = ++orderRequestSeq;
+      orderRecordsInFlight = true;
       try {
         const orderPayload = await loadOrderRecords(requestSeq);
         if (requestSeq !== orderRequestSeq || !lastPayloadSnapshot) return;
@@ -3147,6 +3150,8 @@ INDEX_HTML = """<!doctype html>
         renderFills(c.tradeRecords, c.quoteAsset);
       } catch (err) {
         console.error(err);
+      } finally {
+        if (requestSeq === orderRequestSeq) orderRecordsInFlight = false;
       }
     }
 
@@ -3219,21 +3224,26 @@ INDEX_HTML = """<!doctype html>
       els.fillPageSize.addEventListener("change", () => {
         fillPageSize = Number(els.fillPageSize.value) || 50;
         fillPage = 0;
-        updateTradingTab(lastPayloadSnapshot || {});
+        const c = context(lastPayloadSnapshot || {});
+        renderFills(c.tradeRecords, c.quoteAsset);
       });
       els.fillFilter.addEventListener("change", () => {
         fillFilter = els.fillFilter.value || "all";
         window.localStorage.setItem("boti.fillFilter", fillFilter);
         fillPage = 0;
-        updateTradingTab(lastPayloadSnapshot || {});
+        const c = context(lastPayloadSnapshot || {});
+        renderFills(c.tradeRecords, c.quoteAsset);
+        if (!lastPayloadSnapshot?.trade_records_complete) refreshOrderRecords(true);
       });
       els.fillPrev.addEventListener("click", () => {
         fillPage = Math.max(0, fillPage - 1);
-        updateTradingTab(lastPayloadSnapshot || {});
+        const c = context(lastPayloadSnapshot || {});
+        renderFills(c.tradeRecords, c.quoteAsset);
       });
       els.fillNext.addEventListener("click", () => {
         fillPage += 1;
-        updateTradingTab(lastPayloadSnapshot || {});
+        const c = context(lastPayloadSnapshot || {});
+        renderFills(c.tradeRecords, c.quoteAsset);
       });
       els.insightDrawerClose.addEventListener("click", closeInsightDrawer);
       els.insightDrawerBackdrop.addEventListener("click", closeInsightDrawer);
@@ -5373,11 +5383,12 @@ def build_order_records_payload(runtime_dir: Path) -> Dict[str, Any]:
     quote_asset = paper_state.get("quote_asset", "JPY")
     fee_rate = _dashboard_fee_rate()
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
-    order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=1000, scan_lines=None)
+    scan_lines = _coerce_int(os.environ.get("DASHBOARD_ORDER_SCAN_LINES"), 20000)
+    order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=1000, scan_lines=scan_lines)
     if not order_lifecycle_events:
         order_lifecycle_events = _extract_order_lifecycle_events([], latest_report, limit=1000)
     paper_fills = paper_state.get("fills", []) if isinstance(paper_state.get("fills", []), list) else []
-    file_fills = _extract_recent_fills_from_file(history_path, limit=1000, scan_lines=None)
+    file_fills = _extract_recent_fills_from_file(history_path, limit=1000, scan_lines=scan_lines)
     recent_fills = _dedupe_fills([*paper_fills, *file_fills], limit=1000)
     trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate, limit=None)
     return {
@@ -5386,7 +5397,7 @@ def build_order_records_payload(runtime_dir: Path) -> Dict[str, Any]:
         "trade_records": trade_records,
         "trade_records_complete": True,
         "order_records_meta": {
-            "scan_lines": "all",
+            "scan_lines": scan_lines,
             "recent_fill_count": len(recent_fills),
             "order_lifecycle_event_count": len(order_lifecycle_events),
             "trade_record_count": len(trade_records),
