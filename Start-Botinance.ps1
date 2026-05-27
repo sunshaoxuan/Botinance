@@ -95,7 +95,7 @@ function Start-PostgresContainer {
     Write-StartLog "docker command not found; Botinance will keep file fallback"
     return $false
   }
-  & docker info *> $null
+  & cmd.exe /c "docker info >NUL 2>NUL"
   if ($LASTEXITCODE -ne 0) {
     $dockerDesktop = @(
       "C:\Program Files\Docker\Docker\Docker Desktop.exe",
@@ -107,21 +107,22 @@ function Start-PostgresContainer {
       $deadline = (Get-Date).AddSeconds(90)
       do {
         Start-Sleep -Seconds 3
-        & docker info *> $null
+        & cmd.exe /c "docker info >NUL 2>NUL"
         if ($LASTEXITCODE -eq 0) {
           break
         }
       } while ((Get-Date) -lt $deadline)
     }
   }
-  & docker info *> $null
+  & cmd.exe /c "docker info >NUL 2>NUL"
   if ($LASTEXITCODE -ne 0) {
     Write-StartLog "docker engine is not ready; Botinance will keep file fallback"
     return $false
   }
   try {
     Write-StartLog "starting PostgreSQL container"
-    & docker compose -f (Join-Path $RootDir "docker-compose.yml") up -d postgres | Out-Null
+    $composeFile = Join-Path $RootDir "docker-compose.yml"
+    & cmd.exe /c "docker compose -f `"$composeFile`" up -d postgres >NUL 2>NUL"
     if ($LASTEXITCODE -ne 0) {
       Write-StartLog "docker compose failed with exit code $LASTEXITCODE; Botinance will keep file fallback"
       return $false
