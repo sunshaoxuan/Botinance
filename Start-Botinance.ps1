@@ -2,7 +2,9 @@ param(
   [string]$OutputDir = $(if ($env:OUTPUT_DIR) { $env:OUTPUT_DIR } else { "runtime_visual" }),
   [string]$HostAddress = $(if ($env:DASHBOARD_HOST) { $env:DASHBOARD_HOST } else { "0.0.0.0" }),
   [int]$Port = $(if ($env:DASHBOARD_PORT) { [int]$env:DASHBOARD_PORT } else { 8765 }),
-  [int]$SleepSeconds = $(if ($env:SLEEP_SECONDS) { [int]$env:SLEEP_SECONDS } else { 3 })
+  [int]$SleepSeconds = $(if ($env:SLEEP_SECONDS) { [int]$env:SLEEP_SECONDS } else { 3 }),
+  [int]$MigrationTimeoutSeconds = $(if ($env:BOTI_MIGRATION_TIMEOUT_SECONDS) { [int]$env:BOTI_MIGRATION_TIMEOUT_SECONDS } else { 60 }),
+  [switch]$RunMigration = $([string]::Equals($env:BOTI_RUN_RUNTIME_MIGRATION, "true", [System.StringComparison]::OrdinalIgnoreCase))
 )
 
 $ErrorActionPreference = "Stop"
@@ -138,10 +140,24 @@ function Import-RuntimeToPostgres {
   param([string]$Python)
   Write-StartLog "migrating runtime JSON data into PostgreSQL"
   $env:PYTHONPATH = "src"
-  & $Python -m binance_ai.storage.migrate_runtime `
-    --runtime-dir $OutputDir | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    Write-StartLog "runtime migration failed; Botinance can still fall back to files"
+  $scriptBlock = {
+    param($RootDir, $Python, $OutputDir)
+    Set-Location $RootDir
+    $env:PYTHONPATH = "src"
+    & $Python -m binance_ai.storage.migrate_runtime --runtime-dir $OutputDir
+  }
+  $job = Start-Job -ScriptBlock $scriptBlock -ArgumentList $RootDir, $Python, $OutputDir
+  if (Wait-Job $job -Timeout $MigrationTimeoutSeconds) {
+    Receive-Job $job | Out-Null
+    $state = $job.State
+    Remove-Job $job
+    if ($state -ne "Completed") {
+      Write-StartLog "runtime migration ended with state=$state; Botinance can still fall back to files"
+    }
+  } else {
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Write-StartLog "runtime migration timed out after ${MigrationTimeoutSeconds}s; continuing startup"
   }
 }
 
@@ -151,8 +167,10 @@ Ensure-DbPassword
 Enable-PostgresRuntimeEnv
 Ensure-PythonPostgresDriver -Python $PythonExe
 $postgresReady = Start-PostgresContainer
-if ($postgresReady) {
+if ($postgresReady -and $RunMigration) {
   Import-RuntimeToPostgres -Python $PythonExe
+} elseif ($postgresReady) {
+  Write-StartLog "runtime migration skipped; set BOTI_RUN_RUNTIME_MIGRATION=true to import legacy JSON"
 } else {
   $env:DB_WRITE_MODE = "file"
   $env:DB_READ_MODE = "file"
