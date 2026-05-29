@@ -35,6 +35,8 @@ class PositionActivationEngine:
         filters: SymbolFilters,
         snapshot: PortfolioSnapshot,
         timestamp_ms: int,
+        scenario_state: str = "",
+        atr_pct: float = 0.0,
     ) -> PositionActivationDecision:
         if not self.settings.position_activation_enabled:
             return PositionActivationDecision("HOLD", "", "position_activation_disabled")
@@ -102,7 +104,8 @@ class PositionActivationEngine:
             return PositionActivationDecision("HOLD", "", str(state["last_reason"]), state_update=state)
 
         unrealized_pct = (price - position.average_entry_price) / position.average_entry_price if position.average_entry_price > 0 else 0.0
-        if unrealized_pct >= self.settings.grid_sell_step_pct:
+        grid_sell_step = self._effective_grid_sell_step_pct(scenario_state=scenario_state, atr_pct=atr_pct)
+        if unrealized_pct >= grid_sell_step:
             return self._build_grid_sell(
                 symbol=symbol,
                 price=price,
@@ -110,7 +113,7 @@ class PositionActivationEngine:
                 filters=filters,
                 state=state,
                 trigger="grid_profit_sell",
-                reason=f"浮盈 {unrealized_pct:.4%} 达到网格卖出阈值",
+                reason=f"浮盈 {unrealized_pct:.4%} 达到网格卖出阈值 {grid_sell_step:.4%}",
             )
         if unrealized_pct < 0 and self.settings.grid_allow_loss_recovery_sell:
             cost_basis_source = str(state.get("cost_basis_source", ""))
@@ -397,6 +400,26 @@ class PositionActivationEngine:
         state["buyback_tier_net_edge_pct"] = 0.0
         state["buyback_tier_fraction"] = 0.0
         state["last_net_edge_pct"] = 0.0
+        state["decision_state"] = "NORMAL"
+
+    def _effective_grid_sell_step_pct(self, *, scenario_state: str = "", atr_pct: float = 0.0) -> float:
+        base = self.settings.grid_sell_step_pct
+        if scenario_state != "RANGE_MARKET_MAKING" or atr_pct <= 0:
+            return base
+        if atr_pct >= self.settings.range_market_atr_pct_threshold:
+            return base
+        adaptive = max(self.settings.range_grid_min_sell_step_pct, atr_pct * self.settings.range_grid_atr_multiplier)
+        return min(base, adaptive)
+
+    def _effective_grid_buyback_step_pct(self, *, scenario_state: str = "", atr_pct: float = 0.0) -> float:
+        base = self.settings.grid_buyback_step_pct
+        if scenario_state != "RANGE_MARKET_MAKING" or atr_pct <= 0:
+            return base
+        if atr_pct >= self.settings.range_market_atr_pct_threshold:
+            return base
+        sell_step = self._effective_grid_sell_step_pct(scenario_state=scenario_state, atr_pct=atr_pct)
+        adaptive = max(sell_step * 1.2, atr_pct * self.settings.range_grid_atr_multiplier)
+        return min(base, adaptive)
 
     def _interval_ms(self) -> int:
         raw = str(self.settings.kline_interval).strip().lower()

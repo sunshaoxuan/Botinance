@@ -231,13 +231,17 @@ class TradingEngine:
                     )
             release_exit_block_reason = self._release_exit_buyback_block_reason(
                 symbol=symbol,
+                price=price,
                 exit_reason=exit_reason,
                 activation_decision=activation_decision,
+                filters=filters,
             )
             if release_exit_block_reason:
                 exit_reason = None
             strategy_sell_block_reason = self._strategy_sell_buyback_block_reason(
                 symbol=symbol,
+                price=price,
+                filters=filters,
                 signal=signal,
                 has_position=has_position,
                 exit_reason=exit_reason,
@@ -470,6 +474,19 @@ class TradingEngine:
                 external_signal_votes.extend(source_votes)
                 external_consensus_results.append(external_consensus)
             blended_scenario_decisions.append(blended_scenario_decision)
+            scenario_indicators = blended_scenario_decision.indicators if isinstance(blended_scenario_decision.indicators, dict) else {}
+            atr_pct = float(scenario_indicators.get("atr_pct", 0.0) or 0.0)
+            activation_decision = self._evaluate_position_activation(
+                symbol=symbol,
+                price=price,
+                account=account,
+                filters=filters,
+                timestamp_ms=cycle_timestamp_ms,
+                scenario_state=blended_scenario_decision.scenario_state,
+                atr_pct=atr_pct,
+            )
+            if activation_decision.state_update:
+                self._persist_activation_state(symbol=symbol, state_update=activation_decision.state_update)
             direction_decision = self.direction_decision.evaluate(
                 symbol=symbol,
                 price=price,
@@ -600,8 +617,6 @@ class TradingEngine:
 
             if policy_handled:
                 pass
-            elif open_order_summary.get("status") == "CANCELED":
-                pass
             elif not scheduling.should_run_decision and open_order_summary.get("status") == "NO_OPEN_ORDERS":
                 execution_result = {
                     "status": "SKIPPED_REFRESH_ONLY",
@@ -615,6 +630,7 @@ class TradingEngine:
                     base_balance,
                     filters,
                     sell_fraction=self.risk.exit_sell_fraction(exit_reason),
+                    exit_reason=exit_reason,
                 )
                 if decision.order is not None:
                     execution_result, events, orders = self._submit_ladder_orders(
@@ -1046,7 +1062,9 @@ class TradingEngine:
             return False
         if not self.settings.target_inventory_enabled:
             state = self._activation_state_for_symbol(symbol)
-            if float(state.get("pending_buyback_quantity", 0.0) or 0.0) > 0:
+            pending = float(state.get("pending_buyback_quantity", 0.0) or 0.0)
+            min_qty_threshold = 0.1
+            if pending > 0 and pending >= min_qty_threshold:
                 return False
             if self._buyback_cooldown_remaining_bars(symbol=symbol, timestamp_ms=timestamp_ms) > 0:
                 return False
@@ -1470,6 +1488,8 @@ class TradingEngine:
         account: AccountSnapshot,
         filters,
         timestamp_ms: int,
+        scenario_state: str = "",
+        atr_pct: float = 0.0,
     ) -> PositionActivationDecision:
         if not self.settings.dry_run or self.paper_portfolio is None:
             return PositionActivationDecision("HOLD", "", "position_activation_requires_paper_mode")
@@ -1481,7 +1501,40 @@ class TradingEngine:
             filters=filters,
             snapshot=snapshot,
             timestamp_ms=timestamp_ms,
+            scenario_state=scenario_state,
+            atr_pct=atr_pct,
         )
+
+    def _persist_activation_state(self, *, symbol: str, state_update: Dict[str, object]) -> None:
+        if self.paper_portfolio is None:
+            return
+        snapshot = self.paper_portfolio.load_snapshot()
+        activation_state = dict(snapshot.activation_state)
+        activation_state[symbol] = dict(state_update)
+        self.paper_portfolio.save_snapshot(replace(snapshot, activation_state=activation_state))
+
+    def _effective_pending_buyback_quantity(self, *, symbol: str, price: float = 0.0, filters=None) -> float:
+        state = self._activation_state_for_symbol(symbol)
+        pending = 0.0
+        try:
+            pending = float(state.get("pending_buyback_quantity", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pending = 0.0
+        if pending <= 0:
+            return 0.0
+        min_notional = max(
+            self.settings.min_order_notional,
+            self.settings.grid_min_order_notional,
+        )
+        if filters is not None:
+            min_notional = max(min_notional, filters.min_notional)
+        if price > 0 and pending * price < min_notional:
+            return 0.0
+        if filters is not None:
+            quantized = self.client.quantize_quantity(pending, filters.step_size)
+            if quantized < filters.min_qty:
+                return 0.0
+        return pending
 
     def _activation_state_for_symbol(self, symbol: str) -> Dict[str, object]:
         if self.paper_portfolio is None:
@@ -1607,6 +1660,8 @@ class TradingEngine:
         self,
         *,
         symbol: str,
+        price: float,
+        filters,
         signal,
         has_position: bool,
         exit_reason: str | None,
@@ -1616,15 +1671,7 @@ class TradingEngine:
             return ""
         if activation_decision.trigger == "grid_buyback" and activation_decision.order is not None:
             return "已有释放仓位到达回补线，本轮优先回补买入，暂停策略卖出"
-        if self.paper_portfolio is None:
-            return ""
-        state = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
-        pending_qty = 0.0
-        if isinstance(state, dict):
-            try:
-                pending_qty = float(state.get("pending_buyback_quantity", 0.0))
-            except (TypeError, ValueError):
-                pending_qty = 0.0
+        pending_qty = self._effective_pending_buyback_quantity(symbol=symbol, price=price, filters=filters)
         if pending_qty <= 0:
             return ""
         detail = activation_decision.reason or "等待回补"
@@ -1634,22 +1681,16 @@ class TradingEngine:
         self,
         *,
         symbol: str,
+        price: float,
         exit_reason: str | None,
         activation_decision: PositionActivationDecision,
+        filters,
     ) -> str:
-        if exit_reason != "take_profit":
+        if exit_reason not in {"take_profit", "trailing_stop", "max_hold_exit"}:
             return ""
         if activation_decision.trigger == "grid_buyback" and activation_decision.order is not None:
             return "已有释放仓位到达回补线，本轮优先回补买入，暂停继续部分退出"
-        if self.paper_portfolio is None:
-            return ""
-        state = self.paper_portfolio.load_snapshot().activation_state.get(symbol, {})
-        pending_qty = 0.0
-        if isinstance(state, dict):
-            try:
-                pending_qty = float(state.get("pending_buyback_quantity", 0.0))
-            except (TypeError, ValueError):
-                pending_qty = 0.0
+        pending_qty = self._effective_pending_buyback_quantity(symbol=symbol, price=price, filters=filters)
         if pending_qty <= 0:
             return ""
         detail = activation_decision.reason or "等待回补"
@@ -1878,6 +1919,12 @@ class TradingEngine:
                     pair_id=str(execution.get("pair_id", "")),
                     pair_role=str(execution.get("pair_role", "")),
                     expected_pair_net_edge_pct=float(execution.get("expected_pair_net_edge_pct", 0.0) or 0.0),
+                    scenario_state=str(execution.get("scenario_state", "")),
+                    proposal_blockers="; ".join(
+                        str(item.get("reason_cn", item.get("reason", "")))
+                        for item in (execution.get("proposal_filter_results") or [])
+                        if isinstance(item, dict) and not item.get("allowed", True)
+                    ),
                 )
             )
         return ledger

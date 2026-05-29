@@ -285,7 +285,7 @@ class InventorySkewOrderProposalEngine:
         scenario = context.scenario_decision
         if scenario is not None and not scenario.generate_new_orders:
             return []
-        pending_buyback = self._float(context.activation_state.get("pending_buyback_quantity"))
+        pending_buyback = self._effective_pending_buyback(context)
         cooldown_until = int(self._float(context.activation_state.get("buyback_cooldown_until_candle")))
         cooldown_active = cooldown_until > context.timestamp_ms
         risk_exit_reentry_price = self._float(context.activation_state.get("risk_exit_reentry_price"))
@@ -298,7 +298,7 @@ class InventorySkewOrderProposalEngine:
             if context.direction_decision is not None and context.direction_decision.fair_value > 0
             else context.price
         )
-        spreads = self._spread_levels()
+        spreads = self._spread_levels(context)
         proposals: List[OrderProposal] = []
         allow_buy_pairs = policy_state in {"PAIR_LOCKED_AFTER_STOP", "RECOVERY_ENTRY", "INVENTORY_REBALANCE", "MARKET_MAKING"}
         allow_sell_pairs = policy_state in {"INVENTORY_REBALANCE", "MARKET_MAKING"}
@@ -466,7 +466,40 @@ class InventorySkewOrderProposalEngine:
     def _pair_count(self) -> int:
         return max(1, min(self.settings.order_levels_per_side, self.settings.order_max_open_per_side))
 
-    def _spread_levels(self) -> List[float]:
+    def _effective_pending_buyback(self, context: PolicyContext) -> float:
+        pending = self._float(context.activation_state.get("pending_buyback_quantity"))
+        if pending <= 0:
+            return 0.0
+        min_notional = max(
+            context.filters.min_notional,
+            self.settings.min_order_notional,
+            self.settings.grid_min_order_notional,
+        )
+        if pending * context.price < min_notional:
+            return 0.0
+        return pending
+
+    def _spread_levels(self, context: PolicyContext) -> List[float]:
+        base = self._parse_spread_levels()
+        scenario = context.scenario_decision
+        if scenario is None or scenario.scenario_state != "RANGE_MARKET_MAKING":
+            return base
+        indicators = scenario.indicators if isinstance(scenario.indicators, dict) else {}
+        atr_pct = self._float(indicators.get("atr_pct"))
+        if atr_pct <= 0:
+            return base
+        fee_buffer = self.settings.maker_fee_pct * 2.0 + self.settings.pair_edge_safety_buffer_pct
+        min_spread = max(
+            self.settings.min_range_spread_pct,
+            (self.settings.min_pair_net_edge_pct + fee_buffer) / 2.0,
+        )
+        adaptive_first = max(min_spread, min(base[0], atr_pct * self.settings.range_spread_atr_multiplier))
+        adjusted = [adaptive_first]
+        for level in base[1:]:
+            adjusted.append(max(level, adaptive_first))
+        return adjusted
+
+    def _parse_spread_levels(self) -> List[float]:
         values: List[float] = []
         for raw in str(self.settings.pair_spread_levels).split(","):
             try:
@@ -476,7 +509,6 @@ class InventorySkewOrderProposalEngine:
             if value > 0:
                 values.append(value)
         return values or [0.0035, 0.0055, 0.0080, 0.0110, 0.0150]
-
     def _pair_net_edge_pct(self, buy_price: float, sell_price: float) -> float:
         if buy_price <= 0 or sell_price <= 0:
             return 0.0

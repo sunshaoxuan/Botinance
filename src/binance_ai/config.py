@@ -187,6 +187,11 @@ class Settings:
     uptrend_exhaustion_gap_pct: float = 0.0015
     downtrend_buy_discount_multiplier: float = 1.8
     low_vol_atr_pct: float = 0.0008
+    range_spread_atr_multiplier: float = 1.0
+    min_range_spread_pct: float = 0.0012
+    range_market_atr_pct_threshold: float = 0.003
+    range_grid_atr_multiplier: float = 0.8
+    range_grid_min_sell_step_pct: float = 0.0015
     order_tier_merge_enabled: bool = True
     order_tier_merge_min_notional: float = 5000.0
     external_signal_enabled: bool = True
@@ -388,6 +393,11 @@ def load_settings() -> Settings:
         uptrend_exhaustion_gap_pct=float(os.getenv("UPTREND_EXHAUSTION_GAP_PCT", "0.0015")),
         downtrend_buy_discount_multiplier=float(os.getenv("DOWNTREND_BUY_DISCOUNT_MULTIPLIER", "1.8")),
         low_vol_atr_pct=float(os.getenv("LOW_VOL_ATR_PCT", "0.0008")),
+        range_spread_atr_multiplier=float(os.getenv("RANGE_SPREAD_ATR_MULTIPLIER", "1.0")),
+        min_range_spread_pct=float(os.getenv("MIN_RANGE_SPREAD_PCT", "0.0012")),
+        range_market_atr_pct_threshold=float(os.getenv("RANGE_MARKET_ATR_PCT_THRESHOLD", "0.003")),
+        range_grid_atr_multiplier=float(os.getenv("RANGE_GRID_ATR_MULTIPLIER", "0.8")),
+        range_grid_min_sell_step_pct=float(os.getenv("RANGE_GRID_MIN_SELL_STEP_PCT", "0.0015")),
         order_tier_merge_enabled=_parse_bool(os.getenv("ORDER_TIER_MERGE_ENABLED"), True),
         order_tier_merge_min_notional=float(os.getenv("ORDER_TIER_MERGE_MIN_NOTIONAL", "5000")),
         external_signal_enabled=_parse_bool(os.getenv("EXTERNAL_SIGNAL_ENABLED"), True),

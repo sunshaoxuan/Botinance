@@ -483,6 +483,9 @@ class DecisionLedgerEntry:
     pair_role: str = ""
     expected_pair_net_edge_pct: float = 0.0
 
+    scenario_state: str = ""
+    proposal_blockers: str = ""
+
 
 @dataclass(frozen=True)
 class AccountSnapshot:

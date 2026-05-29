@@ -176,6 +176,7 @@ class RiskEngine:
         base_asset_balance: float,
         filters: SymbolFilters,
         sell_fraction: float | None = None,
+        exit_reason: str | None = None,
     ) -> RiskDecision:
         fraction = 1.0 if sell_fraction is None else self._normalized_fraction(sell_fraction)
         quantity = self.client.quantize_quantity(base_asset_balance * fraction, filters.step_size)
@@ -186,7 +187,20 @@ class RiskEngine:
         if fraction <= 0:
             return RiskDecision(False, "sell_fraction_zero")
         if quantity < filters.min_qty or quantity <= 0:
-            return RiskDecision(False, f"position_too_small_to_sell:{quantity}")
+            if full_quantity >= filters.min_qty and full_notional >= min_notional:
+                if exit_reason in {"stop_loss", "emergency_stop"}:
+                    quantity = full_quantity
+                    final_notional = full_notional
+                elif exit_reason in {"trailing_stop", "take_profit", "max_hold_exit"}:
+                    quantity = filters.min_qty
+                    final_notional = quantity * price
+                    if final_notional < min_notional:
+                        quantity = full_quantity
+                        final_notional = full_notional
+                else:
+                    return RiskDecision(False, f"position_too_small_to_sell:{quantity}")
+            else:
+                return RiskDecision(False, f"position_too_small_to_sell:{quantity}")
         if final_notional < min_notional:
             if full_quantity >= filters.min_qty and full_notional >= min_notional:
                 quantity = full_quantity

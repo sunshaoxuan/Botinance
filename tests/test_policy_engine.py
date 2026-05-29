@@ -294,6 +294,85 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertTrue(any(lock.lock_type == "DRAWDOWN_GUARD" for lock in decision.protection_locks))
         self.assertEqual(decision.order_proposals, [])
 
+    def test_range_market_adaptive_spread_tightens_first_level(self) -> None:
+        settings = _settings(
+            pair_spread_levels="0.0035,0.0055",
+            min_range_spread_pct=0.0012,
+            range_spread_atr_multiplier=1.0,
+            min_pair_net_edge_pct=0.0015,
+            min_effective_order_notional=500.0,
+            order_target_notional=2000.0,
+        )
+        decision = PolicyEngine(settings).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=100.0,
+                candles=_candles(100.0),
+                signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "test"),
+                exit_reason=None,
+                has_position=True,
+                base_balance=50.0,
+                quote_balance=5000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(current_fraction=0.55, available_buy_notional=4000.0, allowed_sell_quantity=25.0),
+                composite_decision=_composite(recommended_action="HOLD"),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.1, 1.0, ""),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(buy_zone_price=99.0, sell_zone_price=100.3),
+                scenario_decision=_scenario(
+                    scenario_state="RANGE_MARKET_MAKING",
+                    allowed_actions=["BUY", "SELL"],
+                    blocked_actions=[],
+                    buy_size_fraction=1.0,
+                    sell_size_fraction=1.0,
+                    buy_discount_multiplier=1.0,
+                    indicators={"atr_pct": 0.002},
+                ),
+            )
+        )
+
+        spreads = [item.target_spread_pct for item in decision.merged_order_proposals]
+        self.assertTrue(spreads)
+        self.assertLess(min(spreads), 0.0035)
+        self.assertGreaterEqual(min(spreads), 0.0012)
+
+    def test_dust_pending_buyback_does_not_block_policy(self) -> None:
+        settings = _settings(
+            min_effective_order_notional=500.0,
+            order_target_notional=2000.0,
+            grid_min_order_notional=3000.0,
+        )
+        decision = PolicyEngine(settings).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=228.0,
+                candles=_candles(228.0),
+                signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "test"),
+                exit_reason=None,
+                has_position=True,
+                base_balance=17.0,
+                quote_balance=5000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+                target_inventory=_target(current_fraction=0.55, available_buy_notional=4000.0, allowed_sell_quantity=10.0),
+                composite_decision=_composite(recommended_action="HOLD"),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.1, 1.0, ""),
+                open_orders=[],
+                activation_state={"pending_buyback_quantity": 0.1, "last_grid_sell_price": 228.86},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(current_price=228.0, fair_value=228.0, buy_zone_price=227.5, sell_zone_price=228.5),
+                scenario_decision=_scenario(
+                    scenario_state="RANGE_MARKET_MAKING",
+                    allowed_actions=["BUY", "SELL"],
+                    blocked_actions=[],
+                    indicators={"atr_pct": 0.002},
+                ),
+            )
+        )
+
+        self.assertGreater(len(decision.merged_order_proposals), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

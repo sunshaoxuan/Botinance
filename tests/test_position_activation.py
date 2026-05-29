@@ -509,6 +509,67 @@ class PositionActivationEngineTests(unittest.TestCase):
         self.assertEqual(decision.action, "HOLD")
         self.assertEqual(decision.reason, "grid_daily_trade_limit_reached")
 
+    def test_dust_pending_buyback_clears_activation_state(self) -> None:
+        settings = replace(_settings(), grid_min_order_notional=3000.0)
+        engine = PositionActivationEngine(settings, _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=3000.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=17.0, average_entry_price=228.0, highest_price=230.0)},
+            activation_state={
+                "XRPJPY": {
+                    "pending_buyback_quantity": 0.1,
+                    "last_grid_sell_price": 228.86,
+                    "daily_trade_day": "2026-05-16",
+                    "daily_trade_count": 1,
+                }
+            },
+        )
+        decision = engine.evaluate(
+            symbol="XRPJPY",
+            price=228.0,
+            account=AccountSnapshot({"JPY": 3000.0, "XRP": 17.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+            snapshot=snapshot,
+            timestamp_ms=1_778_900_000_000,
+        )
+
+        self.assertEqual(decision.action, "HOLD")
+        self.assertIsNotNone(decision.state_update)
+        self.assertEqual(float(decision.state_update["pending_buyback_quantity"]), 0.0)
+        self.assertEqual(decision.state_update["decision_state"], "NORMAL")
+        self.assertEqual(decision.state_update["last_trigger"], "grid_buyback_dust_ignored")
+
+    def test_range_market_lowers_grid_sell_threshold(self) -> None:
+        settings = replace(
+            _settings(),
+            grid_sell_step_pct=0.0035,
+            range_grid_min_sell_step_pct=0.0015,
+            range_grid_atr_multiplier=0.8,
+            range_market_atr_pct_threshold=0.003,
+        )
+        engine = PositionActivationEngine(settings, _Client())
+        snapshot = PortfolioSnapshot(
+            quote_asset="JPY",
+            quote_balance=100.0,
+            initial_quote_balance=1000.0,
+            positions={"XRPJPY": PositionSnapshot(quantity=100.0, average_entry_price=100.0, highest_price=100.0)},
+        )
+        decision = engine.evaluate(
+            symbol="XRPJPY",
+            price=100.20,
+            account=AccountSnapshot({"JPY": 100.0, "XRP": 100.0}),
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            snapshot=snapshot,
+            timestamp_ms=1_778_900_000_000,
+            scenario_state="RANGE_MARKET_MAKING",
+            atr_pct=0.002,
+        )
+
+        self.assertEqual(decision.action, "SELL")
+        self.assertEqual(decision.trigger, "grid_profit_sell")
+
 
 if __name__ == "__main__":
     unittest.main()

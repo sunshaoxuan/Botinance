@@ -161,6 +161,21 @@ class SellDecisionDiagnosticTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertTrue(decision.reason.startswith("sell_notional_below_min_notional"))
 
+    def test_build_sell_order_trailing_stop_uses_min_qty_when_partial_rounds_to_zero(self) -> None:
+        risk = RiskEngine(_settings(), _SteppedClient())
+        decision = risk.build_sell_order(
+            "XRPJPY",
+            price=100.0,
+            base_asset_balance=0.15,
+            filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=10.0),
+            sell_fraction=0.5,
+            exit_reason="trailing_stop",
+        )
+
+        self.assertTrue(decision.approved)
+        self.assertIsNotNone(decision.order)
+        self.assertAlmostEqual(decision.order.quantity, 0.1)
+
 
 if __name__ == "__main__":
     unittest.main()
