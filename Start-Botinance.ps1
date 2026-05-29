@@ -136,6 +136,31 @@ function Start-PostgresContainer {
   }
 }
 
+function Sync-PostgresPassword {
+  if ([string]::IsNullOrWhiteSpace($env:BOTINANCE_DB_PASSWORD)) {
+    Write-StartLog "BOTINANCE_DB_PASSWORD is empty; PostgreSQL password sync skipped"
+    return $false
+  }
+  $docker = Get-Command docker -ErrorAction SilentlyContinue
+  if (-not $docker) {
+    return $false
+  }
+  try {
+    $escapedPassword = $env:BOTINANCE_DB_PASSWORD.Replace("'", "''")
+    $sql = "ALTER USER botinance PASSWORD '$escapedPassword';"
+    & docker exec botinance-postgres psql -U botinance -d botinance -c $sql | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+      Write-StartLog "PostgreSQL password sync failed with exit code $LASTEXITCODE"
+      return $false
+    }
+    Write-StartLog "PostgreSQL password synced with BOTINANCE_DB_PASSWORD"
+    return $true
+  } catch {
+    Write-StartLog "PostgreSQL password sync failed: $($_.Exception.Message)"
+    return $false
+  }
+}
+
 function Import-RuntimeToPostgres {
   param([string]$Python)
   Write-StartLog "migrating runtime JSON data into PostgreSQL"
@@ -167,6 +192,9 @@ Ensure-DbPassword
 Enable-PostgresRuntimeEnv
 Ensure-PythonPostgresDriver -Python $PythonExe
 $postgresReady = Start-PostgresContainer
+if ($postgresReady) {
+  Sync-PostgresPassword | Out-Null
+}
 if ($postgresReady -and $RunMigration) {
   Import-RuntimeToPostgres -Python $PythonExe
 } elseif ($postgresReady) {

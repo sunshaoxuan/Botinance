@@ -71,9 +71,16 @@ function Stop-BotinanceProcesses {
 
 function Invoke-Start {
   $startScript = Join-Path $RootDir "Start-Botinance.ps1"
+  $dbPassword = [Environment]::GetEnvironmentVariable("BOTINANCE_DB_PASSWORD", "User")
   $scriptBlock = {
-    param($RootDir, $Python, $OutputDir, $SleepSeconds, $HostAddress, $Port, $StartScript)
+    param($RootDir, $Python, $OutputDir, $SleepSeconds, $HostAddress, $Port, $StartScript, $DbPassword)
     Set-Location $RootDir
+    if (-not [string]::IsNullOrWhiteSpace($DbPassword)) {
+      $env:BOTINANCE_DB_PASSWORD = $DbPassword
+    }
+    if ([string]::IsNullOrWhiteSpace($env:BOTI_RUN_RUNTIME_MIGRATION)) {
+      $env:BOTI_RUN_RUNTIME_MIGRATION = "false"
+    }
     if (Test-Path $StartScript) {
       & $StartScript
       return
@@ -85,7 +92,7 @@ function Invoke-Start {
       --host $HostAddress `
       --port $Port
   }
-  $job = Start-Job -ScriptBlock $scriptBlock -ArgumentList $RootDir, $Python, $OutputDir, $SleepSeconds, $HostAddress, $Port, $startScript
+  $job = Start-Job -ScriptBlock $scriptBlock -ArgumentList $RootDir, $Python, $OutputDir, $SleepSeconds, $HostAddress, $Port, $startScript, $dbPassword
   if (Wait-Job $job -Timeout $StartTimeoutSeconds) {
     Receive-Job $job
     Remove-Job $job
