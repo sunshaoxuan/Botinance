@@ -86,6 +86,16 @@ def _stop_process(pid: int | None, timeout_seconds: float = 8.0) -> bool:
 
 def _python_env(root: Path) -> Dict[str, str]:
     env = os.environ.copy()
+    if os.name == "nt" and not env.get("BOTINANCE_DB_PASSWORD"):
+        try:
+            import winreg
+
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+                value, _ = winreg.QueryValueEx(key, "BOTINANCE_DB_PASSWORD")
+                if value:
+                    env["BOTINANCE_DB_PASSWORD"] = str(value)
+        except OSError:
+            pass
     src_path = str(root / "src")
     current = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = src_path if not current else os.pathsep.join([src_path, current])
