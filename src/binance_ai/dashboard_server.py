@@ -3512,6 +3512,40 @@ def _filter_records_by_status(records: List[Dict[str, Any]], status: str) -> Lis
     return [item for item in records if str(item.get("status", "")).upper() in allowed]
 
 
+def _dedupe_order_lifecycle_events(events: List[Dict[str, Any]], limit: int | None = None) -> List[Dict[str, Any]]:
+    terminal_statuses = {"FILLED", "PAPER_FILLED", "CANCELED", "EXPIRED", "REJECTED"}
+    latest_non_terminal: Dict[str, Dict[str, Any]] = {}
+    terminal_events: List[Dict[str, Any]] = []
+    passthrough: List[Dict[str, Any]] = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        client_order_id = str(event.get("client_order_id") or "")
+        status = str(event.get("status") or "").upper()
+        event_type = str(event.get("event_type") or "").upper()
+        timestamp_ms = _coerce_int(event.get("timestamp_ms") or event.get("updated_at_ms") or event.get("created_at_ms"))
+        if status in terminal_statuses or event_type in terminal_statuses:
+            terminal_events.append(event)
+            continue
+        if not client_order_id:
+            passthrough.append(event)
+            continue
+        key = client_order_id
+        previous = latest_non_terminal.get(key)
+        previous_ts = _coerce_int((previous or {}).get("timestamp_ms") or (previous or {}).get("updated_at_ms") or (previous or {}).get("created_at_ms"))
+        if previous is None or timestamp_ms >= previous_ts:
+            latest_non_terminal[key] = event
+    merged = [*terminal_events, *latest_non_terminal.values(), *passthrough]
+    merged = sorted(
+        merged,
+        key=lambda item: _coerce_int(item.get("timestamp_ms") or item.get("updated_at_ms") or item.get("created_at_ms")),
+        reverse=True,
+    )
+    if limit is not None:
+        return merged[:limit]
+    return merged
+
+
 def _apply_optional_limit_newest_first(items: List[Dict[str, Any]], limit: int | None) -> List[Dict[str, Any]]:
     newest_first = items[::-1]
     if limit is None:
@@ -5518,7 +5552,10 @@ def build_dashboard_payload(
         try:
             db_order_payload = runtime_store.query_order_records(limit=order_records_limit + 50, status="all", symbol=chart_symbol)
             db_fills = _dedupe_fills(db_order_payload.get("recent_fills", []), limit=order_records_limit)
-            db_events = db_order_payload.get("order_lifecycle_events", [])
+            db_events = _dedupe_order_lifecycle_events(
+                db_order_payload.get("order_lifecycle_events", []),
+                limit=order_records_limit,
+            )
             all_fills = _dedupe_fills([*db_fills, *paper_fills], limit=500)
             recent_fills = _dedupe_fills([*db_fills, *paper_fills], limit=max(100, min(300, order_records_limit)))
             order_records_source = str(db_order_payload.get("storage_source") or "postgres")
@@ -5560,12 +5597,18 @@ def build_dashboard_payload(
     else:
         if not cycles_for_dashboard:
             cycles_for_dashboard = _load_recent_cycles_cached(history_path, scan_lines_for_dashboard)
-        all_order_lifecycle_events = _extract_order_lifecycle_events(cycles_for_dashboard, latest_report, limit=order_records_limit)
+        all_order_lifecycle_events = _dedupe_order_lifecycle_events(
+            _extract_order_lifecycle_events(cycles_for_dashboard, latest_report, limit=order_records_limit),
+            limit=order_records_limit,
+        )
         if not all_order_lifecycle_events:
-            all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(
-                history_path,
+            all_order_lifecycle_events = _dedupe_order_lifecycle_events(
+                _extract_order_lifecycle_events_from_file(
+                    history_path,
+                    limit=order_records_limit,
+                    scan_lines=max(1200, len(full_history), order_records_limit),
+                ),
                 limit=order_records_limit,
-                scan_lines=max(1200, len(full_history), order_records_limit),
             )
     order_lifecycle_events = all_order_lifecycle_events[: min(200, order_records_limit)]
     if order_records_source == "postgres":
@@ -5678,7 +5721,7 @@ def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
             decision_payload = db_store.query_decision_ledger(limit=drawer_record_limit)
             order_events = order_payload.get("order_lifecycle_events")
             if isinstance(order_events, list):
-                order_lifecycle_events = order_events
+                order_lifecycle_events = _dedupe_order_lifecycle_events(order_events, limit=drawer_record_limit)
             decision_items = decision_payload.get("decision_ledger")
             if isinstance(decision_items, list):
                 decision_ledger = [item for item in decision_items if isinstance(item, dict)]
@@ -5692,7 +5735,10 @@ def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
     if order_records_source != "postgres":
         cycles = _load_recent_cycles_cached(history_path, scan_lines)
         decision_ledger = _extract_decision_ledger(cycles, latest_report, limit=drawer_record_limit)
-        order_lifecycle_events = _extract_order_lifecycle_events(cycles, latest_report, limit=drawer_record_limit)
+        order_lifecycle_events = _dedupe_order_lifecycle_events(
+            _extract_order_lifecycle_events(cycles, latest_report, limit=drawer_record_limit),
+            limit=drawer_record_limit,
+        )
         if not decision_ledger:
             decision_ledger = _extract_decision_ledger_from_file(
                 history_path,
@@ -5701,10 +5747,13 @@ def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
                 scan_lines=max(scan_lines, 1200),
             )
         if not order_lifecycle_events:
-            order_lifecycle_events = _extract_order_lifecycle_events_from_file(
-                history_path,
+            order_lifecycle_events = _dedupe_order_lifecycle_events(
+                _extract_order_lifecycle_events_from_file(
+                    history_path,
+                    limit=drawer_record_limit,
+                    scan_lines=max(scan_lines, 1200),
+                ),
                 limit=drawer_record_limit,
-                scan_lines=max(scan_lines, 1200),
             )
     payload = {
         "decision_ledger": decision_ledger,
@@ -5764,7 +5813,10 @@ def build_order_records_payload(
         try:
             db_payload = build_runtime_store(settings).query_order_records(limit=normalized_limit + normalized_offset, status=normalized_status)
             recent_fills = _dedupe_fills(db_payload.get("recent_fills", []), limit=normalized_limit + normalized_offset)
-            order_lifecycle_events = db_payload.get("order_lifecycle_events", [])
+            order_lifecycle_events = _dedupe_order_lifecycle_events(
+                db_payload.get("order_lifecycle_events", []),
+                limit=normalized_limit + normalized_offset,
+            )
             trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate, limit=None)
             if normalized_status != "all":
                 trade_records = _filter_records_by_status(trade_records, normalized_status)
@@ -5810,7 +5862,10 @@ def build_order_records_payload(
         storage_warning = ""
     cycles = _load_recent_cycles_cached(history_path, cache_scan_lines)
     scan_limit = normalized_limit + normalized_offset
-    order_lifecycle_events = _extract_order_lifecycle_events(cycles, latest_report, limit=scan_limit)
+    order_lifecycle_events = _dedupe_order_lifecycle_events(
+        _extract_order_lifecycle_events(cycles, latest_report, limit=scan_limit),
+        limit=scan_limit,
+    )
     paper_fills = paper_state.get("fills", []) if isinstance(paper_state.get("fills", []), list) else []
     file_fills = _extract_recent_fills(cycles, limit=scan_limit)
     recent_fills = _dedupe_fills([*paper_fills, *file_fills], limit=scan_limit)
