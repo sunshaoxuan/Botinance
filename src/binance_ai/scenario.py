@@ -64,7 +64,15 @@ class ScenarioEngine:
             blocked = ["NEW_BUY", "NEW_SELL"]
             generate = False
             templates = [{"name": "observe_only", "levels": 0, "source": "low_vol"}]
-            if inventory == "LOW_INVENTORY" and target_inventory.available_buy_notional >= self.settings.min_effective_order_notional:
+            if inventory == "HIGH_INVENTORY" and target_inventory.available_sell_quantity * price >= self.settings.min_effective_order_notional:
+                reason = "ATR 处于低波动区间，但当前高库存偏离目标，允许溢价释放库存挂单"
+                allowed = ["SELL_IF_OVER_INVENTORY", "KEEP_OPEN_ORDERS"]
+                blocked = ["NEW_BUY", "CHASE_BUY"]
+                buy_fraction = 0.0
+                sell_fraction = 0.5
+                generate = True
+                templates = [{"name": "low_vol_inventory_release", "levels": 1, "source": "low_vol_high_inventory"}]
+            elif inventory == "LOW_INVENTORY" and target_inventory.available_buy_notional >= self.settings.min_effective_order_notional:
                 reason = "ATR 处于低波动区间，但当前低仓位且现金充足，允许深折价 GTC 建仓挂单"
                 allowed = ["DEEP_DISCOUNT_BUY", "KEEP_OPEN_ORDERS"]
                 blocked = ["MARKET_BUY", "CHASE_BUY", "NEW_SELL"]
