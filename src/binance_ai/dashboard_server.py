@@ -4525,6 +4525,22 @@ def _write_chart_cache(path: Path, payload: Dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
 
 
+def _load_chart_bars_from_postgres(symbol: str, interval: str, limit: int) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    settings = load_settings()
+    if settings.db_read_mode != "prefer_db":
+        return [], {}
+    try:
+        payload = build_runtime_store(settings).query_candles(symbol=symbol, interval=interval, limit=limit)
+    except Exception as exc:  # noqa: BLE001
+        return [], {"postgres_error": str(exc)[:240]}
+    bars = [bar for bar in payload.get("bars", []) if isinstance(bar, dict)]
+    return bars, {
+        "source": "postgres_candle",
+        "query_ms": payload.get("query_ms", 0),
+        "cache_hit": True,
+    }
+
+
 def _chart_cache_refresh_seconds(interval: str) -> int:
     interval_ms = INTERVAL_MS.get(interval, INTERVAL_MS["1m"])
     if interval_ms <= INTERVAL_MS["5m"]:
@@ -4634,25 +4650,6 @@ def _load_or_fetch_chart_bars(
         cache_refreshed = False
         refresh_error = ""
         cache_bars = list(cached.get("bars", []))
-        if allow_fetch and _chart_cache_needs_tail_refresh(cached, interval, latest_report):
-            try:
-                fetched_bars, fetched_source = _fetch_chart_bars_from_binance(symbol=symbol, interval=interval, limit=limit)
-                if fetched_bars:
-                    cache_bars = _merge_chart_bars(cache_bars, fetched_bars, max(limit, len(cache_bars)))
-                    cache_source = fetched_source
-                    cache_refreshed = True
-                    cached = {
-                        "symbol": symbol,
-                        "interval": interval,
-                        "label": _chart_interval_label(interval),
-                        "source": cache_source,
-                        "fetched_at": time.time(),
-                        "bars": cache_bars[-limit:],
-                    }
-                    _write_chart_cache(cache_path, cached)
-                    cache_bars = list(cached.get("bars", []))
-            except Exception as exc:  # noqa: BLE001 - chart should keep cached data if tail refresh fails.
-                refresh_error = str(exc)
         bars = _merge_chart_bars(
             cache_bars,
             fallback,
@@ -4666,6 +4663,29 @@ def _load_or_fetch_chart_bars(
             "cache_policy": "immutable_history",
             "cache_refreshed": cache_refreshed,
             "refresh_error": refresh_error,
+            "tail_refresh_due": _chart_cache_needs_tail_refresh(cached, interval, latest_report),
+            "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
+        }
+
+    db_bars, db_meta = _load_chart_bars_from_postgres(symbol, interval, limit)
+    if db_bars:
+        bars = _merge_chart_bars(db_bars, fallback, limit)
+        payload = {
+            "symbol": symbol,
+            "interval": interval,
+            "label": _chart_interval_label(interval),
+            "source": "postgres_candle",
+            "fetched_at": time.time(),
+            "bars": bars,
+        }
+        _write_chart_cache(cache_path, payload)
+        return bars, {
+            "source": "postgres_candle",
+            "cache_path": str(cache_path),
+            "cache_hit": True,
+            "fetched_at": payload["fetched_at"],
+            "cache_policy": "postgres_first",
+            "postgres_query_ms": db_meta.get("query_ms", 0),
             "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
         }
 
@@ -4676,7 +4696,7 @@ def _load_or_fetch_chart_bars(
             "cache_hit": False,
             "cache_policy": "no_fetch_without_explicit_interval",
             "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
-            "error": "",
+            "error": str(db_meta.get("postgres_error") or ""),
         }
 
     try:

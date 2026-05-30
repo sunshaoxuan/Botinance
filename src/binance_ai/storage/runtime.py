@@ -71,6 +71,9 @@ class RuntimeStore(Protocol):
     ) -> Dict[str, Any]:
         ...
 
+    def query_candles(self, symbol: str, interval: str, limit: int = 200) -> Dict[str, Any]:
+        ...
+
     def storage_status(self) -> Dict[str, Any]:
         ...
 
@@ -94,6 +97,9 @@ class NullRuntimeStore:
         raise StorageUnavailable("postgres storage is disabled")
 
     def query_decision_ledger(self, limit: int = 200, symbol: str | None = None) -> Dict[str, Any]:
+        raise StorageUnavailable("postgres storage is disabled")
+
+    def query_candles(self, symbol: str, interval: str, limit: int = 200) -> Dict[str, Any]:
         raise StorageUnavailable("postgres storage is disabled")
 
     def query_ops_summary(self, hours: int) -> Dict[str, Any]:
@@ -157,6 +163,11 @@ class SafeRuntimeStore:
         if self.inner is None:
             raise StorageUnavailable(self.last_error or "postgres storage is disabled")
         return self.inner.query_decision_ledger(limit=limit, symbol=symbol)
+
+    def query_candles(self, symbol: str, interval: str, limit: int = 200) -> Dict[str, Any]:
+        if self.inner is None:
+            raise StorageUnavailable(self.last_error or "postgres storage is disabled")
+        return self.inner.query_candles(symbol=symbol, interval=interval, limit=limit)
 
     def query_ops_summary(self, hours: int) -> Dict[str, Any]:
         if self.inner is None or not hasattr(self.inner, "query_ops_summary"):
@@ -676,6 +687,64 @@ class PostgresRuntimeStore:
             },
         }
 
+    def query_candles(self, symbol: str, interval: str, limit: int = 200) -> Dict[str, Any]:
+        started = time.monotonic()
+        normalized_symbol = (symbol or "").strip().upper()
+        normalized_interval = (interval or "1m").strip()
+        normalized_limit = max(1, min(2000, int(limit or 200)))
+        self.ensure_month(int(time.time() * 1000))
+        rows: List[Dict[str, Any]] = []
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                suffixes = self._list_suffixes(cur, max_suffixes=self.settings.db_recent_suffix_limit)
+                tables = [f"candles_{suffix}" for suffix in suffixes]
+                parts: List[str] = []
+                params: List[Any] = []
+                per_limit = _ceil_div(normalized_limit, max(1, len(tables)))
+                for table in tables:
+                    parts.append(
+                        f"""
+                        (select symbol, interval, open_time_ms, close_time_ms, open, high, low, close, volume
+                         from {table}
+                         where symbol = %s and interval = %s
+                         order by open_time_ms desc
+                         limit %s)
+                        """
+                    )
+                    params.extend([normalized_symbol, normalized_interval, min(per_limit, 2000)])
+                if parts:
+                    query = " union all ".join(parts)
+                    cur.execute(
+                        f"select * from ({query}) merged order by open_time_ms desc limit %s",
+                        tuple([*params, normalized_limit]),
+                    )
+                    for row in cur.fetchall():
+                        rows.append(
+                            {
+                                "symbol": str(row[0]),
+                                "interval": str(row[1]),
+                                "open_time": int(row[2] or 0),
+                                "close_time": int(row[3] or 0),
+                                "open": _num(row[4]),
+                                "high": _num(row[5]),
+                                "low": _num(row[6]),
+                                "close": _num(row[7]),
+                                "volume": _num(row[8]),
+                                "sample_count": 1,
+                                "source": "postgres_candle",
+                            }
+                        )
+        bars = sorted(rows, key=lambda item: int(item.get("open_time") or 0))[-normalized_limit:]
+        self.last_query_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "bars": bars,
+            "storage_source": "postgres",
+            "query_ms": self.last_query_ms,
+            "symbol": normalized_symbol,
+            "interval": normalized_interval,
+            "limit": normalized_limit,
+        }
+
     def query_ops_summary(self, hours: int) -> Dict[str, Any]:
         started = time.monotonic()
         cutoff_ms = int(time.time() * 1000) - max(1, hours) * 60 * 60 * 1000
@@ -830,7 +899,8 @@ class PostgresRuntimeStore:
                 tablename like 'orders_%' or
                 tablename like 'fills_%' or
                 tablename like 'order_events_%' or
-                tablename like 'decision_ledger_%'
+                tablename like 'decision_ledger_%' or
+                tablename like 'candles_%'
               )
             order by tablename desc
             """
