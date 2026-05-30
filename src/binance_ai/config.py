@@ -8,6 +8,8 @@ from urllib.parse import urlparse
 
 from binance_ai.secrets import load_encrypted_secrets, parse_env_file
 
+_CONFIG_ENV_SIGNATURES: dict[Path, tuple[tuple[int, int], tuple[int, int] | None]] = {}
+
 
 def _parse_bool(value: str, default: bool) -> bool:
     if value is None:
@@ -16,13 +18,31 @@ def _parse_bool(value: str, default: bool) -> bool:
 
 
 def _load_config_environment(path: Path) -> None:
+    resolved_path = path.resolve()
     public_values = parse_env_file(path)
+    secrets_file = public_values.get("SECRETS_FILE", ".secrets.enc").strip()
+    encrypted_path = (path.parent / secrets_file).resolve()
+    try:
+        env_stat = resolved_path.stat()
+        env_signature = (env_stat.st_mtime_ns, env_stat.st_size)
+    except OSError:
+        env_signature = (0, 0)
+    try:
+        secret_stat = encrypted_path.stat()
+        secret_signature: tuple[int, int] | None = (secret_stat.st_mtime_ns, secret_stat.st_size)
+    except OSError:
+        secret_signature = None
+    signature = (env_signature, secret_signature)
+    if _CONFIG_ENV_SIGNATURES.get(resolved_path) == signature:
+        return
+
     for key, value in public_values.items():
         os.environ.setdefault(key, value)
 
     secret_values = load_encrypted_secrets(public_values, path)
     for key, value in secret_values.items():
         os.environ.setdefault(key, value)
+    _CONFIG_ENV_SIGNATURES[resolved_path] = signature
 
 
 def _normalize_base_url(value: str) -> str:
