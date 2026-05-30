@@ -214,11 +214,13 @@ class Settings:
     db_name: str = "botinance"
     db_user: str = "botinance"
     db_password_env: str = "BOTINANCE_DB_PASSWORD"
+    db_fallback_to_file: bool = True
     db_write_mode: str = "dual"
     db_read_mode: str = "prefer_db"
     db_query_timeout_seconds: int = 5
     db_partition_mode: str = "monthly"
     dashboard_order_source: str = "postgres"
+    db_recent_suffix_limit: int = 6
 
     @property
     def active_symbol_limit(self) -> Optional[int]:
@@ -420,9 +422,11 @@ def load_settings() -> Settings:
         db_name=os.getenv("DB_NAME", "botinance").strip(),
         db_user=os.getenv("DB_USER", "botinance").strip(),
         db_password_env=os.getenv("DB_PASSWORD_ENV", "BOTINANCE_DB_PASSWORD").strip(),
+        db_fallback_to_file=_parse_bool(os.getenv("DB_FALLBACK_TO_FILE"), True),
         db_write_mode=os.getenv("DB_WRITE_MODE", "dual").strip().lower(),
         db_read_mode=os.getenv("DB_READ_MODE", "prefer_db").strip().lower(),
         db_query_timeout_seconds=int(os.getenv("DB_QUERY_TIMEOUT_SECONDS", "5")),
         db_partition_mode=os.getenv("DB_PARTITION_MODE", "monthly").strip().lower(),
         dashboard_order_source=os.getenv("DASHBOARD_ORDER_SOURCE", "postgres").strip().lower(),
+        db_recent_suffix_limit=max(1, int(os.getenv("DB_RECENT_SUFFIX_LIMIT", "6"))),
     )

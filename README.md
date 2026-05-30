@@ -187,7 +187,16 @@ PYTHONPATH=src python3 -m binance_ai.storage.migrate_runtime \
   --database-url "postgresql://botinance:${BOTINANCE_DB_PASSWORD}@127.0.0.1:5432/botinance"
 ```
 
-When `DB_READ_MODE=prefer_db`, the order table and ops summary query PostgreSQL first and fall back to JSON files if the database is unavailable. Storage health is available at `/api/ops/storage`.
+When `DB_READ_MODE=prefer_db`, the order table and ops summary query PostgreSQL first.
+Set `DB_FALLBACK_TO_FILE=true` to allow fallback to JSON files if PostgreSQL is unavailable.
+Set `DB_FALLBACK_TO_FILE=false` to make PostgreSQL the hard dependency.
+Storage health is available at `/api/ops/storage`.
+
+Make sure the PostgreSQL password is in your environment before start:
+
+```bash
+export BOTINANCE_DB_PASSWORD='choose-a-local-secret'
+```
 
 Production Windows hosts should sync code through Git instead of file copy:
 

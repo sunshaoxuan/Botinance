@@ -7,7 +7,8 @@ P22 introduces PostgreSQL as the primary query path for long-running Botinance r
 - Keep `latest_report.json`, `paper_state.json`, and `cycle_reports.jsonl` available.
 - Write cycle reports, order events, fills, decision ledger entries, and candles into PostgreSQL.
 - Use PostgreSQL first for order table and ops queries.
-- Fall back to files when PostgreSQL is unavailable.
+- Keep file fallback available, default `DB_FALLBACK_TO_FILE=false` for production hard boundary.
+- Set `DB_FALLBACK_TO_FILE=true` only in local debug when PostgreSQL is not yet ready.
 - Store data in monthly tables so multi-month runtime history remains queryable.
 
 ## Runtime Layout
@@ -36,6 +37,12 @@ The database password must come from `BOTINANCE_DB_PASSWORD`. It is not written 
 
 PostgreSQL write failures are captured by `SafeRuntimeStore` and do not stop the monitor.
 
+Set hard boundary mode to avoid silent fallback:
+
+```env
+DB_FALLBACK_TO_FILE=false
+```
+
 ## Query Path
 
 The dashboard order API uses PostgreSQL first when:
@@ -45,7 +52,7 @@ DB_READ_MODE=prefer_db
 DASHBOARD_ORDER_SOURCE=postgres
 ```
 
-If the query fails, the API returns file results with:
+If fallback is enabled and the query fails, the API returns file results with:
 
 ```json
 {

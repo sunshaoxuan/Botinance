@@ -79,6 +79,7 @@ function Enable-PostgresRuntimeEnv {
   $env:DB_WRITE_MODE = "dual"
   $env:DB_READ_MODE = "prefer_db"
   $env:DASHBOARD_ORDER_SOURCE = "postgres"
+  $env:DB_FALLBACK_TO_FILE = $(if ($env:DB_FALLBACK_TO_FILE) { $env:DB_FALLBACK_TO_FILE } else { "false" })
 }
 
 function Ensure-PythonPostgresDriver {
@@ -200,8 +201,13 @@ if ($postgresReady -and $RunMigration) {
 } elseif ($postgresReady) {
   Write-StartLog "runtime migration skipped; set BOTI_RUN_RUNTIME_MIGRATION=true to import legacy JSON"
 } else {
-  $env:DB_WRITE_MODE = "file"
-  $env:DB_READ_MODE = "file"
+  if ([string]::Equals($env:DB_FALLBACK_TO_FILE, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
+    $env:DB_WRITE_MODE = "file"
+    $env:DB_READ_MODE = "file"
+    Write-StartLog "PostgreSQL unavailable; explicit DB_FALLBACK_TO_FILE=true allows file mode"
+  } else {
+    throw "PostgreSQL is required for Botinance runtime. Start Docker/PostgreSQL or set DB_FALLBACK_TO_FILE=true explicitly."
+  }
 }
 
 $env:PYTHONPATH = "src"

@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import time
+import threading
 from dataclasses import asdict
 from datetime import datetime, timezone
 from http import HTTPStatus
@@ -91,6 +92,91 @@ CHART_INTERVAL_OPTIONS: List[Dict[str, str]] = [
 ]
 
 CHART_INTERVAL_VALUES = {item["value"] for item in CHART_INTERVAL_OPTIONS}
+ORDER_RECORD_CACHE_TTL_SECONDS = 1.0
+ORDER_RECORD_SCAN_CACHE_TTL_SECONDS = 2.0
+CYCLE_SCAN_MAX_ON_NONE = 20000
+DASHBOARD_CHART_MARKER_DEFAULT_SCAN_LINES = 2400
+_build_dashboard_chart_payload_cache_ttl = 2.0
+
+_recent_cycle_cache: Dict[str, Dict[str, Any]] = {}
+_recent_cycle_cache_lock = threading.Lock()
+
+_order_records_cache: Dict[str, Dict[str, Any]] = {}
+_order_records_cache_lock = threading.Lock()
+
+
+def _get_runtime_cache_key(path: Path, scan_lines: int | None) -> str:
+    return f"{path}:{scan_lines or 0}"
+
+
+def _cycle_cache_entry(path: Path, scan_lines: int | None) -> Dict[str, Any] | None:
+    key = _get_runtime_cache_key(path, scan_lines)
+    now = time.time()
+    with _recent_cycle_cache_lock:
+        entry = _recent_cycle_cache.get(key)
+        if entry is None:
+            return None
+        if now - float(entry.get("cached_at", 0.0)) > float(entry.get("ttl", ORDER_RECORD_SCAN_CACHE_TTL_SECONDS)):
+            return None
+        try:
+            stat = path.stat()
+        except OSError:
+            return None
+        if entry.get("mtime_ns") != stat.st_mtime_ns or entry.get("size") != stat.st_size:
+            return None
+        return entry
+
+
+def _record_cycle_scan_cache(path: Path, scan_lines: int | None, cycles: List[Dict[str, Any]], ttl: float) -> None:
+    if not path.exists():
+        return
+    try:
+        stat = path.stat()
+    except OSError:
+        return
+    key = _get_runtime_cache_key(path, scan_lines)
+    with _recent_cycle_cache_lock:
+        _recent_cycle_cache[key] = {
+            "cached_at": time.time(),
+            "ttl": ttl,
+            "mtime_ns": stat.st_mtime_ns,
+            "size": stat.st_size,
+            "scan_lines": scan_lines,
+            "cycles": cycles,
+        }
+
+
+def _load_recent_cycles_cached(path: Path, scan_lines: int | None, *, ttl: float = ORDER_RECORD_SCAN_CACHE_TTL_SECONDS) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    normalized_scan_lines = scan_lines
+    if normalized_scan_lines is None:
+        normalized_scan_lines = CYCLE_SCAN_MAX_ON_NONE
+    if normalized_scan_lines <= 0:
+        return []
+    cache_key = _get_runtime_cache_key(path, normalized_scan_lines)
+    entry = _cycle_cache_entry(path, normalized_scan_lines)
+    if entry is not None:
+        cycles = entry.get("cycles")
+        if isinstance(cycles, list):
+            return cycles
+
+    if scan_lines is None:
+        scan_lines = normalized_scan_lines
+    lines = _read_recent_lines(path, scan_lines)
+    cycles: List[Dict[str, Any]] = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            cycle = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(cycle, dict):
+            cycles.append(cycle)
+    _record_cycle_scan_cache(path, normalized_scan_lines, cycles, ttl)
+    return cycles
 
 
 INDEX_HTML = """<!doctype html>
@@ -1227,6 +1313,8 @@ INDEX_HTML = """<!doctype html>
     let lastOrderRecordsLoadedAt = 0;
     let tickInFlight = false;
     let orderRecordsInFlight = false;
+    let chartRenderedInterval = "";
+    let chartLastPayloadMs = 0;
     const chartBarsCache = {};
     const SNAPSHOT_CACHE_KEY = "boti.lastDashboardSnapshot.v2";
 
@@ -1254,7 +1342,7 @@ INDEX_HTML = """<!doctype html>
       copy.live_refresh_bars = (payload.live_refresh_bars || []).slice(-160);
       copy.live_profit_curve = (payload.live_profit_curve || []).slice(-600);
       copy.trade_records = (payload.trade_records || []).slice(0, 200);
-      copy.trade_records_complete = false;
+      copy.trade_records_complete = payload.trade_records_complete === true;
       return copy;
     }
 
@@ -2401,10 +2489,10 @@ INDEX_HTML = """<!doctype html>
       const payloadFillCount = payload.recent_fills?.length || 0;
       const incomingHasIncompleteOrders = payload.trade_records_complete === false;
       const keepCompleteTradeRecords = previous.trade_records_complete === true && incomingHasIncompleteOrders;
+      const incomingHasNewFill = payloadFillCount > previousFillCount;
       const orderRecordsNeedRefresh = incomingHasIncompleteOrders && (
-        previous.trade_records_complete !== true ||
-        payloadFillCount > previousFillCount ||
-        !(previous.trade_records || []).length
+        (previous.trade_records_complete !== true && !(previous.trade_records || []).length) ||
+        incomingHasNewFill
       );
       const bars = cachedBars?.length
         ? cachedBars
@@ -3111,7 +3199,12 @@ INDEX_HTML = """<!doctype html>
     }
 
     async function loadOrderRecords(requestSeq) {
-      const response = await fetch("/api/dashboard/orders", { cache: "no-store" });
+      const status = (fillFilter || "all");
+      const params = new URLSearchParams();
+      if (status && status !== "all") params.set("status", status);
+      params.set("limit", "1000");
+      const query = params.toString();
+      const response = await fetch(`/api/dashboard/orders${query ? `?${query}` : ""}`, { cache: "no-store" });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = await response.json();
       payload.request_seq = requestSeq;
@@ -3175,21 +3268,30 @@ INDEX_HTML = """<!doctype html>
         if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
         const hydratedPayload = preserveChartPayload(payload, previousPayload, chartInterval, cachedBars);
         updateDom(hydratedPayload, { renderChart: false });
-        if (hydratedPayload.order_records_refresh_needed || !hydratedPayload.trade_records_complete || !hydratedPayload.trade_records?.length) {
-          refreshOrderRecords(true);
+        if (hydratedPayload.order_records_refresh_needed) {
+          refreshOrderRecords();
         }
-        if (cachedBars.length) {
+        const needsChartLoad = !cachedBars.length || chartRenderedInterval !== chartInterval || force || (Date.now() - chartLastPayloadMs) > 60_000;
+        if (cachedBars.length && !needsChartLoad) {
           scheduleChartRender(hydratedPayload, { showLoading: false });
         }
-        try {
-          const chartPayload = await loadChartData(chartInterval, requestSeq);
-          if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
-          const mergedPayload = { ...lastPayloadSnapshot, ...chartPayload };
-          updateDom(mergedPayload, { renderChart: true, showChartLoading: false });
-        } catch (chartErr) {
-          if (requestSeq !== dashboardRequestSeq) return;
-          console.error(chartErr);
-          setChartLoading(false, "图表读取失败，文字数据已更新");
+        if (needsChartLoad) {
+          try {
+            const chartPayload = await loadChartData(chartInterval, requestSeq);
+            if (requestSeq !== dashboardRequestSeq || chartInterval !== selectedChartInterval) return;
+            const mergedPayload = { ...lastPayloadSnapshot, ...chartPayload };
+            chartRenderedInterval = chartInterval;
+            chartLastPayloadMs = Date.now();
+            updateDom(mergedPayload, { renderChart: true, showChartLoading: false });
+          } catch (chartErr) {
+            if (requestSeq !== dashboardRequestSeq) return;
+            console.error(chartErr);
+            setChartLoading(false, "图表读取失败，文字数据已更新");
+          }
+        } else {
+          if (requestSeq === dashboardRequestSeq && chartInterval === selectedChartInterval) {
+            setChartLoading(false, "");
+          }
         }
       } catch (err) {
         if (requestSeq !== dashboardRequestSeq) return;
@@ -3234,7 +3336,7 @@ INDEX_HTML = """<!doctype html>
         fillPage = 0;
         const c = context(lastPayloadSnapshot || {});
         renderFills(c.tradeRecords, c.quoteAsset);
-        if (!lastPayloadSnapshot?.trade_records_complete) refreshOrderRecords(true);
+        refreshOrderRecords(true);
       });
       els.fillPrev.addEventListener("click", () => {
         fillPage = Math.max(0, fillPage - 1);
@@ -3274,6 +3376,9 @@ INDEX_HTML = """<!doctype html>
     if (cachedSnapshot) {
       updateDom(cachedSnapshot, { renderChart: true, showChartLoading: false });
       els.topMode.textContent = "读取中";
+    }
+    if (!cachedSnapshot) {
+      refreshOrderRecords(true);
     }
     tick();
     setInterval(tick, refreshMs);
@@ -3336,16 +3441,75 @@ def _read_recent_lines(path: Path, limit: int, *, chunk_size: int = 256 * 1024) 
 def _read_history(path: Path, limit: int = 6000) -> List[Dict[str, Any]]:
     if not path.exists():
         return []
-    rows: List[Dict[str, Any]] = []
-    for line in _read_recent_lines(path, limit):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            rows.append(json.loads(line))
-        except json.JSONDecodeError:
-            continue
-    return rows
+    cached = _load_recent_cycles_cached(path, limit)
+    return list(cached)
+
+
+def _file_signature(path: Path) -> tuple[int, int]:
+    if not path.exists():
+        return (0, 0)
+    try:
+        stat = path.stat()
+    except OSError:
+        return (0, 0)
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _order_records_cache_key(
+    runtime_dir: Path,
+    status: str,
+    scan_lines: int,
+    order_limit: int,
+    order_offset: int,
+    *,
+    include_runtime_signature: bool = True,
+) -> str:
+    if not include_runtime_signature:
+        return f"{runtime_dir}|{status}|scan={scan_lines}|limit={order_limit}|offset={order_offset}|no_signature"
+    latest_path = runtime_dir / "latest_report.json"
+    paper_path = runtime_dir / "paper_state.json"
+    cycle_path = runtime_dir / "cycle_reports.jsonl"
+    latest_mtime, latest_size = _file_signature(latest_path)
+    paper_mtime, paper_size = _file_signature(paper_path)
+    cycle_mtime, cycle_size = _file_signature(cycle_path)
+    return (
+        f"{runtime_dir}|{status}|scan={scan_lines}|limit={order_limit}|offset={order_offset}|latest={latest_mtime}:{latest_size}|"
+        f"paper={paper_mtime}:{paper_size}|cycle={cycle_mtime}:{cycle_size}"
+    )
+
+
+def _load_order_records_cache(key: str) -> Dict[str, Any] | None:
+    now = time.time()
+    with _order_records_cache_lock:
+        entry = _order_records_cache.get(key)
+        if entry is None:
+            return None
+        if now - float(entry.get("cached_at", 0.0)) > ORDER_RECORD_CACHE_TTL_SECONDS:
+            return None
+        return entry.get("payload") if isinstance(entry.get("payload"), dict) else None
+
+
+def _write_order_records_cache(key: str, payload: Dict[str, Any]) -> None:
+    with _order_records_cache_lock:
+        _order_records_cache[key] = {
+            "cached_at": time.time(),
+            "payload": payload,
+        }
+
+
+def _filter_records_by_status(records: List[Dict[str, Any]], status: str) -> List[Dict[str, Any]]:
+    normalized = (status or "all").lower()
+    if normalized == "all":
+        return records
+    if normalized == "open":
+        allowed = {"OPEN", "NEW", "PARTIALLY_FILLED", "UNKNOWN"}
+    elif normalized == "filled":
+        allowed = {"FILLED", "PAPER_FILLED"}
+    elif normalized == "canceled":
+        allowed = {"CANCELED", "EXPIRED", "REJECTED"}
+    else:
+        allowed = {normalized.upper()}
+    return [item for item in records if str(item.get("status", "")).upper() in allowed]
 
 
 def _apply_optional_limit_newest_first(items: List[Dict[str, Any]], limit: int | None) -> List[Dict[str, Any]]:
@@ -3357,27 +3521,61 @@ def _apply_optional_limit_newest_first(items: List[Dict[str, Any]], limit: int |
     return newest_first[:limit]
 
 
+def _cycle_matches_markers(cycle: Dict[str, Any], markers: tuple[str, ...]) -> bool:
+    if not isinstance(cycle, dict):
+        return False
+    for marker in markers:
+        if marker == '"PAPER_FILLED"':
+            for decision in cycle.get("decisions", []):
+                execution = decision.get("execution_result", {}) if isinstance(decision, dict) else {}
+                if isinstance(execution, dict) and str(execution.get("status")) == "PAPER_FILLED":
+                    return True
+            for event in cycle.get("order_lifecycle_events", []):
+                if isinstance(event, dict) and str(event.get("status")) == "FILLED":
+                    return True
+            continue
+        if marker in {"\"order_lifecycle_events\": [{", "\"order_lifecycle_events\":[{"}:
+            if isinstance(cycle.get("order_lifecycle_events"), list) and cycle.get("order_lifecycle_events"):
+                return True
+            continue
+        if marker == '\"decision_ledger\"':
+            if isinstance(cycle.get("decision_ledger"), list) and cycle.get("decision_ledger"):
+                return True
+            continue
+        # fallback: keep old fast-path behavior for any unknown marker.
+        if marker:
+            text = json.dumps(cycle, ensure_ascii=True)
+            if marker in text:
+                return True
+    return False
+
+
+def _cycle_has_fill_marker(cycle: Dict[str, Any]) -> bool:
+    if not isinstance(cycle, dict):
+        return False
+    for decision in cycle.get("decisions", []):
+        execution = decision.get("execution_result", {}) if isinstance(decision, dict) else {}
+        if isinstance(execution, dict) and str(execution.get("status")) == "PAPER_FILLED":
+            return True
+    for event in cycle.get("order_lifecycle_events", []):
+        if isinstance(event, dict) and str(event.get("status")) == "FILLED":
+            return True
+    return False
+
+
 def _iter_matching_cycles_from_file(path: Path, markers: tuple[str, ...], scan_lines: int | None) -> Iterable[Dict[str, Any]]:
     if not path.exists():
-        return
-    if scan_lines is None:
-        line_iter: Iterable[str] = path.open("r", encoding="utf-8", errors="ignore")
-    else:
-        line_iter = _read_recent_lines(path, scan_lines)
-    try:
-        for line in line_iter:
-            if markers and not any(marker in line for marker in markers):
-                continue
-            try:
-                cycle = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(cycle, dict):
+        return iter(())
+    cycles = _load_recent_cycles_cached(path, scan_lines)
+    if not markers:
+        return iter(cycles)
+
+    def _generator() -> Iterable[Dict[str, Any]]:
+        for cycle in cycles:
+            if _cycle_matches_markers(cycle, markers):
                 yield cycle
-    finally:
-        close = getattr(line_iter, "close", None)
-        if callable(close):
-            close()
+
+    return _generator()
 
 
 def _extract_recent_fills(history: List[Dict[str, Any]], limit: int | None = 300) -> List[Dict[str, Any]]:
@@ -3455,7 +3653,11 @@ def _extract_order_lifecycle_events(
 
 def _extract_order_lifecycle_events_from_file(path: Path, limit: int | None = 200, scan_lines: int | None = 8000) -> List[Dict[str, Any]]:
     events: List[Dict[str, Any]] = []
-    for cycle in _iter_matching_cycles_from_file(path, ('"order_lifecycle_events": [{', '"order_lifecycle_events":[{'), scan_lines):
+    for cycle in _iter_matching_cycles_from_file(
+        path,
+        ('"order_lifecycle_events": [{', '"order_lifecycle_events":[{', '"decision_ledger":['),
+        scan_lines,
+    ):
         for event in cycle.get("order_lifecycle_events", []):
             if isinstance(event, dict):
                 events.append(event)
@@ -4070,18 +4272,8 @@ def _extract_position_activation_markers(history: List[Dict[str, Any]], limit: i
 
 
 def _extract_trade_marker_cycles_from_file(path: Path, scan_lines: int = 8000) -> List[Dict[str, Any]]:
-    if not path.exists():
-        return []
-    cycles: List[Dict[str, Any]] = []
-    for line in _read_recent_lines(path, scan_lines):
-        if '"PAPER_FILLED"' not in line and '"FILLED"' not in line:
-            continue
-        try:
-            cycle = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        cycles.append(cycle)
-    return cycles
+    cycles = _load_recent_cycles_cached(path, scan_lines)
+    return [cycle for cycle in cycles if _cycle_has_fill_marker(cycle)]
 
 
 def _extract_chart_trade_markers_from_file(path: Path, limit: int = 200) -> List[Dict[str, Any]]:
@@ -4680,12 +4872,15 @@ def _build_dashboard_chart_payload(
     history: List[Dict[str, Any]] | None = None,
     chart_interval: str | None = None,
     backtest_manifest: Dict[str, Any] | None = None,
+    marker_history_limit: int | None = None,
 ) -> Dict[str, Any]:
     latest_report = latest_report if latest_report is not None else _load_json(runtime_dir / "latest_report.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
-    history = history if history is not None else _read_history(history_path)
-    trade_markers = _extract_chart_trade_markers_from_file(history_path)
-    activation_markers = _extract_position_activation_markers_from_file(history_path)
+    if history is None:
+        marker_history_limit = marker_history_limit or DASHBOARD_CHART_MARKER_DEFAULT_SCAN_LINES
+        history = _read_history(history_path, limit=marker_history_limit)
+    trade_markers = _extract_live_trade_markers(history, limit=200)
+    activation_markers = _extract_position_activation_markers(history, limit=200)
     chart_symbol = _dashboard_chart_symbol(latest_report)
     selected_chart_interval = _normalize_chart_interval(chart_interval)
     main_interval = _detect_main_interval(latest_report, backtest_manifest or {})
@@ -5206,6 +5401,19 @@ def _seed_paper_from_real_account(
         )
         manifest_mode = "paper_state_seed_from_real_account"
     cleared_files = clear_simulated_runtime(runtime_dir, archive_root)
+    storage_reset: Dict[str, Any] = {}
+    try:
+        settings_for_storage = load_settings()
+        if settings_for_storage.db_read_mode == "prefer_db" or settings_for_storage.db_write_mode != "file":
+            storage_reset = build_runtime_store(settings_for_storage).clear_simulated_runtime()
+    except Exception as exc:  # noqa: BLE001
+        if not load_settings().db_fallback_to_file:
+            raise RuntimeError(f"PostgreSQL simulated runtime reset failed: {exc}") from exc
+        storage_reset = {
+            "storage_source": "postgres_error",
+            "warning": str(exc)[:240],
+            "cleared_tables": [],
+        }
     (runtime_dir / "paper_state.json").write_text(json.dumps(asdict(snapshot), ensure_ascii=True, indent=2), encoding="utf-8")
     write_seed_manifest(
         output_dir=runtime_dir,
@@ -5222,6 +5430,7 @@ def _seed_paper_from_real_account(
         "status": "reset_complete",
         "mode": manifest_mode,
         "cleared_files": cleared_files,
+        "storage_reset": storage_reset,
         "quote_asset": snapshot.quote_asset,
         "quote_balance": snapshot.quote_balance,
         "initial_quote_balance": snapshot.initial_quote_balance,
@@ -5240,12 +5449,27 @@ def _seed_paper_from_real_account(
     }
 
 
-def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None, *, include_chart: bool = True) -> Dict[str, Any]:
+def build_dashboard_payload(
+    runtime_dir: Path,
+    chart_interval: str | None = None,
+    *,
+    include_chart: bool = True,
+    order_records_limit: int | None = None,
+) -> Dict[str, Any]:
+    settings = load_settings()
+    dashboard_order_limit = max(1, _coerce_int(os.environ.get("DASHBOARD_TRADE_RECORD_LIMIT"), 200))
+    if order_records_limit is None:
+        order_records_limit = dashboard_order_limit
+    else:
+        order_records_limit = max(1, order_records_limit)
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
-    history = _read_history(history_path, limit=800 if include_chart else 80)
-    profit_history = _read_history(history_path, limit=800 if include_chart else 240)
+    history_limit = 800 if include_chart else 80
+    profit_history_limit = max(240, history_limit)
+    full_history = _read_history(history_path, limit=profit_history_limit)
+    history = full_history if include_chart else full_history[-80:] if len(full_history) > 80 else full_history
+    profit_history = full_history[-profit_history_limit:] if include_chart else full_history[-profit_history_limit:]
     backtest_payload = _load_backtest_payload(runtime_dir)
     quote_asset = paper_state.get("quote_asset", "JPY")
     fee_rate = _dashboard_fee_rate()
@@ -5259,7 +5483,7 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         chart_payload = _build_dashboard_chart_payload(
             runtime_dir,
             latest_report=latest_report,
-            history=history,
+            history=full_history,
             chart_interval=selected_chart_interval,
             backtest_manifest=backtest_payload["backtest_manifest"],
         )
@@ -5281,22 +5505,89 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         }
 
     paper_fills = paper_state.get("fills", []) if isinstance(paper_state.get("fills", []), list) else []
-    file_recent_fills = _extract_recent_fills_from_file(history_path, scan_lines=240 if not include_chart else 800)
-    file_all_fills = _extract_recent_fills_from_file(history_path, limit=500, scan_lines=240 if not include_chart else 800)
-    all_fills = _dedupe_fills([*paper_fills, *file_all_fills], limit=500)
-    recent_fills = _dedupe_fills([*paper_fills, *file_recent_fills], limit=300)
+    scan_lines_for_dashboard = 240 if not include_chart else 800
+    cycles_for_dashboard: List[Dict[str, Any]] = []
+    trade_records_complete = False
+    order_records_source = "file_fallback"
+    storage_warning = ""
+    all_fills = _dedupe_fills([*paper_fills], limit=order_records_limit)
+    recent_fills = _dedupe_fills([*paper_fills], limit=max(100, min(300, order_records_limit)))
+    db_order_payload: Dict[str, Any] | None = None
+    runtime_store = build_runtime_store(settings)
+    if settings.db_read_mode == "prefer_db" and settings.dashboard_order_source == "postgres":
+        try:
+            db_order_payload = runtime_store.query_order_records(limit=order_records_limit + 50, status="all", symbol=chart_symbol)
+            db_fills = _dedupe_fills(db_order_payload.get("recent_fills", []), limit=order_records_limit)
+            db_events = db_order_payload.get("order_lifecycle_events", [])
+            all_fills = _dedupe_fills([*db_fills, *paper_fills], limit=500)
+            recent_fills = _dedupe_fills([*db_fills, *paper_fills], limit=max(100, min(300, order_records_limit)))
+            order_records_source = str(db_order_payload.get("storage_source") or "postgres")
+            trade_records_complete = bool(db_order_payload.get("trade_records_complete", True))
+            all_order_lifecycle_events = db_events if isinstance(db_events, list) else []
+            storage_warning = str(db_order_payload.get("storage_warning") or "")
+        except Exception as exc:  # noqa: BLE001
+            storage_warning = str(exc)[:240]
+            if not settings.db_fallback_to_file:
+                db_order_payload = {
+                    "recent_fills": [],
+                    "order_lifecycle_events": [],
+                    "trade_records_complete": False,
+                    "storage_source": "postgres_error",
+                    "storage_warning": storage_warning,
+                    "order_records_meta": {
+                        "storage_source": "postgres",
+                        "error": storage_warning,
+                    },
+                }
+            else:
+                all_order_lifecycle_events = []
+                trade_records_complete = False
+
+    if order_records_source != "postgres":
+        cycles_for_dashboard = _load_recent_cycles_cached(history_path, scan_lines_for_dashboard)
+        file_recent_fills = _extract_recent_fills(cycles_for_dashboard, limit=300)
+        file_all_fills = _extract_recent_fills(cycles_for_dashboard, limit=500)
+        all_fills = _dedupe_fills([*all_fills, *file_all_fills], limit=500)
+        recent_fills = _dedupe_fills([*recent_fills, *file_recent_fills], limit=300)
     runtime_config = _dashboard_runtime_config()
     market_prices = latest_report.get("market_prices", {}) if isinstance(latest_report.get("market_prices"), dict) else {}
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
     open_orders = _decorate_open_order_spreads(open_orders, market_prices, runtime_config)
     open_order_groups = _build_open_order_groups(open_orders, quote_asset)
     drawer_scan_lines = 800 if not include_chart else 1200
-    all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=500, scan_lines=drawer_scan_lines)
-    if not all_order_lifecycle_events:
-        all_order_lifecycle_events = _extract_order_lifecycle_events(history, latest_report, limit=500)
-    order_lifecycle_events = all_order_lifecycle_events[:200]
-    decision_ledger = _extract_decision_ledger_from_file(history_path, latest_report, limit=200, scan_lines=drawer_scan_lines)
-    trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=None)
+    if order_records_source == "postgres" and db_order_payload is not None:
+        all_order_lifecycle_events = all_order_lifecycle_events if isinstance(all_order_lifecycle_events, list) else []
+    else:
+        if not cycles_for_dashboard:
+            cycles_for_dashboard = _load_recent_cycles_cached(history_path, scan_lines_for_dashboard)
+        all_order_lifecycle_events = _extract_order_lifecycle_events(cycles_for_dashboard, latest_report, limit=order_records_limit)
+        if not all_order_lifecycle_events:
+            all_order_lifecycle_events = _extract_order_lifecycle_events_from_file(
+                history_path,
+                limit=order_records_limit,
+                scan_lines=max(1200, len(full_history), order_records_limit),
+            )
+    order_lifecycle_events = all_order_lifecycle_events[: min(200, order_records_limit)]
+    if order_records_source == "postgres":
+        try:
+            db_decision_payload = runtime_store.query_decision_ledger(limit=min(200, order_records_limit), symbol=chart_symbol)
+            decision_ledger = [item for item in (db_decision_payload.get("decision_ledger") if isinstance(db_decision_payload.get("decision_ledger"), list) else []) if isinstance(item, dict)]
+            storage_warning = storage_warning or str(db_decision_payload.get("storage_warning") or "")
+        except Exception as exc:  # noqa: BLE001
+            decision_ledger = []
+            storage_warning = storage_warning or str(exc)[:240]
+    else:
+        decision_ledger = _extract_decision_ledger(cycles_for_dashboard, latest_report, limit=min(200, order_records_limit))
+        if not decision_ledger:
+            decision_ledger = _extract_decision_ledger_from_file(
+                history_path,
+                latest_report,
+                limit=min(200, order_records_limit),
+                scan_lines=max(1200, len(full_history), order_records_limit),
+            )
+    if not decision_ledger and not all_order_lifecycle_events:
+        decision_ledger = []
+    trade_records = _build_trade_records(open_orders, all_fills, all_order_lifecycle_events, quote_asset, fee_rate, limit=order_records_limit)
     real_cost_basis_summary = _build_real_cost_basis_summary(runtime_dir, paper_state, latest_report)
     decision_state_payload = _build_decision_state_payload(paper_state, latest_report, runtime_config)
     target_inventory_payload = _build_target_inventory_payload(latest_report)
@@ -5326,8 +5617,10 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
         "reserved_base_balances": paper_state.get("reserved_base_balances", {}),
         "order_lifecycle_events": order_lifecycle_events,
         "trade_records": trade_records,
-        "trade_records_complete": False,
+        "trade_records_complete": trade_records_complete,
         "real_cost_basis_summary": real_cost_basis_summary,
+        "order_records_source": order_records_source,
+        "storage_warning": storage_warning,
         "sell_diagnostics": latest_report.get("sell_diagnostics", []),
         "composite_decisions": latest_report.get("composite_decisions", []),
         "policy_decisions": latest_report.get("policy_decisions", []),
@@ -5359,14 +5652,61 @@ def build_dashboard_payload(runtime_dir: Path, chart_interval: str | None = None
 
 
 def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
+    settings = load_settings()
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
-    scan_lines = 5000
-    decision_ledger = _extract_decision_ledger_from_file(history_path, latest_report, limit=300, scan_lines=scan_lines)
-    order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=300, scan_lines=scan_lines)
-    if not order_lifecycle_events:
-        order_lifecycle_events = _extract_order_lifecycle_events([], latest_report, limit=300)
-    return {
+    scan_lines = _coerce_int(os.environ.get("DASHBOARD_DECISION_DRAWER_SCAN_LINES"), 5000)
+    drawer_record_limit = max(1, _coerce_int(os.environ.get("DASHBOARD_DECISION_DRAWER_RECORD_LIMIT"), 200))
+    cache_key = _order_records_cache_key(
+        runtime_dir,
+        "decision_drawer",
+        scan_lines,
+        drawer_record_limit,
+        0,
+    )
+    cached = _load_order_records_cache(cache_key)
+    if cached:
+        return cached
+    decision_ledger: List[Dict[str, Any]] = []
+    order_lifecycle_events: List[Dict[str, Any]] = []
+    storage_warning = ""
+    order_records_source = "file_fallback"
+    if settings.db_read_mode == "prefer_db" and settings.dashboard_order_source == "postgres":
+        try:
+            db_store = build_runtime_store(settings)
+            order_payload = db_store.query_order_records(limit=drawer_record_limit, status="all")
+            decision_payload = db_store.query_decision_ledger(limit=drawer_record_limit)
+            order_events = order_payload.get("order_lifecycle_events")
+            if isinstance(order_events, list):
+                order_lifecycle_events = order_events
+            decision_items = decision_payload.get("decision_ledger")
+            if isinstance(decision_items, list):
+                decision_ledger = [item for item in decision_items if isinstance(item, dict)]
+            order_records_source = str(order_payload.get("storage_source") or "postgres")
+            storage_warning = str(order_payload.get("storage_warning") or decision_payload.get("storage_warning") or "")
+        except Exception as exc:  # noqa: BLE001
+            storage_warning = str(exc)[:240]
+            order_records_source = "postgres_error"
+            decision_ledger = []
+            order_lifecycle_events = []
+    if order_records_source != "postgres":
+        cycles = _load_recent_cycles_cached(history_path, scan_lines)
+        decision_ledger = _extract_decision_ledger(cycles, latest_report, limit=drawer_record_limit)
+        order_lifecycle_events = _extract_order_lifecycle_events(cycles, latest_report, limit=drawer_record_limit)
+        if not decision_ledger:
+            decision_ledger = _extract_decision_ledger_from_file(
+                history_path,
+                latest_report,
+                limit=drawer_record_limit,
+                scan_lines=max(scan_lines, 1200),
+            )
+        if not order_lifecycle_events:
+            order_lifecycle_events = _extract_order_lifecycle_events_from_file(
+                history_path,
+                limit=drawer_record_limit,
+                scan_lines=max(scan_lines, 1200),
+            )
+    payload = {
         "decision_ledger": decision_ledger,
         "order_lifecycle_events": order_lifecycle_events,
         "external_signal_snapshots": latest_report.get("external_signal_snapshots", []),
@@ -5379,33 +5719,67 @@ def build_decision_drawer_payload(runtime_dir: Path) -> Dict[str, Any]:
             "scan_lines": scan_lines,
             "decision_ledger_count": len(decision_ledger),
             "order_lifecycle_event_count": len(order_lifecycle_events),
+            "storage_source": order_records_source,
+            "trade_records_complete": order_records_source == "postgres",
         },
+        "storage_source": order_records_source,
+        "storage_warning": storage_warning,
+        "trade_records_complete": order_records_source == "postgres",
     }
+    _write_order_records_cache(cache_key, payload)
+    return payload
 
 
-def build_order_records_payload(runtime_dir: Path, status: str = "all") -> Dict[str, Any]:
+def build_order_records_payload(
+    runtime_dir: Path,
+    status: str = "all",
+    *,
+    limit: int = 1000,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    settings = load_settings()
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
     paper_state = _load_json(runtime_dir / "paper_state.json", {})
     history_path = runtime_dir / "cycle_reports.jsonl"
     quote_asset = paper_state.get("quote_asset", "JPY")
     fee_rate = _dashboard_fee_rate()
     open_orders = list((paper_state.get("open_orders") or {}).values()) or latest_report.get("open_orders", [])
-    settings = load_settings()
+    normalized_status = (status or "all").lower()
+    normalized_limit = max(1, min(5000, _coerce_int(limit, 1000)))
+    normalized_offset = max(0, _coerce_int(offset, 0))
+    cache_scan_lines = _coerce_int(os.environ.get("DASHBOARD_ORDER_SCAN_LINES"), 2500)
+    cache_key = _order_records_cache_key(
+        runtime_dir,
+        normalized_status,
+        cache_scan_lines,
+        normalized_limit,
+        normalized_offset,
+        include_runtime_signature=not (settings.db_read_mode == "prefer_db" and settings.dashboard_order_source == "postgres"),
+    )
+    cached = _load_order_records_cache(cache_key)
+    if cached:
+        return cached
+    storage_warning = ""
     if settings.db_read_mode == "prefer_db" and settings.dashboard_order_source == "postgres":
         try:
-            db_payload = build_runtime_store(settings).query_order_records(limit=1000, status=status)
-            recent_fills = _dedupe_fills(db_payload.get("recent_fills", []), limit=1000)
+            db_payload = build_runtime_store(settings).query_order_records(limit=normalized_limit + normalized_offset, status=normalized_status)
+            recent_fills = _dedupe_fills(db_payload.get("recent_fills", []), limit=normalized_limit + normalized_offset)
             order_lifecycle_events = db_payload.get("order_lifecycle_events", [])
             trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate, limit=None)
+            if normalized_status != "all":
+                trade_records = _filter_records_by_status(trade_records, normalized_status)
+            trade_records = trade_records[normalized_offset:normalized_offset + normalized_limit]
             meta = dict(db_payload.get("order_records_meta") or {})
             meta.update(
                 {
                     "recent_fill_count": len(recent_fills),
                     "order_lifecycle_event_count": len(order_lifecycle_events),
                     "trade_record_count": len(trade_records),
+                    "limit": normalized_limit,
+                    "offset": normalized_offset,
                 }
             )
-            return {
+            payload = {
                 "recent_fills": recent_fills,
                 "order_lifecycle_events": order_lifecycle_events,
                 "trade_records": trade_records,
@@ -5413,19 +5787,38 @@ def build_order_records_payload(runtime_dir: Path, status: str = "all") -> Dict[
                 "storage_source": "postgres",
                 "order_records_meta": meta,
             }
+            _write_order_records_cache(cache_key, payload)
+            return payload
         except Exception as exc:  # noqa: BLE001
             storage_warning = str(exc)[:240]
+            if not settings.db_fallback_to_file:
+                payload = {
+                    "recent_fills": [],
+                    "order_lifecycle_events": [],
+                    "trade_records": [],
+                    "trade_records_complete": False,
+                    "storage_source": "postgres_error",
+                    "storage_warning": storage_warning,
+                    "order_records_meta": {
+                        "storage_source": "postgres",
+                        "error": storage_warning,
+                    },
+                }
+                _write_order_records_cache(cache_key, payload)
+                return payload
     else:
         storage_warning = ""
-    scan_lines = _coerce_int(os.environ.get("DASHBOARD_ORDER_SCAN_LINES"), 20000)
-    order_lifecycle_events = _extract_order_lifecycle_events_from_file(history_path, limit=1000, scan_lines=scan_lines)
-    if not order_lifecycle_events:
-        order_lifecycle_events = _extract_order_lifecycle_events([], latest_report, limit=1000)
+    cycles = _load_recent_cycles_cached(history_path, cache_scan_lines)
+    scan_limit = normalized_limit + normalized_offset
+    order_lifecycle_events = _extract_order_lifecycle_events(cycles, latest_report, limit=scan_limit)
     paper_fills = paper_state.get("fills", []) if isinstance(paper_state.get("fills", []), list) else []
-    file_fills = _extract_recent_fills_from_file(history_path, limit=1000, scan_lines=scan_lines)
-    recent_fills = _dedupe_fills([*paper_fills, *file_fills], limit=1000)
+    file_fills = _extract_recent_fills(cycles, limit=scan_limit)
+    recent_fills = _dedupe_fills([*paper_fills, *file_fills], limit=scan_limit)
     trade_records = _build_trade_records(open_orders, recent_fills, order_lifecycle_events, quote_asset, fee_rate, limit=None)
-    return {
+    if normalized_status != "all":
+        trade_records = _filter_records_by_status(trade_records, normalized_status)
+    trade_records = trade_records[normalized_offset:normalized_offset + normalized_limit]
+    payload = {
         "recent_fills": recent_fills,
         "order_lifecycle_events": order_lifecycle_events,
         "trade_records": trade_records,
@@ -5433,12 +5826,16 @@ def build_order_records_payload(runtime_dir: Path, status: str = "all") -> Dict[
         "storage_source": "file_fallback" if storage_warning else "file",
         "storage_warning": storage_warning,
         "order_records_meta": {
-            "scan_lines": scan_lines,
+            "scan_lines": cache_scan_lines,
             "recent_fill_count": len(recent_fills),
             "order_lifecycle_event_count": len(order_lifecycle_events),
             "trade_record_count": len(trade_records),
+            "limit": normalized_limit,
+            "offset": normalized_offset,
         },
     }
+    _write_order_records_cache(cache_key, payload)
+    return payload
 
 
 def build_ops_storage_payload(runtime_dir: Path) -> Dict[str, Any]:
@@ -5483,7 +5880,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/dashboard/orders":
             query = parse_qs(parsed.query)
             status = str((query.get("status") or ["all"])[0])
-            self._send_json(build_order_records_payload(self.runtime_dir, status=status))
+            limit = _coerce_int((query.get("limit") or ["1000"])[0], 1000)
+            offset = _coerce_int((query.get("offset") or ["0"])[0], 0)
+            self._send_json(build_order_records_payload(self.runtime_dir, status=status, limit=limit, offset=offset))
             return
         if parsed.path == "/api/ops/health":
             self._send_json(build_ops_health_payload(self.runtime_dir))

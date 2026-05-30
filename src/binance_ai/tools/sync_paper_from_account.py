@@ -70,7 +70,7 @@ def build_paper_snapshot_from_balances(
                 "remaining_quantity": quantity,
                 "excluded_realized_pnl": 0.0,
                 "completed": False,
-                "note": "Initial real-account inventory release is excluded from Boti operation PnL until the first paper BUY.",
+                "note": "Initial real-account inventory release is excluded from Boti operation PnL until the first paper SELL.",
             },
         }
         if cost_basis.get("average_entry_price"):

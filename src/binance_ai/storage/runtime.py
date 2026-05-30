@@ -56,10 +56,25 @@ class RuntimeStore(Protocol):
     def write_portfolio_snapshot(self, snapshot: Any) -> None:
         ...
 
-    def query_order_records(self, limit: int = 1000, status: str = "all") -> Dict[str, Any]:
+    def query_order_records(
+        self,
+        limit: int = 1000,
+        status: str = "all",
+        symbol: str | None = None,
+    ) -> Dict[str, Any]:
+        ...
+
+    def query_decision_ledger(
+        self,
+        limit: int = 200,
+        symbol: str | None = None,
+    ) -> Dict[str, Any]:
         ...
 
     def storage_status(self) -> Dict[str, Any]:
+        ...
+
+    def clear_simulated_runtime(self) -> Dict[str, Any]:
         ...
 
 
@@ -70,7 +85,15 @@ class NullRuntimeStore:
     def write_portfolio_snapshot(self, snapshot: Any) -> None:
         return
 
-    def query_order_records(self, limit: int = 1000, status: str = "all") -> Dict[str, Any]:
+    def query_order_records(
+        self,
+        limit: int = 1000,
+        status: str = "all",
+        symbol: str | None = None,
+    ) -> Dict[str, Any]:
+        raise StorageUnavailable("postgres storage is disabled")
+
+    def query_decision_ledger(self, limit: int = 200, symbol: str | None = None) -> Dict[str, Any]:
         raise StorageUnavailable("postgres storage is disabled")
 
     def query_ops_summary(self, hours: int) -> Dict[str, Any]:
@@ -86,6 +109,13 @@ class NullRuntimeStore:
             "error": "postgres storage is disabled",
             "last_query_ms": 0,
             "partitions": [],
+        }
+
+    def clear_simulated_runtime(self) -> Dict[str, Any]:
+        return {
+            "storage_source": "none",
+            "cleared_tables": [],
+            "warning": "postgres storage is disabled",
         }
 
 
@@ -113,10 +143,20 @@ class SafeRuntimeStore:
         except Exception as exc:  # noqa: BLE001
             self.last_error = str(exc)[:240]
 
-    def query_order_records(self, limit: int = 1000, status: str = "all") -> Dict[str, Any]:
+    def query_order_records(
+        self,
+        limit: int = 1000,
+        status: str = "all",
+        symbol: str | None = None,
+    ) -> Dict[str, Any]:
         if self.inner is None:
             raise StorageUnavailable(self.last_error or "postgres storage is disabled")
-        return self.inner.query_order_records(limit=limit, status=status)
+        return self.inner.query_order_records(limit=limit, status=status, symbol=symbol)
+
+    def query_decision_ledger(self, limit: int = 200, symbol: str | None = None) -> Dict[str, Any]:
+        if self.inner is None:
+            raise StorageUnavailable(self.last_error or "postgres storage is disabled")
+        return self.inner.query_decision_ledger(limit=limit, symbol=symbol)
 
     def query_ops_summary(self, hours: int) -> Dict[str, Any]:
         if self.inner is None or not hasattr(self.inner, "query_ops_summary"):
@@ -128,6 +168,8 @@ class SafeRuntimeStore:
             status = NullRuntimeStore().storage_status()
             status["enabled"] = self.settings.db_enabled
             status["driver"] = self.settings.db_driver
+            status["read_mode"] = self.settings.db_read_mode
+            status["write_mode"] = self.settings.db_write_mode
             status["error"] = self.last_error or status["error"]
             return status
         try:
@@ -146,6 +188,21 @@ class SafeRuntimeStore:
                 "last_query_ms": 0,
                 "partitions": [],
             }
+
+    def clear_simulated_runtime(self) -> Dict[str, Any]:
+        if self.inner is None:
+            return NullRuntimeStore().clear_simulated_runtime()
+        try:
+            return self.inner.clear_simulated_runtime()
+        except Exception as exc:  # noqa: BLE001
+            self.last_error = str(exc)[:240]
+            if self.settings.db_fallback_to_file:
+                return {
+                    "storage_source": "postgres_error",
+                    "cleared_tables": [],
+                    "warning": self.last_error,
+                }
+            raise
 
 
 class PostgresRuntimeStore:
@@ -483,25 +540,87 @@ class PostgresRuntimeStore:
                 ),
             )
 
-    def query_order_records(self, limit: int = 1000, status: str = "all") -> Dict[str, Any]:
+    def query_order_records(
+        self,
+        limit: int = 1000,
+        status: str = "all",
+        symbol: str | None = None,
+    ) -> Dict[str, Any]:
         started = time.monotonic()
+        normalized_status = (status or "all").lower()
+        normalized_symbol = (symbol or "").strip().upper()
+        include_fills = normalized_status in {"all", "filled", "buy", "sell"}
+        include_events = normalized_status in {"all", "open", "closed", "canceled", "buy", "sell"}
+        include_orders = normalized_status in {"all", "open", "buy", "sell"}
+        event_status_filter: List[str] = []
+        order_status_filter: List[str] = []
+        side_filter = None
+
+        if normalized_status == "open":
+            order_status_filter = ["OPEN", "NEW", "PARTIALLY_FILLED", "UNKNOWN"]
+            event_status_filter = order_status_filter
+        elif normalized_status == "filled":
+            include_orders = False
+        elif normalized_status in {"closed", "canceled", "cancelled"}:
+            order_status_filter = ["CANCELED", "EXPIRED", "REJECTED"]
+            event_status_filter = order_status_filter
+            include_fills = False
+        elif normalized_status == "buy":
+            side_filter = "BUY"
+        elif normalized_status == "sell":
+            side_filter = "SELL"
+
         self.ensure_month(int(time.time() * 1000))
         with self.connect() as conn:
             with conn.cursor() as cur:
-                suffixes = self._list_suffixes(cur)
+                suffixes = self._list_suffixes(cur, max_suffixes=self.settings.db_recent_suffix_limit)
                 records: List[Dict[str, Any]] = []
                 fills: List[Dict[str, Any]] = []
                 events: List[Dict[str, Any]] = []
-                for suffix in suffixes:
-                    fills.extend(self._query_payloads(cur, f"fills_{suffix}", "timestamp_ms", limit))
-                    events.extend(self._query_payloads(cur, f"order_events_{suffix}", "timestamp_ms", limit))
-                    orders = self._query_payloads(cur, f"orders_{suffix}", "updated_at_ms", limit)
-                    records.extend(orders)
+                fills_tables = [f"fills_{suffix}" for suffix in suffixes]
+                event_tables = [f"order_events_{suffix}" for suffix in suffixes]
+                order_tables = [f"orders_{suffix}" for suffix in suffixes]
+                if include_fills:
+                    per_fill_limit = _ceil_div(limit, max(1, len(fills_tables)))
+                    fills = self._query_payloads_union(
+                        cur=cur,
+                        tables=fills_tables,
+                        order_col="timestamp_ms",
+                        limit=limit,
+                        per_limit=per_fill_limit,
+                        status_filter=[],
+                        side_filter=side_filter,
+                        symbol_filter=normalized_symbol or None,
+                    )
+                if include_events:
+                    per_event_limit = _ceil_div(limit, max(1, len(event_tables)))
+                    events = self._query_payloads_union(
+                        cur=cur,
+                        tables=event_tables,
+                        order_col="timestamp_ms",
+                        limit=limit,
+                        per_limit=per_event_limit,
+                        status_filter=event_status_filter,
+                        side_filter=side_filter,
+                        symbol_filter=normalized_symbol or None,
+                    )
+                if include_orders:
+                    per_order_limit = _ceil_div(limit, max(1, len(order_tables)))
+                    records = self._query_payloads_union(
+                        cur=cur,
+                        tables=order_tables,
+                        order_col="updated_at_ms",
+                        limit=limit,
+                        per_limit=per_order_limit,
+                        status_filter=order_status_filter,
+                        side_filter=side_filter,
+                        symbol_filter=normalized_symbol or None,
+                    )
         normalized_fills = sorted(fills, key=lambda item: int(item.get("timestamp_ms") or 0), reverse=True)[:limit]
         normalized_events = sorted(events, key=lambda item: int(item.get("timestamp_ms") or 0), reverse=True)[:limit]
         merged = [*records, *normalized_events, *normalized_fills]
         merged = sorted(merged, key=lambda item: int(item.get("timestamp_ms") or item.get("updated_at_ms") or item.get("created_at_ms") or 0), reverse=True)
-        if status and status.lower() != "all":
+        if normalized_status != "all":
             merged = [item for item in merged if _matches_status(item, status)]
         self.last_query_ms = int((time.monotonic() - started) * 1000)
         return {
@@ -516,6 +635,44 @@ class PostgresRuntimeStore:
                 "raw_record_count": len(merged[:limit]),
                 "recent_fill_count": len(normalized_fills),
                 "order_lifecycle_event_count": len(normalized_events),
+            },
+        }
+
+    def query_decision_ledger(
+        self,
+        limit: int = 200,
+        symbol: str | None = None,
+    ) -> Dict[str, Any]:
+        started = time.monotonic()
+        normalized_symbol = (symbol or "").strip().upper()
+        self.ensure_month(int(time.time() * 1000))
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                suffixes = self._list_suffixes(cur, max_suffixes=self.settings.db_recent_suffix_limit)
+                decision_tables = [f"decision_ledger_{suffix}" for suffix in suffixes]
+                per_limit = _ceil_div(limit, max(1, len(decision_tables)))
+                entries = self._query_payloads_union(
+                    cur=cur,
+                    tables=decision_tables,
+                    order_col="timestamp_ms",
+                    limit=limit,
+                    per_limit=per_limit,
+                    status_filter=None,
+                    side_filter=None,
+                    symbol_filter=normalized_symbol or None,
+                )
+        normalized_entries = [entry for entry in entries if isinstance(entry, dict)]
+        self.last_query_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "decision_ledger": normalized_entries,
+            "trade_records_complete": True,
+            "storage_source": "postgres",
+            "decision_ledger_meta": {
+                "source": "postgres",
+                "query_ms": self.last_query_ms,
+                "count": len(normalized_entries),
+                "symbol": symbol,
+                "limit": limit,
             },
         }
 
@@ -550,8 +707,111 @@ class PostgresRuntimeStore:
             "query_ms": self.last_query_ms,
         }
 
-    def _query_payloads(self, cur: Any, table: str, order_col: str, limit: int) -> List[Dict[str, Any]]:
-        cur.execute(f"select payload from {table} order by {order_col} desc limit %s", (limit,))
+    def clear_simulated_runtime(self) -> Dict[str, Any]:
+        started = time.monotonic()
+        cleared_tables: List[str] = []
+        prefixes = (
+            "cycle_reports_",
+            "orders_",
+            "fills_",
+            "order_events_",
+            "decision_ledger_",
+        )
+        with self.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    select tablename
+                    from pg_tables
+                    where schemaname='public'
+                    order by tablename
+                    """
+                )
+                table_names = [
+                    str(row[0])
+                    for row in cur.fetchall()
+                    if any(str(row[0]).startswith(prefix) for prefix in prefixes)
+                ]
+                for table in table_names:
+                    cur.execute(f"truncate table {table}")
+                    cleared_tables.append(table)
+            conn.commit()
+        self.last_query_ms = int((time.monotonic() - started) * 1000)
+        return {
+            "storage_source": "postgres",
+            "cleared_tables": cleared_tables,
+            "query_ms": self.last_query_ms,
+        }
+
+    def _query_payloads(
+        self,
+        cur: Any,
+        table: str,
+        order_col: str,
+        limit: int,
+        status_filter: List[str] | None = None,
+        side_filter: str | None = None,
+        symbol_filter: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        query = f"select payload from {table}"
+        params: List[Any] = []
+        clauses: List[str] = []
+        if status_filter:
+            clauses.append("status = ANY(%s)")
+            params.append(status_filter)
+        if side_filter:
+            clauses.append("side = %s")
+            params.append(side_filter)
+        if symbol_filter:
+            clauses.append("symbol = %s")
+            params.append(symbol_filter)
+        if clauses:
+            query += " where " + " and ".join(clauses)
+        query += f" order by {order_col} desc limit %s"
+        params.append(limit)
+        cur.execute(query, tuple(params))
+        rows = cur.fetchall()
+        return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
+
+    def _query_payloads_union(
+        self,
+        cur: Any,
+        tables: List[str],
+        order_col: str,
+        limit: int,
+        per_limit: int | None = None,
+        status_filter: List[str] | None = None,
+        side_filter: str | None = None,
+        symbol_filter: str | None = None,
+    ) -> List[Dict[str, Any]]:
+        if not tables:
+            return []
+        parts: List[str] = []
+        params: List[Any] = []
+        if per_limit is None or per_limit <= 0:
+            per_limit = min(limit, 1000)
+        for table in tables:
+            per_params: List[Any] = []
+            clauses = ["1=1"]
+            if status_filter:
+                per_params.append(status_filter)
+                clauses.append(f"status = ANY(%s)")
+            if side_filter:
+                per_params.append(side_filter)
+                clauses.append("side = %s")
+            if symbol_filter:
+                per_params.append(symbol_filter)
+                clauses.append("symbol = %s")
+            where_clause = " and ".join(clauses)
+            per_params.append(min(per_limit, 1000))
+            parts.append(
+                f"(select payload, {order_col} as order_ts from {table} where {where_clause} order by {order_col} desc limit %s)"
+            )
+            params.extend(per_params)
+        query = " union all ".join(parts)
+        query = f"select payload from ({query}) merged order by order_ts desc limit %s"
+        params.append(limit)
+        cur.execute(query, tuple(params))
         rows = cur.fetchall()
         return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
 
@@ -560,11 +820,33 @@ class PostgresRuntimeStore:
         rows = cur.fetchall()
         return [row[0] if isinstance(row[0], dict) else json.loads(row[0]) for row in rows]
 
-    def _list_suffixes(self, cur: Any) -> List[str]:
-        cur.execute("select tablename from pg_tables where schemaname='public' and tablename like 'fills_%' order by tablename desc limit 12")
+    def _list_suffixes(self, cur: Any, max_suffixes: int | None = None) -> List[str]:
+        cur.execute(
+            """
+            select tablename
+            from pg_tables
+            where schemaname='public'
+                and (
+                tablename like 'orders_%' or
+                tablename like 'fills_%' or
+                tablename like 'order_events_%' or
+                tablename like 'decision_ledger_%'
+              )
+            order by tablename desc
+            """
+        )
         rows = cur.fetchall()
-        suffixes = [str(row[0]).replace("fills_", "") for row in rows]
+        suffixes = []
+        for row in rows:
+            raw_name = str(row[0])
+            if "_" not in raw_name:
+                continue
+            suffix = "_".join(raw_name.split("_")[-2:])
+            if suffix and suffix not in suffixes:
+                suffixes.append(suffix)
         if suffixes:
+            if max_suffixes and max_suffixes > 0:
+                return suffixes[:max_suffixes]
             return suffixes
         return [month_suffix(int(time.time() * 1000))]
 
@@ -600,6 +882,12 @@ def _num(value: Any) -> float:
         return 0.0
 
 
+def _ceil_div(dividend: int, divisor: int) -> int:
+    if divisor <= 0:
+        return dividend
+    return (dividend + divisor - 1) // divisor
+
+
 def _matches_status(item: Dict[str, Any], status: str) -> bool:
     normalized = status.lower()
     item_status = str(item.get("status") or "").upper()
@@ -623,12 +911,20 @@ def build_postgres_store(settings: Settings | None = None) -> Optional[PostgresR
         return None
     try:
         return PostgresRuntimeStore(settings)
-    except Exception:
-        return None
+    except Exception as exc:
+        raise RuntimeError(str(exc))
 
 
 def build_runtime_store(settings: Settings | None = None) -> SafeRuntimeStore:
     settings = settings or load_settings()
     if not settings.db_enabled or settings.db_driver != "postgres" or settings.db_write_mode == "file":
         return SafeRuntimeStore(None, settings)
-    return SafeRuntimeStore(build_postgres_store(settings), settings)
+    try:
+        store = build_postgres_store(settings)
+    except Exception as exc:
+        if settings.db_fallback_to_file:
+            safe_store = SafeRuntimeStore(None, settings)
+            safe_store.last_error = str(exc)[:240]
+            return safe_store
+        raise RuntimeError(f"PostgreSQL is required but unavailable: {exc}")
+    return SafeRuntimeStore(store, settings)

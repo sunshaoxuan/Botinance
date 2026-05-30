@@ -329,17 +329,6 @@ class PortfolioStateEngine:
                     highest_price=max(existing.highest_price or existing.average_entry_price, fill_price),
                 )
             positions[order.symbol] = updated_position
-            symbol_state = dict(activation_state.get(order.symbol, {}))
-            initial_release = symbol_state.get("initial_inventory_release")
-            if isinstance(initial_release, dict) and initial_release.get("enabled"):
-                symbol_state["initial_inventory_release"] = {
-                    **initial_release,
-                    "enabled": False,
-                    "completed": True,
-                    "closed_by": "first_paper_buy",
-                    "closed_at_ms": applied_timestamp_ms,
-                }
-                activation_state[order.symbol] = symbol_state
             updated_snapshot = replace(
                 snapshot,
                 quote_balance=snapshot.quote_balance - gross_cost,
@@ -374,11 +363,20 @@ class PortfolioStateEngine:
                         + excluded_realized_pnl_delta,
                         "last_excluded_quantity": excluded_quantity,
                         "last_excluded_at_ms": applied_timestamp_ms,
-                        "completed": next_remaining <= 1e-12,
+                        "completed": True,
+                        "enabled": False,
+                        "closed_by": "first_paper_sell",
+                        "closed_at_ms": applied_timestamp_ms,
                     }
-                    if next_remaining <= 1e-12:
-                        symbol_state["initial_inventory_release"]["enabled"] = False
-                    activation_state[order.symbol] = symbol_state
+                else:
+                    symbol_state["initial_inventory_release"] = {
+                        **initial_release,
+                        "enabled": False,
+                        "completed": False,
+                        "closed_by": "first_paper_sell",
+                        "closed_at_ms": applied_timestamp_ms,
+                    }
+                activation_state[order.symbol] = symbol_state
             remaining = existing.quantity - order.quantity
             if remaining <= 0:
                 positions.pop(order.symbol, None)

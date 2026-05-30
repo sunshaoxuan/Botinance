@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from binance_ai.dashboard_server import (
     INDEX_HTML,
@@ -552,7 +554,14 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(drawer_payload["decision_drawer_meta"]["decision_ledger_count"], 1)
 
     def test_trade_records_scan_full_runtime_file_not_history_window(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "DB_READ_MODE": "file",
+                "DASHBOARD_ORDER_SOURCE": "file",
+                "DB_FALLBACK_TO_FILE": "true",
+            },
+        ):
             runtime_dir = Path(tmpdir) / "runtime_visual"
             _write_json(
                 runtime_dir / "latest_report.json",
@@ -635,7 +644,14 @@ class DashboardServerTests(unittest.TestCase):
         self.assertGreaterEqual(orders_payload["order_records_meta"]["scan_lines"], 1202)
 
     def test_trade_records_collapse_repeated_open_order_observations(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "DB_READ_MODE": "file",
+                "DASHBOARD_ORDER_SOURCE": "file",
+                "DB_FALLBACK_TO_FILE": "true",
+            },
+        ):
             runtime_dir = Path(tmpdir) / "runtime_visual"
             _write_json(
                 runtime_dir / "latest_report.json",
@@ -738,7 +754,14 @@ class DashboardServerTests(unittest.TestCase):
         self.assertEqual(old_records[0]["status"], "CANCELED")
 
     def test_ops_trades_filters_simulated_records_by_time_window(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "DB_READ_MODE": "file",
+                "DASHBOARD_ORDER_SOURCE": "file",
+                "DB_FALLBACK_TO_FILE": "true",
+            },
+        ):
             runtime_dir = Path(tmpdir) / "runtime_visual"
             _write_json(runtime_dir / "latest_report.json", {"market_prices": {"XRPJPY": 220.0}})
             _write_json(

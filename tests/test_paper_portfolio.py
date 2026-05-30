@@ -61,7 +61,7 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertAlmostEqual(summary["realized_pnl"], 19.58)
             self.assertAlmostEqual(summary["net_pnl"], 19.58)
 
-    def test_initial_inventory_release_sell_is_excluded_until_first_buy(self) -> None:
+    def test_initial_inventory_release_sell_is_excluded_until_first_sell(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             portfolio = PaperPortfolio(
                 quote_asset="JPY",
@@ -115,6 +115,7 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertEqual(buy["status"], "PAPER_FILLED")
             snapshot = portfolio.load_snapshot()
             self.assertFalse(snapshot.activation_state["XRPJPY"]["initial_inventory_release"]["enabled"])
+            self.assertAlmostEqual(snapshot.activation_state["XRPJPY"]["initial_inventory_release"].get("remaining_quantity"), 3.0)
 
             second_sell = portfolio.apply_order(
                 OrderRequest(symbol="XRPJPY", side="SELL", order_type="MARKET", quantity=1.0),
@@ -122,6 +123,10 @@ class PaperPortfolioTests(unittest.TestCase):
             )
             self.assertGreater(second_sell["realized_pnl_delta"], 0.0)
             self.assertAlmostEqual(second_sell["excluded_realized_pnl_delta"], 0.0)
+
+            snapshot = portfolio.load_snapshot()
+            self.assertAlmostEqual(snapshot.activation_state["XRPJPY"]["initial_inventory_release"].get("remaining_quantity"), 3.0)
+            self.assertTrue(snapshot.activation_state["XRPJPY"]["initial_inventory_release"].get("completed"))
 
     def test_apply_order_blocks_notional_below_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
