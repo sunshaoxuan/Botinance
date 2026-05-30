@@ -1091,7 +1091,7 @@ INDEX_HTML = """<!doctype html>
       <section class="tab-panel" id="tab-ai">
         <div class="page-grid-2">
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">GPT-5.5 市场判断</div><div class="panel-subtitle">分析结论、市场状态与风险提示</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">大模型市场判断</div><div class="panel-subtitle">分析结论、市场状态与风险提示</div></div></div>
             <div class="panel-body" id="aiSummaryCard"></div>
           </article>
           <article class="panel">
@@ -1962,7 +1962,7 @@ INDEX_HTML = """<!doctype html>
       const aiVerdict = c.aiRisk.allow_entry === false ? "AI 否决入场" : "AI 未否决";
 
       els.aiSummaryCard.innerHTML = kvRows([
-        ["模型", escapeHtml(c.llm.model || c.latest.llm_model || "GPT-5.5 / 兼容端点")],
+        ["模型", escapeHtml(c.llm.model || c.latest.llm_model || "模型未命中，显示兼容端点")],
         ["市场状态", escapeHtml(marketState)],
         ["行动偏向", escapeHtml(actionBias)],
         ["风险提示", escapeHtml(riskNote)],

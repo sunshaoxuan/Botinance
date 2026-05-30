@@ -267,7 +267,7 @@ def load_settings() -> Settings:
         dry_run=_parse_bool(os.getenv("DRY_RUN"), True),
         llm_base_url=_normalize_base_url(os.getenv("LLM_BASE_URL", "").strip()),
         llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
-        llm_model=os.getenv("LLM_MODEL", "gpt-5.5").strip(),
+        llm_model=os.getenv("LLM_MODEL", "5.3-Codex-Spark").strip(),
         llm_timeout_seconds=int(os.getenv("LLM_TIMEOUT_SECONDS", "20")),
         llm_fallback_enabled=_parse_bool(os.getenv("LLM_FALLBACK_ENABLED"), True),
         llm_fallback_provider=os.getenv("LLM_FALLBACK_PROVIDER", "ollama").strip().lower(),
