@@ -249,6 +249,35 @@ class InventorySkewOrderProposalEngine:
         )
 
     def generate(self, context: PolicyContext, policy_state: str, skew: InventorySkewSummary) -> List[OrderProposal]:
+        initial_release = self._initial_inventory_release(context)
+        if initial_release > 0 and context.has_position and context.target_inventory.allowed_sell_quantity > 0:
+            cash_deficit = max(0.0, context.target_inventory.min_cash_reserve - context.quote_balance)
+            target_notional = max(self.settings.order_target_notional, cash_deficit)
+            quantity = min(
+                context.base_balance,
+                context.target_inventory.allowed_sell_quantity,
+                initial_release,
+                target_notional / context.price if context.price > 0 else 0.0,
+            )
+            if quantity > 0:
+                return [
+                    OrderProposal(
+                        symbol=context.symbol,
+                        side="SELL",
+                        trigger="initial_inventory_release_sell",
+                        ladder_group="initial_release",
+                        quantity=quantity,
+                        notional=quantity * context.price,
+                        urgent=True,
+                        tier_index=0,
+                        target_spread_pct=0.0,
+                        target_fraction=1.0,
+                        score=max(context.composite_decision.sell_score, 1.0),
+                        reason_cn="初始真实库存释放，首笔成交盈亏不计入 Boti 操作盈亏",
+                        source="initial_inventory_release",
+                    )
+                ]
+
         if policy_state == "RISK_REDUCTION" and context.has_position and context.exit_reason:
             if context.exit_reason == "emergency_stop":
                 sell_fraction = self.settings.exit_emergency_stop_fraction
@@ -445,6 +474,16 @@ class InventorySkewOrderProposalEngine:
         return merged
 
     @staticmethod
+    def _initial_inventory_release(context: PolicyContext) -> float:
+        release = context.activation_state.get("initial_inventory_release")
+        if not isinstance(release, dict) or not release.get("enabled"):
+            return 0.0
+        try:
+            return max(0.0, float(release.get("remaining_quantity", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
+
+    @staticmethod
     def _merge_group(group: Sequence[OrderProposal]) -> OrderProposal:
         first = group[0]
         notional = sum(item.notional for item in group)
@@ -614,6 +653,30 @@ class OrderProposalFilter:
             if self._has_duplicate_open_order(proposal, context.open_orders):
                 return self._blocked(proposal, "duplicate_open_ladder_order", "同一方向、触发源和梯队已有挂单，保持原挂单")
         if proposal.side.upper() == "SELL":
+            if proposal.trigger == "initial_inventory_release_sell":
+                reserved_base = sum(
+                    order.reserved_base for order in context.open_orders if order.side.upper() == "SELL"
+                )
+                if proposal.quantity > max(0.0, context.base_balance - reserved_base):
+                    return self._blocked(proposal, "base_balance_insufficient", "可卖持仓不足，不能提交初始库存释放单")
+                if self._has_duplicate_open_order(proposal, context.open_orders):
+                    return self._blocked(proposal, "duplicate_open_ladder_order", "初始库存释放单已存在，等待触价")
+                return ProposalFilterResult(
+                    symbol=proposal.symbol,
+                    side=proposal.side,
+                    trigger=proposal.trigger,
+                    ladder_group=proposal.ladder_group,
+                    allowed=True,
+                    reason="initial_inventory_release_allowed",
+                    reason_cn="初始库存释放单通过，首笔释放盈亏不计入 Boti 操作盈亏",
+                    quantity=proposal.quantity,
+                    notional=proposal.notional,
+                    net_edge_pct=0.0,
+                    required_edge_pct=0.0,
+                    pair_id=proposal.pair_id,
+                    pair_role=proposal.pair_role,
+                    expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
+                )
             if (
                 context.direction_decision is not None
                 and context.price * (1.0 + proposal.target_spread_pct) < context.direction_decision.sell_zone_price

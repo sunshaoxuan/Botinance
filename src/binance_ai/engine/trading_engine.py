@@ -1227,7 +1227,18 @@ class TradingEngine:
         if quantity <= 0 or quantity < filters.min_qty:
             return None
         side = proposal.side.upper()
-        raw_limit = current_price * (1.0 - proposal.target_spread_pct) if side == "BUY" else current_price * (1.0 + proposal.target_spread_pct)
+        if proposal.urgent:
+            bid = current_price
+            ask = current_price
+            try:
+                ticker = self.client.get_order_book_ticker(proposal.symbol)
+                bid = float(ticker.get("bid_price") or current_price)
+                ask = float(ticker.get("ask_price") or current_price)
+            except Exception:  # noqa: BLE001 - deterministic fallback for paper tests.
+                pass
+            raw_limit = ask * (1.0 + self.settings.order_urgent_cross_pct) if side == "BUY" else bid * (1.0 - self.settings.order_urgent_cross_pct)
+        else:
+            raw_limit = current_price * (1.0 - proposal.target_spread_pct) if side == "BUY" else current_price * (1.0 + proposal.target_spread_pct)
         quantize_price = getattr(self.client, "quantize_price", None)
         limit_price = (
             quantize_price(raw_limit, getattr(filters, "tick_size", 0.0))
@@ -1412,14 +1423,31 @@ class TradingEngine:
             ai_allow_open_order = ai_assessment.allow_entry
             if str(getattr(open_order, "trigger", "")) == "grid_buyback" and not self.settings.ai_can_cancel_buyback:
                 ai_allow_open_order = not ai_extreme_risk
-            open_order_action = self.executor.classify_open_order_action(
-                open_order,
-                current_price=price,
-                timestamp_ms=timestamp_ms,
-                signal_action=signal_action,
-                ai_allow_entry=ai_allow_open_order,
-                ai_extreme_risk=ai_extreme_risk,
-            )
+            if (
+                self._initial_inventory_release_remaining(symbol) > 0
+                and str(getattr(open_order, "side", "")).upper() == "SELL"
+                and str(getattr(open_order, "trigger", "")) != "initial_inventory_release_sell"
+            ):
+                open_order_action = {
+                    "action": "REPRICE",
+                    "reason": "initial_inventory_release_reprice_to_touch",
+                    "is_stale": False,
+                    "target_spread_pct": float(getattr(open_order, "target_spread_pct", 0.0) or 0.0),
+                    "current_spread_pct": 0.0,
+                    "spread_delta_pct": 0.0,
+                    "reprice_tolerance_pct": 0.0,
+                    "age_seconds": max(0.0, (timestamp_ms - int(getattr(open_order, "created_at_ms", 0) or 0)) / 1000.0),
+                    "compare_mode": "initial_inventory_release",
+                }
+            else:
+                open_order_action = self.executor.classify_open_order_action(
+                    open_order,
+                    current_price=price,
+                    timestamp_ms=timestamp_ms,
+                    signal_action=signal_action,
+                    ai_allow_entry=ai_allow_open_order,
+                    ai_extreme_risk=ai_extreme_risk,
+                )
             action = str(open_order_action.get("action", "KEEP"))
             reason = str(open_order_action.get("reason", "open_order_waiting_for_touch"))
             actions.append(
@@ -1606,6 +1634,16 @@ class TradingEngine:
         if float(state.get("pending_buyback_quantity", 0.0) or 0.0) > 0:
             return decision_state if decision_state else "RELEASED_WAIT_BUYBACK"
         return decision_state or "NORMAL"
+
+    def _initial_inventory_release_remaining(self, symbol: str) -> float:
+        state = self._activation_state_for_symbol(symbol)
+        release = state.get("initial_inventory_release")
+        if not isinstance(release, dict) or not release.get("enabled"):
+            return 0.0
+        try:
+            return max(0.0, float(release.get("remaining_quantity", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            return 0.0
 
     def _buyback_cooldown_remaining_bars(self, *, symbol: str, timestamp_ms: int) -> int:
         state = self._activation_state_for_symbol(symbol)
