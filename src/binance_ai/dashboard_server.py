@@ -3792,6 +3792,12 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "sell_zone_min_premium_pct": settings.sell_zone_min_premium_pct,
         "min_pair_net_edge_pct": settings.min_pair_net_edge_pct,
         "allow_risk_sell_below_sell_zone": settings.allow_risk_sell_below_sell_zone,
+        "sell_cost_protection_enabled": settings.sell_cost_protection_enabled,
+        "sell_cost_protection_buffer_pct": settings.sell_cost_protection_buffer_pct,
+        "allow_below_cost_sell_for_rebalance": settings.allow_below_cost_sell_for_rebalance,
+        "post_initial_release_buyback_required": settings.post_initial_release_buyback_required,
+        "pair_counter_buyback_enabled": settings.pair_counter_buyback_enabled,
+        "pair_counter_buyback_min_net_edge_pct": settings.pair_counter_buyback_min_net_edge_pct,
         "scenario_engine_enabled": settings.scenario_engine_enabled,
         "trend_probe_entry_fraction": settings.trend_probe_entry_fraction,
         "recovery_entry_fraction": settings.recovery_entry_fraction,
@@ -4996,6 +5002,13 @@ def _build_decision_state_payload(
             "decision_state": decision_state,
             "pending_buyback_quantity": pending,
             "last_grid_sell_price": _coerce_float(raw_state.get("last_grid_sell_price")),
+            "last_release_price": _coerce_float(raw_state.get("last_release_price")),
+            "target_buyback_price": _coerce_float(raw_state.get("target_buyback_price")),
+            "post_initial_release_mode": raw_state.get("post_initial_release_mode", ""),
+            "effective_cost_price": _coerce_float(raw_state.get("real_average_entry_price")),
+            "cost_protection_price": _coerce_float(raw_state.get("real_average_entry_price")) * (
+                1.0 + _coerce_float(runtime_config.get("sell_cost_protection_buffer_pct"), 0.0015)
+            ),
             "partial_stop_count": _coerce_int(raw_state.get("partial_stop_count")),
         }
         guard[str(symbol)] = {
@@ -5160,6 +5173,18 @@ def build_ops_summary_payload(runtime_dir: Path, hours: int) -> Dict[str, Any]:
     pair_stats = paper_state.get("pair_profitability_stats", {}) if isinstance(paper_state.get("pair_profitability_stats"), dict) else {}
     positive_pairs = sum(_coerce_int(item.get("positive_count")) for item in pair_stats.values() if isinstance(item, dict))
     negative_pairs = sum(_coerce_int(item.get("negative_count")) for item in pair_stats.values() if isinstance(item, dict))
+    activation_state = paper_state.get("activation_state", {}) if isinstance(paper_state.get("activation_state"), dict) else {}
+    pending_buyback_quantity = 0.0
+    for item in activation_state.values():
+        if isinstance(item, dict):
+            pending_buyback_quantity += _coerce_float(item.get("pending_buyback_quantity"))
+    negative_realized_sell_count = sum(
+        1
+        for item in recent_fills
+        if str(item.get("side", "")).upper() == "SELL"
+        and _coerce_float(item.get("realized_pnl_delta")) < 0
+        and _coerce_float(item.get("excluded_initial_inventory_quantity")) <= 0
+    )
     return {
         "status": "ok" if latest_report else "degraded",
         "hours": hours,
@@ -5170,6 +5195,11 @@ def build_ops_summary_payload(runtime_dir: Path, hours: int) -> Dict[str, Any]:
         "completed_pair_count": len(paper_state.get("completed_order_pairs", [])) if isinstance(paper_state.get("completed_order_pairs", []), list) else 0,
         "positive_pair_count": positive_pairs,
         "negative_pair_count": negative_pairs,
+        "negative_realized_sell_count": negative_realized_sell_count,
+        "pending_buyback_quantity": pending_buyback_quantity,
+        "below_cost_sell_block_count": sum(
+            1 for item in recent_events if str(item.get("reason", "")).lower() == "below_cost_sell_blocked"
+        ),
         "current_pair_locks": paper_state.get("pair_locks", {}),
         "current_open_pairs": list((paper_state.get("open_order_pairs") or {}).values()) if isinstance(paper_state.get("open_order_pairs"), dict) else [],
     }

@@ -507,6 +507,7 @@ class TradingEngine:
                     exit_reason=exit_reason,
                     has_position=has_position,
                     base_balance=base_balance,
+                    position_average_entry_price=float(position.average_entry_price) if position is not None else 0.0,
                     quote_balance=account.balance_of(self.settings.quote_asset),
                     filters=filters,
                     target_inventory=target_inventory,

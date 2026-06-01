@@ -759,6 +759,13 @@ class PostgresRuntimeStore:
         rejected_count = sum(1 for item in events if str(item.get("status", "")).upper() == "REJECTED")
         canceled_count = sum(1 for item in events if str(item.get("status", "")).upper() in {"CANCELED", "EXPIRED"})
         fee_total = sum(_num(item.get("fee")) for item in fills)
+        negative_realized_sell_count = sum(
+            1
+            for item in fills
+            if str(item.get("side", "")).upper() == "SELL"
+            and _num(item.get("realized_pnl_delta")) < 0
+            and _num(item.get("excluded_initial_inventory_quantity")) <= 0
+        )
         self.last_query_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": "ok",
@@ -771,6 +778,11 @@ class PostgresRuntimeStore:
             "completed_pair_count": 0,
             "positive_pair_count": 0,
             "negative_pair_count": 0,
+            "negative_realized_sell_count": negative_realized_sell_count,
+            "pending_buyback_quantity": 0.0,
+            "below_cost_sell_block_count": sum(
+                1 for item in events if str(item.get("reason", "")).lower() == "below_cost_sell_blocked"
+            ),
             "current_pair_locks": {},
             "current_open_pairs": [],
             "query_ms": self.last_query_ms,

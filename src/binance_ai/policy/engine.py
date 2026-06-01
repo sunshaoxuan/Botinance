@@ -44,6 +44,7 @@ class PolicyContext:
     direction_decision: DirectionDecision | None = None
     scenario_decision: ScenarioDecision | None = None
     pair_profitability_stats: Dict[str, object] | None = None
+    position_average_entry_price: float = 0.0
 
 
 class ProtectionManager:
@@ -319,7 +320,10 @@ class InventorySkewOrderProposalEngine:
         cooldown_active = cooldown_until > context.timestamp_ms
         risk_exit_reentry_price = self._float(context.activation_state.get("risk_exit_reentry_price"))
         risk_reentry_blocked = risk_exit_reentry_price > 0 and context.price > risk_exit_reentry_price
-        if pending_buyback > 0 or cooldown_active:
+        if pending_buyback > 0:
+            counter = self._counter_buyback_proposal(context, pending_buyback)
+            return [counter] if counter is not None else []
+        if cooldown_active:
             return []
 
         price_reference = (
@@ -518,6 +522,59 @@ class InventorySkewOrderProposalEngine:
             return 0.0
         return pending
 
+    def _counter_buyback_proposal(self, context: PolicyContext, pending_qty: float) -> OrderProposal | None:
+        if not self.settings.pair_counter_buyback_enabled:
+            return None
+        if context.quote_balance <= 0 or context.price <= 0:
+            return None
+        state = context.activation_state
+        release_price = self._float(state.get("last_release_price")) or self._float(state.get("last_grid_sell_price"))
+        target_price = self._float(state.get("target_buyback_price"))
+        release_trigger = str(state.get("last_release_trigger") or "")
+        if target_price <= 0 and release_trigger in {"target_rebalance_sell", "uptrend_take_profit"} and release_price > 0:
+            target_price = release_price * (
+                1.0
+                - self.settings.pair_counter_buyback_min_net_edge_pct
+                - (2.0 * self.settings.maker_fee_pct)
+                - self.settings.pair_edge_safety_buffer_pct
+            )
+        if target_price <= 0:
+            return None
+        target_price = min(target_price, context.price)
+        notional = min(
+            context.quote_balance,
+            self.settings.order_target_notional,
+            pending_qty * target_price,
+        )
+        if notional <= 0:
+            return None
+        spread = max(0.0, context.price / target_price - 1.0)
+        pair_id = str(state.get("last_release_pair_id") or f"{context.symbol}:counter_buyback:{context.timestamp_ms}")
+        edge = (
+            self._pair_net_edge_pct(target_price, release_price)
+            if release_price > target_price > 0
+            else self.settings.pair_counter_buyback_min_net_edge_pct
+        )
+        return OrderProposal(
+            symbol=context.symbol,
+            side="BUY",
+            trigger="pair_counter_buyback",
+            ladder_group="buyback",
+            quantity=notional / target_price,
+            notional=notional,
+            urgent=False,
+            tier_index=0,
+            target_spread_pct=spread,
+            target_fraction=1.0,
+            score=max(context.composite_decision.buy_score, 0.75),
+            reason_cn="已有释放卖出等待回补，按目标回补价生成买入挂单",
+            source="pair_counter_buyback",
+            pair_id=pair_id,
+            pair_role="bid",
+            intended_counter_price=release_price,
+            expected_pair_net_edge_pct=edge,
+        )
+
     def _spread_levels(self, context: PolicyContext) -> List[float]:
         base = self._parse_spread_levels()
         scenario = context.scenario_decision
@@ -633,7 +690,8 @@ class OrderProposalFilter:
                     expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
                 )
             buy_limit = context.price * (1.0 - proposal.target_spread_pct)
-            if context.direction_decision is not None and buy_limit > context.direction_decision.buy_zone_price:
+            buyback_trigger = proposal.trigger in {"pair_counter_buyback", "grid_buyback"}
+            if context.direction_decision is not None and buy_limit > context.direction_decision.buy_zone_price and not buyback_trigger:
                 scenario_state = context.scenario_decision.scenario_state if context.scenario_decision is not None else ""
                 if proposal.trigger not in {"trend_probe_entry", "pullback_entry", "recovery_entry"} or scenario_state not in {
                     "UPTREND_PROBE_ENTRY",
@@ -680,7 +738,7 @@ class OrderProposalFilter:
             if (
                 context.direction_decision is not None
                 and context.price * (1.0 + proposal.target_spread_pct) < context.direction_decision.sell_zone_price
-                and proposal.trigger not in {"stop_loss", "emergency_stop"}
+                and not self._is_risk_sell(proposal)
             ):
                 return self._blocked(
                     proposal,
@@ -692,7 +750,10 @@ class OrderProposalFilter:
             )
             if proposal.quantity > max(0.0, context.base_balance - reserved_base):
                 return self._blocked(proposal, "base_balance_insufficient", "可卖持仓不足，不能提交卖单提案")
-            if proposal.trigger not in {"stop_loss", "emergency_stop"}:
+            cost_block = self._cost_protection_block(proposal, context)
+            if cost_block is not None:
+                return cost_block
+            if not self._is_risk_sell(proposal):
                 if proposal.expected_pair_net_edge_pct < self.settings.min_pair_net_edge_pct:
                     return ProposalFilterResult(
                         symbol=proposal.symbol,
@@ -739,6 +800,63 @@ class OrderProposalFilter:
             if lock.lock_type == "PAIR_LOCK_AFTER_STOP" and proposal.side.upper() == "BUY":
                 return lock
         return None
+
+    def _cost_protection_block(
+        self,
+        proposal: OrderProposal,
+        context: PolicyContext,
+    ) -> ProposalFilterResult | None:
+        if not self.settings.sell_cost_protection_enabled:
+            return None
+        if self._is_risk_sell(proposal) and self.settings.allow_below_cost_sell_for_risk_exit:
+            return None
+        if self.settings.allow_below_cost_sell_for_rebalance:
+            return None
+        cost_price = self._effective_cost_price(context)
+        if cost_price <= 0:
+            return None
+        sell_price = context.price * (1.0 + proposal.target_spread_pct)
+        protection_price = cost_price * (1.0 + self.settings.sell_cost_protection_buffer_pct)
+        if sell_price >= protection_price:
+            return None
+        return ProposalFilterResult(
+            symbol=proposal.symbol,
+            side=proposal.side,
+            trigger=proposal.trigger,
+            ladder_group=proposal.ladder_group,
+            allowed=False,
+            reason="below_cost_sell_blocked",
+            reason_cn=(
+                f"普通卖出价 {sell_price:.4f} 低于成本保护线 {protection_price:.4f}，"
+                "拦截库存再平衡卖出，避免把存量亏损确认为 Boti 已实现亏损"
+            ),
+            quantity=proposal.quantity,
+            notional=proposal.notional,
+            net_edge_pct=proposal.expected_pair_net_edge_pct,
+            required_edge_pct=self.settings.min_pair_net_edge_pct,
+            pair_id=proposal.pair_id,
+            pair_role=proposal.pair_role,
+            expected_pair_net_edge_pct=proposal.expected_pair_net_edge_pct,
+        )
+
+    def _effective_cost_price(self, context: PolicyContext) -> float:
+        real_cost = self._float(context.activation_state.get("real_average_entry_price"))
+        if real_cost > 0:
+            return real_cost
+        if context.position_average_entry_price > 0:
+            return context.position_average_entry_price
+        return self._float(context.activation_state.get("synced_average_entry_price"))
+
+    @staticmethod
+    def _is_risk_sell(proposal: OrderProposal) -> bool:
+        return proposal.trigger in {"stop_loss", "emergency_stop", "trailing_stop", "max_hold_exit"}
+
+    @staticmethod
+    def _float(value: object) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return 0.0
 
     @staticmethod
     def _has_duplicate_open_order(proposal: OrderProposal, open_orders: Sequence[ManagedOrder]) -> bool:

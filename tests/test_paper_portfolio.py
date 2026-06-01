@@ -107,6 +107,7 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertAlmostEqual(snapshot.realized_pnl, 0.0)
             release = snapshot.activation_state["XRPJPY"]["initial_inventory_release"]
             self.assertAlmostEqual(release["remaining_quantity"], 3.0)
+            self.assertEqual(snapshot.activation_state["XRPJPY"]["post_initial_release_mode"], "CASH_RELEASED_WAIT_BUYBACK")
 
             buy = portfolio.apply_order(
                 OrderRequest(symbol="XRPJPY", side="BUY", order_type="MARKET", quantity=1.0),
@@ -127,6 +128,73 @@ class PaperPortfolioTests(unittest.TestCase):
             snapshot = portfolio.load_snapshot()
             self.assertAlmostEqual(snapshot.activation_state["XRPJPY"]["initial_inventory_release"].get("remaining_quantity"), 3.0)
             self.assertTrue(snapshot.activation_state["XRPJPY"]["initial_inventory_release"].get("completed"))
+
+    def test_target_rebalance_sell_registers_counter_buyback_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=10000.0,
+                state_path=Path(tmpdir) / "paper_state.json",
+                fee_rate=0.001,
+            )
+            portfolio.save_snapshot(
+                PortfolioSnapshot(
+                    quote_asset="JPY",
+                    quote_balance=1000.0,
+                    initial_quote_balance=10000.0,
+                    positions={
+                        "XRPJPY": PositionSnapshot(
+                            quantity=100.0,
+                            average_entry_price=213.22,
+                            highest_price=214.0,
+                        )
+                    },
+                    activation_state={"XRPJPY": {"real_average_entry_price": 213.22}},
+                )
+            )
+
+            result = portfolio.apply_order(
+                OrderRequest(
+                    symbol="XRPJPY",
+                    side="SELL",
+                    order_type="MARKET",
+                    quantity=10.0,
+                    trigger="target_rebalance_sell",
+                    pair_id="pair-1",
+                    pair_role="ask",
+                    intended_counter_price=211.5,
+                ),
+                fill_price=213.5,
+                timestamp_ms=1_000,
+            )
+
+            self.assertEqual(result["status"], "PAPER_FILLED")
+            snapshot = portfolio.load_snapshot()
+            state = snapshot.activation_state["XRPJPY"]
+            self.assertAlmostEqual(state["pending_buyback_quantity"], 10.0)
+            self.assertAlmostEqual(state["last_release_price"], 213.5)
+            self.assertAlmostEqual(state["target_buyback_price"], 211.5)
+            self.assertEqual(state["last_release_pair_id"], "pair-1")
+            self.assertEqual(state["decision_state"], "RELEASED_WAIT_BUYBACK")
+
+            buyback = portfolio.apply_order(
+                OrderRequest(
+                    symbol="XRPJPY",
+                    side="BUY",
+                    order_type="MARKET",
+                    quantity=4.0,
+                    trigger="pair_counter_buyback",
+                    pair_id="pair-1",
+                    pair_role="bid",
+                ),
+                fill_price=211.5,
+                timestamp_ms=2_000,
+            )
+
+            self.assertEqual(buyback["status"], "PAPER_FILLED")
+            state = portfolio.load_snapshot().activation_state["XRPJPY"]
+            self.assertAlmostEqual(state["pending_buyback_quantity"], 6.0)
+            self.assertEqual(state["decision_state"], "RELEASED_WAIT_BUYBACK")
 
     def test_apply_order_blocks_notional_below_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -329,6 +329,13 @@ class PortfolioStateEngine:
                     highest_price=max(existing.highest_price or existing.average_entry_price, fill_price),
                 )
             positions[order.symbol] = updated_position
+            if order.trigger in {"pair_counter_buyback", "grid_buyback"}:
+                activation_state = self._apply_buyback_fill_state(
+                    activation_state=activation_state,
+                    symbol=order.symbol,
+                    quantity=order.quantity,
+                    timestamp_ms=applied_timestamp_ms,
+                )
             updated_snapshot = replace(
                 snapshot,
                 quote_balance=snapshot.quote_balance - gross_cost,
@@ -368,6 +375,7 @@ class PortfolioStateEngine:
                         "closed_by": "first_paper_sell",
                         "closed_at_ms": applied_timestamp_ms,
                     }
+                    symbol_state["post_initial_release_mode"] = "CASH_RELEASED_WAIT_BUYBACK"
                 else:
                     symbol_state["initial_inventory_release"] = {
                         **initial_release,
@@ -395,6 +403,20 @@ class PortfolioStateEngine:
                 realized_pnl=snapshot.realized_pnl + realized_pnl_delta,
                 activation_state=activation_state,
             )
+            if self._should_register_release_buyback(order.trigger):
+                updated_snapshot = replace(
+                    updated_snapshot,
+                    activation_state=self._register_release_buyback_state(
+                        activation_state=updated_snapshot.activation_state,
+                        symbol=order.symbol,
+                        quantity=order.quantity,
+                        fill_price=fill_price,
+                        timestamp_ms=applied_timestamp_ms,
+                        trigger=order.trigger,
+                        pair_id=order.pair_id,
+                        intended_counter_price=order.intended_counter_price,
+                    ),
+                )
 
         result = {
             "status": "PAPER_FILLED",
@@ -425,6 +447,61 @@ class PortfolioStateEngine:
         fill_record["price"] = fill_price
         updated_snapshot = replace(updated_snapshot, fills=[*snapshot.fills, fill_record])
         return updated_snapshot, result
+
+    def _register_release_buyback_state(
+        self,
+        *,
+        activation_state: Dict[str, Dict[str, object]],
+        symbol: str,
+        quantity: float,
+        fill_price: float,
+        timestamp_ms: int,
+        trigger: str,
+        pair_id: str,
+        intended_counter_price: float,
+    ) -> Dict[str, Dict[str, object]]:
+        state_all = dict(activation_state)
+        state = dict(state_all.get(symbol, {}) if isinstance(state_all.get(symbol, {}), dict) else {})
+        pending = float(state.get("pending_buyback_quantity", 0.0) or 0.0)
+        target_price = float(intended_counter_price or 0.0)
+        if target_price <= 0 and fill_price > 0:
+            target_price = fill_price * (1.0 - 0.0045 - (2.0 * self.fee_rate) - 0.0005)
+        state["pending_buyback_quantity"] = max(0.0, pending + quantity)
+        state["last_release_price"] = fill_price
+        state["last_grid_sell_price"] = fill_price
+        state["target_buyback_price"] = max(0.0, target_price)
+        state["last_release_pair_id"] = pair_id
+        state["last_release_trigger"] = trigger
+        state["last_release_timestamp_ms"] = timestamp_ms
+        state["decision_state"] = "RELEASED_WAIT_BUYBACK"
+        state_all[symbol] = state
+        return state_all
+
+    def _apply_buyback_fill_state(
+        self,
+        *,
+        activation_state: Dict[str, Dict[str, object]],
+        symbol: str,
+        quantity: float,
+        timestamp_ms: int,
+    ) -> Dict[str, Dict[str, object]]:
+        state_all = dict(activation_state)
+        state = dict(state_all.get(symbol, {}) if isinstance(state_all.get(symbol, {}), dict) else {})
+        pending = max(0.0, float(state.get("pending_buyback_quantity", 0.0) or 0.0) - quantity)
+        state["pending_buyback_quantity"] = pending
+        state["last_buyback_fill_timestamp_ms"] = timestamp_ms
+        if pending <= 1e-9:
+            state["target_buyback_price"] = 0.0
+            state["last_release_pair_id"] = ""
+            state["decision_state"] = "NORMAL"
+        else:
+            state["decision_state"] = "RELEASED_WAIT_BUYBACK"
+        state_all[symbol] = state
+        return state_all
+
+    @staticmethod
+    def _should_register_release_buyback(trigger: str) -> bool:
+        return trigger in {"target_rebalance_sell", "uptrend_take_profit"}
 
     def equity_summary(self, snapshot: PortfolioSnapshot, mark_prices: Dict[str, float]) -> Dict[str, float]:
         market_value = 0.0
