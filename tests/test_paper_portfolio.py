@@ -196,6 +196,68 @@ class PaperPortfolioTests(unittest.TestCase):
             self.assertAlmostEqual(state["pending_buyback_quantity"], 6.0)
             self.assertEqual(state["decision_state"], "RELEASED_WAIT_BUYBACK")
 
+    def test_target_rebalance_pair_completes_after_counter_buyback_fill(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio(
+                quote_asset="JPY",
+                initial_quote_balance=10000.0,
+                state_path=Path(tmpdir) / "paper_state.json",
+                fee_rate=0.001,
+            )
+            portfolio.save_snapshot(
+                PortfolioSnapshot(
+                    quote_asset="JPY",
+                    quote_balance=1000.0,
+                    initial_quote_balance=10000.0,
+                    positions={
+                        "XRPJPY": PositionSnapshot(
+                            quantity=100.0,
+                            average_entry_price=200.0,
+                            highest_price=214.0,
+                        )
+                    },
+                )
+            )
+            ask = OrderRequest(
+                symbol="XRPJPY",
+                side="SELL",
+                order_type="LIMIT",
+                quantity=10.0,
+                limit_price=213.5,
+                client_order_id="ask-1",
+                trigger="target_rebalance_sell",
+                pair_id="pair-1",
+                pair_role="ask",
+                intended_counter_price=211.5,
+            )
+            result, _ = portfolio.submit_limit_order(ask, timestamp_ms=1_000)
+            self.assertEqual(result["status"], "ORDER_OPEN")
+            fill, _ = portfolio.fill_open_order("ask-1", fill_price=213.5, timestamp_ms=2_000)
+            self.assertEqual(fill["status"], "PAPER_FILLED")
+
+            bid = OrderRequest(
+                symbol="XRPJPY",
+                side="BUY",
+                order_type="LIMIT",
+                quantity=10.0,
+                limit_price=211.5,
+                client_order_id="bid-1",
+                trigger="pair_counter_buyback",
+                pair_id="pair-1",
+                pair_role="bid",
+                intended_counter_price=213.5,
+            )
+            result, _ = portfolio.submit_limit_order(bid, timestamp_ms=3_000)
+            self.assertEqual(result["status"], "ORDER_OPEN")
+            fill, _ = portfolio.fill_open_order("bid-1", fill_price=211.5, timestamp_ms=4_000)
+
+            snapshot = portfolio.load_snapshot()
+            self.assertEqual(fill["status"], "PAPER_FILLED")
+            self.assertEqual(len(snapshot.completed_order_pairs), 1)
+            self.assertEqual(snapshot.completed_order_pairs[0]["pair_id"], "pair-1")
+            self.assertGreater(snapshot.completed_order_pairs[0]["completed_pair_net_edge_pct"], 0.0)
+            self.assertAlmostEqual(snapshot.activation_state["XRPJPY"]["pending_buyback_quantity"], 0.0)
+
     def test_apply_order_blocks_notional_below_minimum(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             portfolio = PaperPortfolio(

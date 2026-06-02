@@ -436,6 +436,107 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertEqual(len(decision.order_proposals), 1)
         self.assertEqual(decision.order_proposals[0].trigger, "stop_loss")
 
+    def test_emergency_stop_first_stage_sells_only_configured_fraction(self) -> None:
+        decision = PolicyEngine(_settings()).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=198.0,
+                candles=_candles(198.0),
+                signal=TradeSignal("XRPJPY", SignalAction.SELL, 0.9, "test"),
+                exit_reason="emergency_stop",
+                has_position=True,
+                base_balance=100.0,
+                position_average_entry_price=213.22,
+                quote_balance=10000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(current_fraction=0.75, allowed_sell_quantity=100.0),
+                composite_decision=_composite(recommended_action="RISK_EXIT", risk_score=0.95),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.2, 1.0, ""),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+            )
+        )
+
+        self.assertEqual(decision.order_proposals[0].trigger, "emergency_stop")
+        self.assertAlmostEqual(decision.order_proposals[0].quantity, 35.0)
+
+    def test_emergency_stop_ai_extreme_allows_full_exit(self) -> None:
+        decision = PolicyEngine(_settings()).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=198.0,
+                candles=_candles(198.0),
+                signal=TradeSignal("XRPJPY", SignalAction.SELL, 0.9, "test"),
+                exit_reason="emergency_stop",
+                has_position=True,
+                base_balance=100.0,
+                position_average_entry_price=213.22,
+                quote_balance=10000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(current_fraction=0.75, allowed_sell_quantity=100.0),
+                composite_decision=_composite(recommended_action="RISK_EXIT", risk_score=0.95),
+                ai_assessment=AiRiskAssessment("XRPJPY", "EXTREME_RISK", False, 0.95, 1.0, "extreme"),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+            )
+        )
+
+        self.assertAlmostEqual(decision.order_proposals[0].quantity, 100.0)
+
+    def test_emergency_stop_waits_for_second_stage_confirmation(self) -> None:
+        decision = PolicyEngine(_settings()).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=198.0,
+                candles=_candles(198.0),
+                signal=TradeSignal("XRPJPY", SignalAction.SELL, 0.9, "test"),
+                exit_reason="emergency_stop",
+                has_position=True,
+                base_balance=100.0,
+                position_average_entry_price=213.22,
+                quote_balance=10000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(current_fraction=0.75, allowed_sell_quantity=100.0),
+                composite_decision=_composite(recommended_action="RISK_EXIT", risk_score=0.95),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.2, 1.0, ""),
+                open_orders=[],
+                activation_state={"risk_exit_stage": 1, "emergency_stop_confirmation_bars": 1},
+                timestamp_ms=10_000_000,
+            )
+        )
+
+        self.assertEqual(decision.policy_state, "RISK_REDUCTION")
+        self.assertEqual(decision.order_proposals, [])
+        self.assertEqual(decision.proposal_filter_results[0].reason, "proposal_size_zero")
+
+    def test_drawdown_guard_allows_recovery_probe_entry(self) -> None:
+        decision = PolicyEngine(_settings(min_effective_order_notional=100.0, order_target_notional=2000.0)).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=99.0,
+                candles=_candles(99.0),
+                signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "test"),
+                exit_reason=None,
+                has_position=True,
+                base_balance=1.0,
+                quote_balance=9000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(current_fraction=0.01, daily_realized_pnl=-200.0, available_buy_notional=4000.0),
+                composite_decision=_composite(recommended_action="HOLD", buy_score=0.55),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.2, 1.0, ""),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(current_price=99.0, fair_value=100.0, buy_zone_price=99.5, expected_net_edge_pct=0.006),
+            )
+        )
+
+        self.assertEqual(decision.policy_state, "RECOVERY_PROBE_ENTRY")
+        self.assertEqual(len(decision.order_proposals), 1)
+        self.assertEqual(decision.order_proposals[0].trigger, "recovery_probe_entry")
+
     def test_pending_buyback_generates_counter_buyback_proposal(self) -> None:
         decision = PolicyEngine(_settings(min_effective_order_notional=500.0, order_target_notional=2000.0)).evaluate(
             PolicyContext(

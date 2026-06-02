@@ -766,6 +766,22 @@ class PostgresRuntimeStore:
             and _num(item.get("realized_pnl_delta")) < 0
             and _num(item.get("excluded_initial_inventory_quantity")) <= 0
         )
+        risk_exit_triggers = {"stop_loss", "emergency_stop", "trailing_stop", "max_hold_exit"}
+        risk_exit_fill_count = sum(1 for item in fills if str(item.get("trigger", "")).lower() in risk_exit_triggers)
+        emergency_stop_quantity = sum(
+            _num(item.get("quantity")) for item in fills if str(item.get("trigger", "")).lower() == "emergency_stop"
+        )
+        recovery_probe_count = sum(1 for item in fills if str(item.get("trigger", "")).lower() == "recovery_probe_entry")
+        sell_pair_ids = {
+            str(item.get("pair_id"))
+            for item in fills
+            if str(item.get("side", "")).upper() == "SELL" and str(item.get("pair_id") or "")
+        }
+        buyback_pair_ids = {
+            str(item.get("pair_id"))
+            for item in fills
+            if str(item.get("trigger", "")).lower() in {"pair_counter_buyback", "grid_buyback"} and str(item.get("pair_id") or "")
+        }
         self.last_query_ms = int((time.monotonic() - started) * 1000)
         return {
             "status": "ok",
@@ -780,6 +796,11 @@ class PostgresRuntimeStore:
             "negative_pair_count": 0,
             "negative_realized_sell_count": negative_realized_sell_count,
             "pending_buyback_quantity": 0.0,
+            "risk_exit_fill_count": risk_exit_fill_count,
+            "emergency_stop_quantity": emergency_stop_quantity,
+            "recovery_probe_count": recovery_probe_count,
+            "unpaired_sell_count": len(sell_pair_ids - buyback_pair_ids),
+            "unpaired_buyback_count": len(buyback_pair_ids - sell_pair_ids),
             "below_cost_sell_block_count": sum(
                 1 for item in events if str(item.get("reason", "")).lower() == "below_cost_sell_blocked"
             ),

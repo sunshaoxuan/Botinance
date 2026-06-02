@@ -281,7 +281,7 @@ class InventorySkewOrderProposalEngine:
 
         if policy_state == "RISK_REDUCTION" and context.has_position and context.exit_reason:
             if context.exit_reason == "emergency_stop":
-                sell_fraction = self.settings.exit_emergency_stop_fraction
+                sell_fraction = self._emergency_stop_fraction(context)
             elif context.exit_reason == "stop_loss":
                 sell_fraction = self.settings.exit_stop_loss_fraction
             elif context.exit_reason == "take_profit":
@@ -308,6 +308,10 @@ class InventorySkewOrderProposalEngine:
                     pair_role="ask",
                 )
             ]
+
+        if policy_state == "RECOVERY_PROBE_ENTRY":
+            probe = self._recovery_probe_proposal(context)
+            return [probe] if probe is not None else []
 
         if not self.settings.pair_market_making_enabled:
             return []
@@ -575,6 +579,58 @@ class InventorySkewOrderProposalEngine:
             expected_pair_net_edge_pct=edge,
         )
 
+    def _recovery_probe_proposal(self, context: PolicyContext) -> OrderProposal | None:
+        if context.price <= 0 or context.quote_balance <= 0:
+            return None
+        if context.direction_decision is None:
+            return None
+        limit_price = min(context.price, context.direction_decision.buy_zone_price)
+        if limit_price <= 0:
+            return None
+        max_notional = context.target_inventory.total_equity * max(0.0, self.settings.recovery_probe_max_equity_fraction)
+        notional = min(
+            context.quote_balance,
+            context.target_inventory.available_buy_notional,
+            self.settings.order_target_notional,
+            max_notional,
+        )
+        if notional <= 0:
+            return None
+        spread = max(0.0, context.price / limit_price - 1.0)
+        pair_id = f"{context.symbol}:recovery_probe:{context.timestamp_ms}"
+        return OrderProposal(
+            symbol=context.symbol,
+            side="BUY",
+            trigger="recovery_probe_entry",
+            ladder_group="recovery_probe",
+            quantity=notional / limit_price,
+            notional=notional,
+            urgent=False,
+            tier_index=0,
+            target_spread_pct=spread,
+            target_fraction=1.0,
+            score=max(context.composite_decision.buy_score, 0.7),
+            reason_cn="亏损保护下的低风险恢复建仓，小额试探买入",
+            source="recovery_probe",
+            pair_id=pair_id,
+            pair_role="bid",
+            intended_counter_price=limit_price * (1.0 + self.settings.min_pair_net_edge_pct + (2.0 * self.settings.maker_fee_pct)),
+            expected_pair_net_edge_pct=max(context.direction_decision.expected_net_edge_pct, self.settings.min_pair_net_edge_pct),
+        )
+
+    def _emergency_stop_fraction(self, context: PolicyContext) -> float:
+        if self._ai_extreme(context.ai_assessment):
+            return min(1.0, max(0.0, self.settings.exit_emergency_stop_fraction))
+        stage = int(self._float(context.activation_state.get("risk_exit_stage")))
+        confirmations = int(self._float(context.activation_state.get("emergency_stop_confirmation_bars")))
+        if stage <= 0:
+            return min(1.0, max(0.0, self.settings.emergency_stop_max_fraction))
+        if confirmations >= max(1, self.settings.emergency_stop_full_exit_confirmation_bars):
+            return min(1.0, max(0.0, self.settings.emergency_stop_second_stage_fraction))
+        if self.settings.emergency_stop_full_exit_ai_extreme_only:
+            return 0.0
+        return min(1.0, max(0.0, self.settings.emergency_stop_max_fraction))
+
     def _spread_levels(self, context: PolicyContext) -> List[float]:
         base = self._parse_spread_levels()
         scenario = context.scenario_decision
@@ -617,6 +673,11 @@ class InventorySkewOrderProposalEngine:
             return float(value)
         except (TypeError, ValueError):
             return 0.0
+
+    @staticmethod
+    def _ai_extreme(assessment: AiRiskAssessment) -> bool:
+        text = f"{assessment.status} {assessment.veto_reason}".lower()
+        return assessment.risk_score >= 0.9 or "extreme" in text or "极端" in text
 
     @staticmethod
     def _clamp(value: float) -> float:
@@ -795,6 +856,8 @@ class OrderProposalFilter:
     def _blocking_lock(self, proposal: OrderProposal, locks: Sequence[ProtectionLock]) -> ProtectionLock | None:
         for lock in locks:
             if lock.lock_type in {"DRAWDOWN_GUARD", "STOPLOSS_GUARD", "AI_EXTREME_RISK", "LOW_PROFIT_PAIR_LOCK"}:
+                if lock.lock_type == "DRAWDOWN_GUARD" and proposal.trigger == "recovery_probe_entry":
+                    continue
                 if proposal.trigger not in {"stop_loss", "emergency_stop"}:
                     return lock
             if lock.lock_type == "PAIR_LOCK_AFTER_STOP" and proposal.side.upper() == "BUY":
@@ -850,6 +913,11 @@ class OrderProposalFilter:
     @staticmethod
     def _is_risk_sell(proposal: OrderProposal) -> bool:
         return proposal.trigger in {"stop_loss", "emergency_stop", "trailing_stop", "max_hold_exit"}
+
+    @staticmethod
+    def _ai_extreme(assessment: AiRiskAssessment) -> bool:
+        text = f"{assessment.status} {assessment.veto_reason}".lower()
+        return assessment.risk_score >= 0.9 or "extreme" in text or "极端" in text
 
     @staticmethod
     def _float(value: object) -> float:
@@ -927,6 +995,8 @@ class PolicyEngine:
         active_lock_types = {lock.lock_type for lock in locks if lock.active}
         if context.exit_reason in {"stop_loss", "emergency_stop"} or context.composite_decision.recommended_action == "RISK_EXIT":
             return "RISK_REDUCTION"
+        if "DRAWDOWN_GUARD" in active_lock_types and self._can_recovery_probe(context):
+            return "RECOVERY_PROBE_ENTRY"
         if {"STOPLOSS_GUARD", "DRAWDOWN_GUARD", "AI_EXTREME_RISK", "LOW_PROFIT_PAIR_LOCK"} & active_lock_types:
             return "OBSERVE_ONLY"
         if "PAIR_LOCK_AFTER_STOP" in active_lock_types:
@@ -949,7 +1019,34 @@ class PolicyEngine:
             "RISK_REDUCTION": "硬风险触发，优先保护性退出",
             "PAIR_LOCKED_AFTER_STOP": "风险退出后锁定交易对，等待恢复入场条件",
             "RECOVERY_ENTRY": "风险退出后恢复条件满足，允许受控重建仓位",
+            "RECOVERY_PROBE_ENTRY": "亏损保护生效，允许小额恢复建仓试探",
             "OBSERVE_ONLY": "保护层触发，仅观察或保留硬风险退出",
             "LOW_PROFIT_PAIR_LOCK": "最近完成 pair 质量偏低，暂停新的成对挂单提案",
         }
         return labels.get(state, state)
+
+    def _can_recovery_probe(self, context: PolicyContext) -> bool:
+        if not self.settings.recovery_probe_entry_enabled:
+            return False
+        target = context.target_inventory
+        if target.current_fraction >= target.lower_fraction * 0.8:
+            return False
+        if target.available_buy_notional <= 0 or context.quote_balance <= 0:
+            return False
+        if context.ai_assessment.risk_score >= self.settings.recovery_probe_ai_risk_threshold:
+            return False
+        if self._ai_extreme(context.ai_assessment):
+            return False
+        if context.direction_decision is None:
+            return False
+        if context.price > context.direction_decision.buy_zone_price:
+            return False
+        if context.direction_decision.expected_net_edge_pct < self.settings.min_pair_net_edge_pct:
+            return False
+        count = int(ProtectionManager._float(context.activation_state.get("recovery_probe_daily_count")))
+        return count < max(1, self.settings.recovery_probe_max_daily_count)
+
+    @staticmethod
+    def _ai_extreme(assessment: AiRiskAssessment) -> bool:
+        text = f"{assessment.status} {assessment.veto_reason}".lower()
+        return assessment.risk_score >= 0.9 or "extreme" in text or "极端" in text

@@ -1768,7 +1768,7 @@ class TradingEngine:
         if str(result.get("side", "")).upper() != "BUY":
             return
         trigger = str(result.get("trigger", ""))
-        if trigger not in {"strategy_buy", "target_rebuild_buy", "grid_buyback"}:
+        if trigger not in {"strategy_buy", "target_rebuild_buy", "grid_buyback", "pair_counter_buyback", "recovery_probe_entry"}:
             return
         snapshot = self.paper_portfolio.load_snapshot()
         activation_state = dict(snapshot.activation_state)

@@ -3738,6 +3738,10 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "buyback_cooldown_bars": settings.buyback_cooldown_bars,
         "exit_stop_loss_fraction": settings.exit_stop_loss_fraction,
         "exit_emergency_stop_fraction": settings.exit_emergency_stop_fraction,
+        "emergency_stop_max_fraction": settings.emergency_stop_max_fraction,
+        "emergency_stop_second_stage_fraction": settings.emergency_stop_second_stage_fraction,
+        "emergency_stop_full_exit_confirmation_bars": settings.emergency_stop_full_exit_confirmation_bars,
+        "emergency_stop_full_exit_ai_extreme_only": settings.emergency_stop_full_exit_ai_extreme_only,
         "ai_can_cancel_buyback": settings.ai_can_cancel_buyback,
         "order_max_open_per_symbol": settings.order_max_open_per_symbol,
         "order_max_open_per_side": settings.order_max_open_per_side,
@@ -3798,6 +3802,10 @@ def _dashboard_runtime_config() -> Dict[str, Any]:
         "post_initial_release_buyback_required": settings.post_initial_release_buyback_required,
         "pair_counter_buyback_enabled": settings.pair_counter_buyback_enabled,
         "pair_counter_buyback_min_net_edge_pct": settings.pair_counter_buyback_min_net_edge_pct,
+        "recovery_probe_entry_enabled": settings.recovery_probe_entry_enabled,
+        "recovery_probe_max_equity_fraction": settings.recovery_probe_max_equity_fraction,
+        "recovery_probe_max_daily_count": settings.recovery_probe_max_daily_count,
+        "recovery_probe_ai_risk_threshold": settings.recovery_probe_ai_risk_threshold,
         "scenario_engine_enabled": settings.scenario_engine_enabled,
         "trend_probe_entry_fraction": settings.trend_probe_entry_fraction,
         "recovery_entry_fraction": settings.recovery_entry_fraction,
@@ -5009,6 +5017,11 @@ def _build_decision_state_payload(
             "cost_protection_price": _coerce_float(raw_state.get("real_average_entry_price")) * (
                 1.0 + _coerce_float(runtime_config.get("sell_cost_protection_buffer_pct"), 0.0015)
             ),
+            "risk_exit_stage": _coerce_int(raw_state.get("risk_exit_stage")),
+            "risk_exit_reference_price": _coerce_float(raw_state.get("risk_exit_reference_price")),
+            "risk_exit_remaining_core_quantity": _coerce_float(raw_state.get("risk_exit_remaining_core_quantity")),
+            "emergency_stop_confirmation_bars": _coerce_int(raw_state.get("emergency_stop_confirmation_bars")),
+            "recovery_probe_daily_count": _coerce_int(raw_state.get("recovery_probe_daily_count")),
             "partial_stop_count": _coerce_int(raw_state.get("partial_stop_count")),
         }
         guard[str(symbol)] = {
@@ -5185,6 +5198,28 @@ def build_ops_summary_payload(runtime_dir: Path, hours: int) -> Dict[str, Any]:
         and _coerce_float(item.get("realized_pnl_delta")) < 0
         and _coerce_float(item.get("excluded_initial_inventory_quantity")) <= 0
     )
+    risk_exit_triggers = {"stop_loss", "emergency_stop", "trailing_stop", "max_hold_exit"}
+    risk_exit_fill_count = sum(
+        1 for item in recent_fills if str(item.get("trigger", "")).lower() in risk_exit_triggers
+    )
+    emergency_stop_quantity = sum(
+        _coerce_float(item.get("quantity"))
+        for item in recent_fills
+        if str(item.get("trigger", "")).lower() == "emergency_stop"
+    )
+    recovery_probe_count = sum(
+        1 for item in recent_fills if str(item.get("trigger", "")).lower() == "recovery_probe_entry"
+    )
+    sell_pair_ids = {
+        str(item.get("pair_id"))
+        for item in recent_fills
+        if str(item.get("side", "")).upper() == "SELL" and str(item.get("pair_id") or "")
+    }
+    buyback_pair_ids = {
+        str(item.get("pair_id"))
+        for item in recent_fills
+        if str(item.get("trigger", "")).lower() in {"pair_counter_buyback", "grid_buyback"} and str(item.get("pair_id") or "")
+    }
     return {
         "status": "ok" if latest_report else "degraded",
         "hours": hours,
@@ -5197,6 +5232,11 @@ def build_ops_summary_payload(runtime_dir: Path, hours: int) -> Dict[str, Any]:
         "negative_pair_count": negative_pairs,
         "negative_realized_sell_count": negative_realized_sell_count,
         "pending_buyback_quantity": pending_buyback_quantity,
+        "risk_exit_fill_count": risk_exit_fill_count,
+        "emergency_stop_quantity": emergency_stop_quantity,
+        "recovery_probe_count": recovery_probe_count,
+        "unpaired_sell_count": len(sell_pair_ids - buyback_pair_ids),
+        "unpaired_buyback_count": len(buyback_pair_ids - sell_pair_ids),
         "below_cost_sell_block_count": sum(
             1 for item in recent_events if str(item.get("reason", "")).lower() == "below_cost_sell_blocked"
         ),

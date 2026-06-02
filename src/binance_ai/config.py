@@ -146,6 +146,10 @@ class Settings:
     buyback_cooldown_allow_emergency_stop: bool = True
     exit_stop_loss_fraction: float = 0.5
     exit_emergency_stop_fraction: float = 1.0
+    emergency_stop_max_fraction: float = 0.35
+    emergency_stop_second_stage_fraction: float = 0.35
+    emergency_stop_full_exit_confirmation_bars: int = 3
+    emergency_stop_full_exit_ai_extreme_only: bool = True
     emergency_stop_confirmation_enabled: bool = True
     exit_trailing_stop_fraction: float = 0.5
     exit_take_profit_fraction: float = 0.5
@@ -207,6 +211,10 @@ class Settings:
     post_initial_release_buyback_required: bool = True
     pair_counter_buyback_enabled: bool = True
     pair_counter_buyback_min_net_edge_pct: float = 0.0045
+    recovery_probe_entry_enabled: bool = True
+    recovery_probe_max_equity_fraction: float = 0.03
+    recovery_probe_max_daily_count: int = 3
+    recovery_probe_ai_risk_threshold: float = 0.75
     scenario_engine_enabled: bool = True
     trend_probe_entry_fraction: float = 0.25
     recovery_entry_fraction: float = 0.20
@@ -361,6 +369,10 @@ def load_settings() -> Settings:
         buyback_cooldown_allow_emergency_stop=_parse_bool(os.getenv("BUYBACK_COOLDOWN_ALLOW_EMERGENCY_STOP"), True),
         exit_stop_loss_fraction=float(os.getenv("EXIT_STOP_LOSS_FRACTION", "0.5")),
         exit_emergency_stop_fraction=float(os.getenv("EXIT_EMERGENCY_STOP_FRACTION", "1.0")),
+        emergency_stop_max_fraction=float(os.getenv("EMERGENCY_STOP_MAX_FRACTION", "0.35")),
+        emergency_stop_second_stage_fraction=float(os.getenv("EMERGENCY_STOP_SECOND_STAGE_FRACTION", "0.35")),
+        emergency_stop_full_exit_confirmation_bars=int(os.getenv("EMERGENCY_STOP_FULL_EXIT_CONFIRMATION_BARS", "3")),
+        emergency_stop_full_exit_ai_extreme_only=_parse_bool(os.getenv("EMERGENCY_STOP_FULL_EXIT_AI_EXTREME_ONLY"), True),
         emergency_stop_confirmation_enabled=_parse_bool(os.getenv("EMERGENCY_STOP_CONFIRMATION_ENABLED"), True),
         exit_trailing_stop_fraction=float(os.getenv("EXIT_TRAILING_STOP_FRACTION", "0.5")),
         exit_take_profit_fraction=float(os.getenv("EXIT_TAKE_PROFIT_FRACTION", "0.5")),
@@ -422,6 +434,10 @@ def load_settings() -> Settings:
         post_initial_release_buyback_required=_parse_bool(os.getenv("POST_INITIAL_RELEASE_BUYBACK_REQUIRED"), True),
         pair_counter_buyback_enabled=_parse_bool(os.getenv("PAIR_COUNTER_BUYBACK_ENABLED"), True),
         pair_counter_buyback_min_net_edge_pct=float(os.getenv("PAIR_COUNTER_BUYBACK_MIN_NET_EDGE_PCT", "0.0045")),
+        recovery_probe_entry_enabled=_parse_bool(os.getenv("RECOVERY_PROBE_ENTRY_ENABLED"), True),
+        recovery_probe_max_equity_fraction=float(os.getenv("RECOVERY_PROBE_MAX_EQUITY_FRACTION", "0.03")),
+        recovery_probe_max_daily_count=int(os.getenv("RECOVERY_PROBE_MAX_DAILY_COUNT", "3")),
+        recovery_probe_ai_risk_threshold=float(os.getenv("RECOVERY_PROBE_AI_RISK_THRESHOLD", "0.75")),
         scenario_engine_enabled=_parse_bool(os.getenv("SCENARIO_ENGINE_ENABLED"), True),
         trend_probe_entry_fraction=float(os.getenv("TREND_PROBE_ENTRY_FRACTION", "0.25")),
         recovery_entry_fraction=float(os.getenv("RECOVERY_ENTRY_FRACTION", "0.20")),

@@ -229,8 +229,8 @@ class PortfolioStateEngine:
             trigger=managed.trigger,
             external_order_id=managed.external_order_id,
             target_spread_pct=managed.target_spread_pct,
-            pair_id=managed.pair_id,
-            pair_role=managed.pair_role,
+            pair_id=str(result.get("pair_id") or managed.pair_id),
+            pair_role=str(result.get("pair_role") or managed.pair_role),
             intended_counter_price=managed.intended_counter_price,
             expected_pair_net_edge_pct=managed.expected_pair_net_edge_pct,
         )
@@ -282,6 +282,7 @@ class PortfolioStateEngine:
         notional = order.quantity * fill_price
         fee = notional * self.fee_rate
         applied_timestamp_ms = timestamp_ms or int(time.time() * 1000)
+        effective_pair_id = order.pair_id
 
         if min_qty is not None and (order.quantity < min_qty or order.quantity <= 0):
             return snapshot, {
@@ -334,6 +335,13 @@ class PortfolioStateEngine:
                     activation_state=activation_state,
                     symbol=order.symbol,
                     quantity=order.quantity,
+                    timestamp_ms=applied_timestamp_ms,
+                )
+            if order.trigger == "recovery_probe_entry":
+                activation_state = self._apply_recovery_probe_fill_state(
+                    activation_state=activation_state,
+                    symbol=order.symbol,
+                    fill_price=fill_price,
                     timestamp_ms=applied_timestamp_ms,
                 )
             updated_snapshot = replace(
@@ -404,6 +412,8 @@ class PortfolioStateEngine:
                 activation_state=activation_state,
             )
             if self._should_register_release_buyback(order.trigger):
+                if not effective_pair_id:
+                    effective_pair_id = f"{order.symbol}:release:{order.trigger}:{applied_timestamp_ms}"
                 updated_snapshot = replace(
                     updated_snapshot,
                     activation_state=self._register_release_buyback_state(
@@ -413,7 +423,7 @@ class PortfolioStateEngine:
                         fill_price=fill_price,
                         timestamp_ms=applied_timestamp_ms,
                         trigger=order.trigger,
-                        pair_id=order.pair_id,
+                        pair_id=effective_pair_id,
                         intended_counter_price=order.intended_counter_price,
                     ),
                 )
@@ -435,7 +445,7 @@ class PortfolioStateEngine:
             "timestamp_ms": applied_timestamp_ms,
             "client_order_id": order.client_order_id,
             "trigger": order.trigger,
-            "pair_id": order.pair_id,
+            "pair_id": effective_pair_id,
             "pair_role": order.pair_role,
             "intended_counter_price": order.intended_counter_price,
             "expected_pair_net_edge_pct": order.expected_pair_net_edge_pct,
@@ -496,6 +506,23 @@ class PortfolioStateEngine:
             state["decision_state"] = "NORMAL"
         else:
             state["decision_state"] = "RELEASED_WAIT_BUYBACK"
+        state_all[symbol] = state
+        return state_all
+
+    def _apply_recovery_probe_fill_state(
+        self,
+        *,
+        activation_state: Dict[str, Dict[str, object]],
+        symbol: str,
+        fill_price: float,
+        timestamp_ms: int,
+    ) -> Dict[str, Dict[str, object]]:
+        state_all = dict(activation_state)
+        state = dict(state_all.get(symbol, {}) if isinstance(state_all.get(symbol, {}), dict) else {})
+        state["recovery_probe_daily_count"] = int(float(state.get("recovery_probe_daily_count", 0) or 0)) + 1
+        state["last_recovery_probe_price"] = fill_price
+        state["last_recovery_probe_timestamp_ms"] = timestamp_ms
+        state["decision_state"] = "ENTRY_PROTECTION"
         state_all[symbol] = state
         return state_all
 
@@ -620,12 +647,24 @@ class PortfolioStateEngine:
         timestamp_ms: int,
         result: Dict[str, object],
     ) -> PortfolioSnapshot:
-        if not order.pair_id:
+        pair_id = str(result.get("pair_id") or order.pair_id)
+        pair_role = str(result.get("pair_role") or order.pair_role)
+        if not pair_id:
             return snapshot
         open_pairs = dict(snapshot.open_order_pairs)
-        pair = dict(open_pairs.get(order.pair_id, {}))
+        pair = dict(open_pairs.get(pair_id, {}))
+        pair.setdefault("pair_id", pair_id)
+        pair.setdefault("symbol", order.symbol)
+        pair.setdefault("status", "PAIR_OPEN")
+        pair.setdefault("created_at_ms", timestamp_ms)
         orders = dict(pair.get("orders", {}))
         item = dict(orders.get(order.client_order_id, {}))
+        item.setdefault("client_order_id", order.client_order_id)
+        item.setdefault("side", order.side)
+        item.setdefault("pair_role", pair_role)
+        item.setdefault("limit_price", order.limit_price)
+        item.setdefault("quantity", order.quantity)
+        item.setdefault("trigger", order.trigger)
         item["status"] = "FILLED"
         item["fill_price"] = fill_price
         item["filled_at_ms"] = timestamp_ms
@@ -667,10 +706,10 @@ class PortfolioStateEngine:
             )
             stats[order.symbol] = symbol_stats
             completed = [*snapshot.completed_order_pairs, pair]
-            open_pairs.pop(order.pair_id, None)
+            open_pairs.pop(pair_id, None)
             updated_fills = list(snapshot.fills)
             for fill in updated_fills:
-                if str(fill.get("pair_id", "")) == order.pair_id:
+                if str(fill.get("pair_id", "")) == pair_id:
                     fill["completed_pair_net_edge_pct"] = completed_edge_pct
             return replace(
                 snapshot,
@@ -681,5 +720,5 @@ class PortfolioStateEngine:
             )
         if any(str(value.get("status", "")).upper() == "FILLED" for value in orders.values()):
             pair["status"] = "ONE_SIDE_FILLED_WAIT_COUNTER"
-        open_pairs[order.pair_id] = pair
+        open_pairs[pair_id] = pair
         return replace(snapshot, open_order_pairs=open_pairs)
