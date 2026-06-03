@@ -258,7 +258,13 @@ class OrderExecutor:
         max_side = max(0, getattr(self.settings, "order_max_open_per_side", 0))
         if max_side:
             side_count = sum(1 for existing in open_orders if existing.side.upper() == order.side.upper())
-            if side_count >= max_side:
+            extra_slot = (
+                1
+                if getattr(self.settings, "uptrend_confirmation_extra_slot", False)
+                and order.trigger == "trend_confirmation_entry"
+                else 0
+            )
+            if side_count >= max_side + extra_slot:
                 return "max_open_orders_per_side_reached"
         return ""
 

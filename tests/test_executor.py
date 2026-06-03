@@ -577,6 +577,97 @@ class OrderExecutorTests(unittest.TestCase):
         self.assertEqual(duplicate["reason"], "duplicate_open_ladder_order")
         self.assertIsNone(duplicate_event)
 
+    def test_uptrend_confirmation_buy_can_use_extra_side_slot(self) -> None:
+        settings = Settings(
+            api_key="",
+            api_secret="",
+            base_url="https://api.binance.com",
+            recv_window=5000,
+            trading_symbols=["XRPJPY"],
+            max_active_symbols=3,
+            quote_asset="JPY",
+            kline_interval="1h",
+            kline_limit=250,
+            fast_window=20,
+            slow_window=50,
+            risk_per_trade=0.10,
+            min_order_notional=100.0,
+            trading_fee_rate=0.0,
+            paper_quote_balance=1000.0,
+            dry_run=True,
+            llm_base_url="",
+            llm_api_key="",
+            llm_model="gpt-5.5",
+            llm_timeout_seconds=20,
+            news_refresh_seconds=120,
+            stop_loss_pct=0.01,
+            take_profit_pct=0.02,
+            trailing_stop_pct=0.0075,
+            max_hold_bars=24,
+            order_max_open_per_symbol=10,
+            order_max_open_per_side=3,
+            uptrend_confirmation_extra_slot=True,
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            portfolio = PaperPortfolio("JPY", 5000.0, Path(tmpdir) / "paper_state.json")
+            executor = OrderExecutor(settings, _ClientStub(), portfolio)
+            for index in range(3):
+                result, _ = executor.submit_limit_order(
+                    OrderRequest(
+                        symbol="XRPJPY",
+                        side="BUY",
+                        order_type="LIMIT",
+                        quantity=1.0,
+                        limit_price=199.0 - index,
+                        client_order_id=f"buy-{index}",
+                        trigger="strategy_buy",
+                        ladder_group="entry",
+                        tier_index=index,
+                    ),
+                    current_price=200.0,
+                    filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+                    timestamp_ms=1_000 + index,
+                )
+                self.assertEqual(result["status"], "ORDER_OPEN")
+
+            ordinary, ordinary_event = executor.submit_limit_order(
+                OrderRequest(
+                    symbol="XRPJPY",
+                    side="BUY",
+                    order_type="LIMIT",
+                    quantity=1.0,
+                    limit_price=196.0,
+                    client_order_id="ordinary-extra",
+                    trigger="target_rebuild_buy",
+                    ladder_group="entry",
+                    tier_index=9,
+                ),
+                current_price=200.0,
+                filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+                timestamp_ms=2_000,
+            )
+            confirmation, confirmation_event = executor.submit_limit_order(
+                OrderRequest(
+                    symbol="XRPJPY",
+                    side="BUY",
+                    order_type="LIMIT",
+                    quantity=1.0,
+                    limit_price=199.9,
+                    client_order_id="confirmation-extra",
+                    trigger="trend_confirmation_entry",
+                    ladder_group="confirmation_entry",
+                    tier_index=0,
+                ),
+                current_price=200.0,
+                filters=SymbolFilters(symbol="XRPJPY", step_size=0.1, min_qty=0.1, min_notional=100.0),
+                timestamp_ms=3_000,
+            )
+
+        self.assertEqual(ordinary["status"], "REJECTED")
+        self.assertEqual(ordinary_event.reason, "max_open_orders_per_side_reached")
+        self.assertEqual(confirmation["status"], "ORDER_OPEN")
+        self.assertIsNotNone(confirmation_event)
+
     def test_live_limit_order_is_tracked_and_synced_by_query(self) -> None:
         settings = Settings(
             api_key="key",

@@ -217,6 +217,10 @@ class Settings:
     recovery_probe_ai_risk_threshold: float = 0.75
     scenario_engine_enabled: bool = True
     trend_probe_entry_fraction: float = 0.25
+    uptrend_confirmation_entry_enabled: bool = True
+    uptrend_confirmation_passive_offset_pct: float = 0.0003
+    uptrend_confirmation_max_equity_fraction: float = 0.10
+    uptrend_confirmation_extra_slot: bool = True
     recovery_entry_fraction: float = 0.20
     uptrend_expansion_min_periods: int = 2
     uptrend_exhaustion_gap_pct: float = 0.0015
@@ -440,6 +444,10 @@ def load_settings() -> Settings:
         recovery_probe_ai_risk_threshold=float(os.getenv("RECOVERY_PROBE_AI_RISK_THRESHOLD", "0.75")),
         scenario_engine_enabled=_parse_bool(os.getenv("SCENARIO_ENGINE_ENABLED"), True),
         trend_probe_entry_fraction=float(os.getenv("TREND_PROBE_ENTRY_FRACTION", "0.25")),
+        uptrend_confirmation_entry_enabled=_parse_bool(os.getenv("UPTREND_CONFIRMATION_ENTRY_ENABLED"), True),
+        uptrend_confirmation_passive_offset_pct=float(os.getenv("UPTREND_CONFIRMATION_PASSIVE_OFFSET_PCT", "0.0003")),
+        uptrend_confirmation_max_equity_fraction=float(os.getenv("UPTREND_CONFIRMATION_MAX_EQUITY_FRACTION", "0.10")),
+        uptrend_confirmation_extra_slot=_parse_bool(os.getenv("UPTREND_CONFIRMATION_EXTRA_SLOT"), True),
         recovery_entry_fraction=float(os.getenv("RECOVERY_ENTRY_FRACTION", "0.20")),
         uptrend_expansion_min_periods=int(os.getenv("UPTREND_EXPANSION_MIN_PERIODS", "2")),
         uptrend_exhaustion_gap_pct=float(os.getenv("UPTREND_EXHAUSTION_GAP_PCT", "0.0015")),

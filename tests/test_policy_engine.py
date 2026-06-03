@@ -6,6 +6,7 @@ from binance_ai.models import (
     Candle,
     CompositeDecision,
     DirectionDecision,
+    ManagedOrder,
     ScenarioDecision,
     SignalAction,
     SymbolFilters,
@@ -536,6 +537,76 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertEqual(decision.policy_state, "RECOVERY_PROBE_ENTRY")
         self.assertEqual(len(decision.order_proposals), 1)
         self.assertEqual(decision.order_proposals[0].trigger, "recovery_probe_entry")
+
+    def test_uptrend_probe_adds_near_price_confirmation_buy(self) -> None:
+        open_orders = [
+            ManagedOrder(
+                client_order_id=f"open-buy-{index}",
+                symbol="XRPJPY",
+                side="BUY",
+                order_type="LIMIT",
+                quantity=10.0,
+                limit_price=98.0 - index,
+                time_in_force="GTC",
+                status="OPEN",
+                created_at_ms=1_000,
+                updated_at_ms=1_000,
+                expires_at_ms=0,
+                trigger="trend_probe_entry",
+                ladder_group="pair_market_making",
+                remaining_quantity=10.0,
+                reserved_quote=1000.0,
+                tier_index=index,
+            )
+            for index in range(2)
+        ]
+        decision = PolicyEngine(
+            _settings(
+                min_effective_order_notional=500.0,
+                order_target_notional=2000.0,
+                uptrend_confirmation_passive_offset_pct=0.0003,
+            )
+        ).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=100.0,
+                candles=_candles(100.0),
+                signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.8, "test"),
+                exit_reason=None,
+                has_position=False,
+                base_balance=0.0,
+                quote_balance=9000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(current_fraction=0.01, available_buy_notional=4000.0),
+                composite_decision=_composite(recommended_action="HOLD", buy_score=0.58),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", True, 0.2, 1.0, ""),
+                open_orders=open_orders,
+                activation_state={},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(
+                    current_price=100.0,
+                    fair_value=99.0,
+                    buy_zone_price=98.5,
+                    sell_zone_price=99.5,
+                    expected_net_edge_pct=0.006,
+                ),
+                scenario_decision=_scenario(
+                    scenario_state="UPTREND_PROBE_ENTRY",
+                    reason_cn="短周期向上扩散",
+                    allowed_actions=["BUY"],
+                    blocked_actions=["FULL_SIZE_BUY"],
+                    buy_size_fraction=0.25,
+                    buy_discount_multiplier=1.0,
+                    buy_anchor_price=99.0,
+                ),
+            )
+        )
+
+        confirmation = [item for item in decision.order_proposals if item.trigger == "trend_confirmation_entry"]
+        self.assertEqual(len(confirmation), 1)
+        self.assertAlmostEqual(confirmation[0].target_spread_pct, 0.0003)
+        self.assertGreaterEqual(confirmation[0].expected_pair_net_edge_pct, 0.0045)
+        self.assertTrue(any(item.reason == "duplicate_open_ladder_order" for item in decision.proposal_filter_results))
 
     def test_pending_buyback_generates_counter_buyback_proposal(self) -> None:
         decision = PolicyEngine(_settings(min_effective_order_notional=500.0, order_target_notional=2000.0)).evaluate(

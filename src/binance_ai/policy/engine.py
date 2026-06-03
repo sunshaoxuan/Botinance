@@ -389,6 +389,17 @@ class InventorySkewOrderProposalEngine:
                 buy_reason = scenario.reason_cn
                 max_buy_levels = min(max_buy_levels, 1)
 
+        if (
+            scenario is not None
+            and scenario.scenario_state == "UPTREND_PROBE_ENTRY"
+            and self.settings.uptrend_confirmation_entry_enabled
+            and allow_buy_pairs
+            and context.target_inventory.available_buy_notional > 0
+        ):
+            confirmation = self._uptrend_confirmation_proposal(context, scenario)
+            if confirmation is not None:
+                proposals.append(confirmation)
+
         pair_count = self._pair_count()
         buy_budget = max(0.0, context.target_inventory.available_buy_notional * max(0.0, skew.buy_weight) * buy_size_fraction)
         sell_budget_qty = max(0.0, min(context.base_balance, context.target_inventory.allowed_sell_quantity * max(0.0, skew.sell_weight) * sell_size_fraction))
@@ -458,6 +469,54 @@ class InventorySkewOrderProposalEngine:
                 )
         return self._merge_small_tiers(proposals)
 
+    def _uptrend_confirmation_proposal(
+        self,
+        context: PolicyContext,
+        scenario: ScenarioDecision,
+    ) -> OrderProposal | None:
+        if context.price <= 0 or context.quote_balance <= 0:
+            return None
+        max_notional = context.target_inventory.total_equity * max(0.0, self.settings.uptrend_confirmation_max_equity_fraction)
+        notional = min(
+            context.quote_balance,
+            context.target_inventory.available_buy_notional,
+            self.settings.order_target_notional,
+            max_notional,
+        )
+        if notional <= 0:
+            return None
+        passive_offset = max(0.0, self.settings.uptrend_confirmation_passive_offset_pct)
+        limit_price = context.price * (1.0 - passive_offset)
+        if limit_price <= 0:
+            return None
+        gross_edge = (
+            self.settings.min_pair_net_edge_pct
+            + (2.0 * self.settings.maker_fee_pct)
+            + self.settings.pair_edge_safety_buffer_pct
+            + 0.0002
+        )
+        counter_price = limit_price * (1.0 + gross_edge)
+        pair_id = f"{context.symbol}:uptrend_confirmation:buy:{context.timestamp_ms}"
+        return OrderProposal(
+            symbol=context.symbol,
+            side="BUY",
+            trigger="trend_confirmation_entry",
+            ladder_group="confirmation_entry",
+            quantity=notional / limit_price,
+            notional=notional,
+            urgent=False,
+            tier_index=0,
+            target_spread_pct=passive_offset,
+            target_fraction=1.0,
+            score=max(context.composite_decision.buy_score, 0.65),
+            reason_cn=f"{scenario.reason_cn}；低仓位现金充足，追加一笔贴近当前价的小额确认买单",
+            source="scenario_confirmation",
+            pair_id=pair_id,
+            pair_role="bid",
+            intended_counter_price=counter_price,
+            expected_pair_net_edge_pct=self._pair_net_edge_pct(limit_price, counter_price),
+        )
+
     def _merge_small_tiers(self, proposals: List[OrderProposal]) -> List[OrderProposal]:
         if not self.settings.order_tier_merge_enabled:
             return proposals
@@ -467,7 +526,7 @@ class InventorySkewOrderProposalEngine:
         merged: List[OrderProposal] = []
         pending: List[OrderProposal] = []
         for proposal in proposals:
-            if proposal.notional >= threshold or proposal.urgent:
+            if proposal.notional >= threshold or proposal.urgent or proposal.trigger == "trend_confirmation_entry":
                 if pending:
                     merged.append(self._merge_group(pending))
                     pending = []
@@ -754,7 +813,7 @@ class OrderProposalFilter:
             buyback_trigger = proposal.trigger in {"pair_counter_buyback", "grid_buyback"}
             if context.direction_decision is not None and buy_limit > context.direction_decision.buy_zone_price and not buyback_trigger:
                 scenario_state = context.scenario_decision.scenario_state if context.scenario_decision is not None else ""
-                if proposal.trigger not in {"trend_probe_entry", "pullback_entry", "recovery_entry"} or scenario_state not in {
+                if proposal.trigger not in {"trend_probe_entry", "trend_confirmation_entry", "pullback_entry", "recovery_entry"} or scenario_state not in {
                     "UPTREND_PROBE_ENTRY",
                     "UPTREND_PULLBACK_ENTRY",
                     "RECOVERY_AFTER_DROP",
