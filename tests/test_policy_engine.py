@@ -538,6 +538,91 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertEqual(len(decision.order_proposals), 1)
         self.assertEqual(decision.order_proposals[0].trigger, "recovery_probe_entry")
 
+    def test_ai_extreme_allows_limited_recovery_probe_when_external_not_risk_off(self) -> None:
+        decision = PolicyEngine(
+            _settings(
+                min_effective_order_notional=50.0,
+                order_target_notional=2000.0,
+                ai_extreme_recovery_probe_max_equity_fraction=0.01,
+            )
+        ).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=99.0,
+                candles=_candles(99.0),
+                signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "test"),
+                exit_reason=None,
+                has_position=True,
+                base_balance=240.0,
+                quote_balance=9000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(
+                    regime="emergency",
+                    target_fraction=0.05,
+                    lower_fraction=0.0,
+                    upper_fraction=0.13,
+                    current_fraction=0.48,
+                    available_buy_notional=0.0,
+                    active_trading_allowed=False,
+                    active_trading_blocker="target_inventory_emergency_risk",
+                ),
+                composite_decision=_composite(recommended_action="HOLD", buy_score=0.2),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", False, 0.95, 0.0, "极端风险"),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(current_price=99.0, fair_value=100.0, buy_zone_price=99.5, expected_net_edge_pct=0.006),
+                scenario_decision=_scenario(
+                    indicators={"external_consensus": {"direction_vote": "NEUTRAL", "risk_score": 0.0, "risk_flags": []}},
+                ),
+            )
+        )
+
+        self.assertEqual(decision.policy_state, "RECOVERY_PROBE_ENTRY")
+        self.assertEqual(len(decision.order_proposals), 1)
+        self.assertEqual(decision.order_proposals[0].trigger, "recovery_probe_entry")
+        self.assertAlmostEqual(decision.order_proposals[0].notional, 100.0)
+
+    def test_ai_extreme_blocks_recovery_probe_when_external_risk_off(self) -> None:
+        decision = PolicyEngine(
+            _settings(min_effective_order_notional=50.0, order_target_notional=2000.0)
+        ).evaluate(
+            PolicyContext(
+                symbol="XRPJPY",
+                price=99.0,
+                candles=_candles(99.0),
+                signal=TradeSignal("XRPJPY", SignalAction.HOLD, 0.5, "test"),
+                exit_reason=None,
+                has_position=True,
+                base_balance=240.0,
+                quote_balance=9000.0,
+                filters=SymbolFilters("XRPJPY", step_size=0.1, min_qty=0.1, min_notional=50.0),
+                target_inventory=_target(
+                    regime="emergency",
+                    target_fraction=0.05,
+                    lower_fraction=0.0,
+                    upper_fraction=0.13,
+                    current_fraction=0.48,
+                    available_buy_notional=0.0,
+                    active_trading_allowed=False,
+                    active_trading_blocker="target_inventory_emergency_risk",
+                ),
+                composite_decision=_composite(recommended_action="HOLD", buy_score=0.2),
+                ai_assessment=AiRiskAssessment("XRPJPY", "READY", False, 0.95, 0.0, "极端风险"),
+                open_orders=[],
+                activation_state={},
+                timestamp_ms=10_000_000,
+                direction_decision=_direction(current_price=99.0, fair_value=100.0, buy_zone_price=99.5, expected_net_edge_pct=0.006),
+                scenario_decision=_scenario(
+                    indicators={"external_consensus": {"direction_vote": "RISK_OFF", "risk_score": 0.7, "risk_flags": ["risk_off"]}},
+                ),
+            )
+        )
+
+        self.assertEqual(decision.policy_state, "OBSERVE_ONLY")
+        self.assertEqual(decision.order_proposals, [])
+        self.assertTrue(any(lock.lock_type == "AI_EXTREME_RISK" for lock in decision.protection_locks))
+
     def test_uptrend_probe_adds_near_price_confirmation_buy(self) -> None:
         open_orders = [
             ManagedOrder(

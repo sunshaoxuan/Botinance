@@ -646,10 +646,11 @@ class InventorySkewOrderProposalEngine:
         limit_price = min(context.price, context.direction_decision.buy_zone_price)
         if limit_price <= 0:
             return None
-        max_notional = context.target_inventory.total_equity * max(0.0, self.settings.recovery_probe_max_equity_fraction)
+        max_notional = context.target_inventory.total_equity * self._recovery_probe_max_fraction(context)
+        budget = self._recovery_probe_budget(context)
         notional = min(
             context.quote_balance,
-            context.target_inventory.available_buy_notional,
+            budget,
             self.settings.order_target_notional,
             max_notional,
         )
@@ -676,6 +677,19 @@ class InventorySkewOrderProposalEngine:
             intended_counter_price=limit_price * (1.0 + self.settings.min_pair_net_edge_pct + (2.0 * self.settings.maker_fee_pct)),
             expected_pair_net_edge_pct=max(context.direction_decision.expected_net_edge_pct, self.settings.min_pair_net_edge_pct),
         )
+
+    def _recovery_probe_budget(self, context: PolicyContext) -> float:
+        if context.target_inventory.available_buy_notional > 0:
+            return context.target_inventory.available_buy_notional
+        if not self._ai_extreme(context.ai_assessment):
+            return 0.0
+        spendable = max(0.0, context.quote_balance - context.target_inventory.min_cash_reserve)
+        return min(spendable, context.target_inventory.total_equity * self._recovery_probe_max_fraction(context))
+
+    def _recovery_probe_max_fraction(self, context: PolicyContext) -> float:
+        if self._ai_extreme(context.ai_assessment):
+            return max(0.0, self.settings.ai_extreme_recovery_probe_max_equity_fraction)
+        return max(0.0, self.settings.recovery_probe_max_equity_fraction)
 
     def _emergency_stop_fraction(self, context: PolicyContext) -> float:
         if self._ai_extreme(context.ai_assessment):
@@ -917,6 +931,8 @@ class OrderProposalFilter:
             if lock.lock_type in {"DRAWDOWN_GUARD", "STOPLOSS_GUARD", "AI_EXTREME_RISK", "LOW_PROFIT_PAIR_LOCK"}:
                 if lock.lock_type == "DRAWDOWN_GUARD" and proposal.trigger == "recovery_probe_entry":
                     continue
+                if lock.lock_type == "AI_EXTREME_RISK" and proposal.trigger == "recovery_probe_entry":
+                    continue
                 if proposal.trigger not in {"stop_loss", "emergency_stop"}:
                     return lock
             if lock.lock_type == "PAIR_LOCK_AFTER_STOP" and proposal.side.upper() == "BUY":
@@ -1054,7 +1070,7 @@ class PolicyEngine:
         active_lock_types = {lock.lock_type for lock in locks if lock.active}
         if context.exit_reason in {"stop_loss", "emergency_stop"} or context.composite_decision.recommended_action == "RISK_EXIT":
             return "RISK_REDUCTION"
-        if "DRAWDOWN_GUARD" in active_lock_types and self._can_recovery_probe(context):
+        if {"DRAWDOWN_GUARD", "AI_EXTREME_RISK"} & active_lock_types and self._can_recovery_probe(context):
             return "RECOVERY_PROBE_ENTRY"
         if {"STOPLOSS_GUARD", "DRAWDOWN_GUARD", "AI_EXTREME_RISK", "LOW_PROFIT_PAIR_LOCK"} & active_lock_types:
             return "OBSERVE_ONLY"
@@ -1088,13 +1104,14 @@ class PolicyEngine:
         if not self.settings.recovery_probe_entry_enabled:
             return False
         target = context.target_inventory
-        if target.current_fraction >= target.lower_fraction * 0.8:
+        ai_extreme = self._ai_extreme(context.ai_assessment)
+        if ai_extreme and self._external_risk_off(context):
             return False
-        if target.available_buy_notional <= 0 or context.quote_balance <= 0:
+        if not ai_extreme and target.current_fraction >= target.lower_fraction * 0.8:
             return False
-        if context.ai_assessment.risk_score >= self.settings.recovery_probe_ai_risk_threshold:
+        if self._recovery_probe_budget(context) <= 0 or context.quote_balance <= 0:
             return False
-        if self._ai_extreme(context.ai_assessment):
+        if not ai_extreme and context.ai_assessment.risk_score >= self.settings.recovery_probe_ai_risk_threshold:
             return False
         if context.direction_decision is None:
             return False
@@ -1104,6 +1121,36 @@ class PolicyEngine:
             return False
         count = int(ProtectionManager._float(context.activation_state.get("recovery_probe_daily_count")))
         return count < max(1, self.settings.recovery_probe_max_daily_count)
+
+    def _recovery_probe_budget(self, context: PolicyContext) -> float:
+        if context.target_inventory.available_buy_notional > 0:
+            return context.target_inventory.available_buy_notional
+        if not self._ai_extreme(context.ai_assessment):
+            return 0.0
+        spendable = max(0.0, context.quote_balance - context.target_inventory.min_cash_reserve)
+        return min(spendable, context.target_inventory.total_equity * self._recovery_probe_max_fraction(context))
+
+    def _recovery_probe_max_fraction(self, context: PolicyContext) -> float:
+        if self._ai_extreme(context.ai_assessment):
+            return max(0.0, self.settings.ai_extreme_recovery_probe_max_equity_fraction)
+        return max(0.0, self.settings.recovery_probe_max_equity_fraction)
+
+    def _external_risk_off(self, context: PolicyContext) -> bool:
+        scenario = context.scenario_decision
+        if scenario is None:
+            return False
+        indicators = scenario.indicators if isinstance(scenario.indicators, dict) else {}
+        consensus = indicators.get("external_consensus")
+        if not isinstance(consensus, dict):
+            return False
+        vote = str(consensus.get("direction_vote", "")).upper()
+        risk_score = ProtectionManager._float(consensus.get("risk_score"))
+        flags = {str(item).lower() for item in consensus.get("risk_flags", []) if item}
+        return (
+            vote == "RISK_OFF"
+            or risk_score >= self.settings.ai_extreme_external_risk_off_threshold
+            or "risk_off" in flags
+        )
 
     @staticmethod
     def _ai_extreme(assessment: AiRiskAssessment) -> bool:

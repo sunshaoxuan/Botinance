@@ -157,6 +157,9 @@ class Settings:
     strategy_sell_fraction: float = 0.5
     ai_can_cancel_buyback: bool = False
     ai_extreme_risk_cancel_buyback: bool = True
+    ai_extreme_full_block_requires_external_risk_off: bool = True
+    ai_extreme_recovery_probe_max_equity_fraction: float = 0.01
+    ai_extreme_external_risk_off_threshold: float = 0.45
     cash_rebuild_enabled: bool = True
     cash_rebuild_max_position_fraction: float = 0.6
     cash_rebuild_min_cash_fraction: float = 0.1
@@ -384,6 +387,9 @@ def load_settings() -> Settings:
         strategy_sell_fraction=float(os.getenv("STRATEGY_SELL_FRACTION", "0.5")),
         ai_can_cancel_buyback=_parse_bool(os.getenv("AI_CAN_CANCEL_BUYBACK"), False),
         ai_extreme_risk_cancel_buyback=_parse_bool(os.getenv("AI_EXTREME_RISK_CANCEL_BUYBACK"), True),
+        ai_extreme_full_block_requires_external_risk_off=_parse_bool(os.getenv("AI_EXTREME_FULL_BLOCK_REQUIRES_EXTERNAL_RISK_OFF"), True),
+        ai_extreme_recovery_probe_max_equity_fraction=float(os.getenv("AI_EXTREME_RECOVERY_PROBE_MAX_EQUITY_FRACTION", "0.01")),
+        ai_extreme_external_risk_off_threshold=float(os.getenv("AI_EXTREME_EXTERNAL_RISK_OFF_THRESHOLD", "0.45")),
         cash_rebuild_enabled=_parse_bool(os.getenv("CASH_REBUILD_ENABLED"), True),
         cash_rebuild_max_position_fraction=float(os.getenv("CASH_REBUILD_MAX_POSITION_FRACTION", "0.6")),
         cash_rebuild_min_cash_fraction=float(os.getenv("CASH_REBUILD_MIN_CASH_FRACTION", "0.1")),
