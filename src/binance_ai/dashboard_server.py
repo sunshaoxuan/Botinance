@@ -578,8 +578,8 @@ INDEX_HTML = """<!doctype html>
       justify-content: space-between;
       gap: 8px;
       color: var(--muted);
-      font-size: 11px;
-      font-weight: 720;
+      font-size: 12.5px;
+      font-weight: 740;
     }
 
     .card-value {
@@ -594,7 +594,7 @@ INDEX_HTML = """<!doctype html>
     .card-note {
       margin-top: 8px;
       color: var(--muted);
-      font-size: 11px;
+      font-size: 12px;
       line-height: 1.5;
     }
 
