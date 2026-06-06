@@ -591,6 +591,15 @@ INDEX_HTML = """<!doctype html>
       font-family: var(--mono);
     }
 
+    .card-value.text {
+      font-family: var(--font);
+      font-size: 21px;
+      line-height: 1.24;
+      letter-spacing: 0;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }
+
     .card-note {
       margin-top: 8px;
       color: var(--muted);
@@ -624,8 +633,8 @@ INDEX_HTML = """<!doctype html>
       align-items: baseline;
       min-width: 0;
       color: var(--muted);
-      font-size: 11px;
-      line-height: 1.35;
+      font-size: 12px;
+      line-height: 1.42;
     }
 
     .mini-kv-row span {
@@ -1736,6 +1745,22 @@ INDEX_HTML = """<!doctype html>
         buyback_cooldown: "回补冷却中",
         partial_stop_active: "分层止损中",
         emergency_exit: "应急退出",
+        grid_loss_recovery_blocked: "亏损修复受阻",
+        sell_if_over_inventory: "库存超标时卖出",
+        early_take_profit: "提前止盈",
+        chase_buy: "追涨买入",
+        rebalance_buy: "再平衡买入",
+        rebalance_sell: "再平衡卖出",
+        target_rebuild_buy: "目标仓位建仓",
+        target_rebalance_sell: "目标仓位减仓",
+        pair_counter_buyback: "成对回补买入",
+        initial_inventory_release_sell: "初始库存释放",
+        uptrend_confirmation_entry: "上行确认建仓",
+        recovery_probe_entry: "恢复试探建仓",
+        market_making: "做市",
+        inventory_rebalance: "库存再平衡",
+        risk_reduction: "风险收缩",
+        observe_only: "只观察",
         config: "配置",
         main_interval: "主周期",
         walk_forward: "滚动验证",
@@ -2006,7 +2031,7 @@ INDEX_HTML = """<!doctype html>
 
       els.sellDecisionCard.innerHTML = `
         <div class="card-label"><span>卖出判断</span>${c.sellDiag.eligible_to_sell ? statusChip("可卖", "sell") : statusChip("持有", "wait")}</div>
-        <div class="card-value">${c.sellDiag.eligible_to_sell ? fmtNumber(c.sellDiag.recommended_sell_quantity, 8) : "继续持有"}</div>
+        <div class="card-value text">${c.sellDiag.eligible_to_sell ? fmtNumber(c.sellDiag.recommended_sell_quantity, 8) : "继续持有"}</div>
         ${miniKvRows([
           ["判断原因", escapeHtml(c.sellDiag.blocker || "暂无卖出诊断")],
           ["网格状态", escapeHtml(triggerLabel(c.sellDiag.activation_trigger || c.activationState.last_trigger || "--"))],
@@ -2038,7 +2063,7 @@ INDEX_HTML = """<!doctype html>
         ])}
       ` : `
         <div class="card-label"><span>当前挂单组</span>${statusChip("无挂单", "wait")}</div>
-        <div class="card-value">--</div>
+        <div class="card-value text">--</div>
         <div class="card-note prose">当前没有等待成交的限价单。</div>
       `;
 
@@ -2046,7 +2071,7 @@ INDEX_HTML = """<!doctype html>
       const scenarioIndicators = scenario.indicators || {};
       els.scenarioCard.innerHTML = `
         <div class="card-label"><span>场景判断</span>${statusChip(escapeHtml(displayLabel(scenario.scenario_state || "未知")), "wait")}</div>
-        <div class="card-value small">${escapeHtml(displayLabel(scenario.scenario_state || "--"))}</div>
+        <div class="card-value text">${escapeHtml(displayLabel(scenario.scenario_state || "--"))}</div>
         ${miniKvRows([
           ["均线扩散", scenarioIndicators.ma_expanding_periods !== undefined ? `${scenarioIndicators.ma_expanding_periods} 个周期` : "--"],
           ["波动率", scenarioIndicators.atr_pct !== undefined ? fmtPercent(scenarioIndicators.atr_pct) : "--"],
@@ -2065,7 +2090,7 @@ INDEX_HTML = """<!doctype html>
         : "暂无外部合约数据";
       els.externalSignalCard.innerHTML = `
         <div class="card-label"><span>外部共识</span>${statusChip(escapeHtml(displayLabel(externalConsensus.direction_vote || "未启用")), externalConsensus.direction_vote === "BULLISH" ? "buy" : externalConsensus.direction_vote === "BEARISH" || externalConsensus.direction_vote === "RISK_OFF" ? "sell" : "wait")}</div>
-        <div class="card-value small">${escapeHtml(displayLabel(externalConsensus.direction_vote || "--"))}</div>
+        <div class="card-value text">${escapeHtml(displayLabel(externalConsensus.direction_vote || "--"))}</div>
         ${miniKvRows([
           ["置信度", externalConsensus.confidence !== undefined ? fmtPercent(externalConsensus.confidence) : "--"],
           ["本地/外部", `${fmtPercent(externalConsensus.local_weight || 0.6)} / ${fmtPercent(externalConsensus.external_weight || 0.4)}`],
@@ -2083,7 +2108,7 @@ INDEX_HTML = """<!doctype html>
       const policyMergedProposalCount = (policyDecision.merged_order_proposals || []).length;
       els.entryPlanCard.innerHTML = `
         <div class="card-label"><span>方向允许性 / 最终下单</span>${statusChip(policyProposalCount > 0 ? "已生成提案" : "未下单", policyProposalCount > 0 ? "buy" : "wait")}</div>
-        <div class="card-value">${escapeHtml(displayLabel(c.directionDecision.recommended_action || "HOLD"))}</div>
+        <div class="card-value text">${escapeHtml(displayLabel(c.directionDecision.recommended_action || "HOLD"))}</div>
         ${miniKvRows([
           ["公平价", c.directionDecision.fair_value ? fmtCurrency(c.directionDecision.fair_value, c.quoteAsset) : "--"],
           ["买入区", c.directionDecision.buy_zone_price ? `<= ${fmtCurrency(c.directionDecision.buy_zone_price, c.quoteAsset)}` : "--"],
@@ -2126,7 +2151,7 @@ INDEX_HTML = """<!doctype html>
           ];
       els.executionCard.innerHTML = `
         <div class="card-label"><span>本轮操作</span>${statusChip(signalLabel(c.signal), signalClass(c.signal))}</div>
-        <div class="card-value">${escapeHtml(executionLabel(executionStatus))}</div>
+        <div class="card-value text">${escapeHtml(executionLabel(executionStatus))}</div>
         <div class="card-note prose">${escapeHtml(executionDetail(executionStatus, c.executionReason))}</div>
         ${miniKvRows(operationRows)}
       `;
