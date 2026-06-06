@@ -105,6 +105,9 @@ _recent_cycle_cache_lock = threading.Lock()
 _order_records_cache: Dict[str, Dict[str, Any]] = {}
 _order_records_cache_lock = threading.Lock()
 
+_ops_version_cache: Dict[str, Dict[str, Any]] = {}
+_ops_version_cache_lock = threading.Lock()
+
 
 def _get_runtime_cache_key(path: Path, scan_lines: int | None) -> str:
     return f"{path}:{scan_lines or 0}"
@@ -287,6 +290,21 @@ INDEX_HTML = """<!doctype html>
       font-size: 19px;
       font-weight: 760;
       letter-spacing: 0.02em;
+    }
+
+    .top-name-row {
+      display: flex;
+      align-items: baseline;
+      gap: 7px;
+    }
+
+    .top-version {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 520;
+      letter-spacing: 0.04em;
+      white-space: nowrap;
     }
 
     .market-pill {
@@ -1081,7 +1099,7 @@ INDEX_HTML = """<!doctype html>
         <div class="top-title">
           <div>
             <div class="top-kicker">XRP/JPY PAPER TRADING</div>
-            <div class="top-name">Botinance</div>
+            <div class="top-name-row"><div class="top-name">Botinance</div><span class="top-version" id="topVersion">ver --</span></div>
           </div>
           <div class="market-pill"><span class="market-dot"></span><span id="topSymbol">XRP/JPY</span></div>
         </div>
@@ -1321,7 +1339,7 @@ INDEX_HTML = """<!doctype html>
 
     const els = {};
     const ids = [
-      "topSymbol", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
+      "topSymbol", "topVersion", "topMode", "topUpdated", "topPrice", "topCash", "topEquity", "chartSubtitle", "chartInterval", "chartPointCount", "chartLoading",
       "profitCurveLabel",
       "chartIntervalSelect", "fillFilter", "fillPageInfo", "fillPageSize", "fillPrev", "fillNext", "positionCard", "pnlCard", "sellDecisionCard", "riskGateCard", "openOrderCard", "scenarioCard", "externalSignalCard", "entryPlanCard", "executionCard", "tradeFillsTable",
       "aiSummaryCard", "ruleVsAiCard", "evidenceFull", "aiRiskFull", "btTotalReturn", "btMaxDrawdown", "btWinRate",
@@ -1829,7 +1847,13 @@ INDEX_HTML = """<!doctype html>
     function updateTopBar(payload) {
       const c = context(payload);
       const availableCash = Math.max(0, asNumber(c.paper.quote_balance ?? c.latest.quote_asset_balance, 0) - asNumber(c.paper.reserved_quote_balance, 0));
+      const opsVersion = payload.ops_version || {};
+      const headShort = String(opsVersion.head_short || "").trim();
+      const versionLabel = headShort && !headShort.startsWith("ERROR:")
+        ? `ver ${headShort}${opsVersion.needs_pull ? " 待更新" : ""}`
+        : "ver --";
       els.topSymbol.textContent = fmtSymbol(c.symbol, c.quoteAsset);
+      els.topVersion.textContent = versionLabel;
       els.topMode.textContent = cycleModeLabel(c.latest.cycle_mode);
       els.topUpdated.textContent = fmtTime(c.latest.generated_at || c.latest.timestamp || c.latest.timestamp_ms || payload.generated_at);
       els.topPrice.textContent = c.currentPrice ? fmtCurrency(c.currentPrice, c.quoteAsset) : "--";
@@ -5467,6 +5491,21 @@ def build_ops_version_payload(runtime_dir: Path, *, refresh: bool = False) -> Di
     }
 
 
+def _cached_ops_version_payload(runtime_dir: Path, *, ttl_seconds: float = 60.0) -> Dict[str, Any]:
+    cache_key = f"{Path.cwd()}:{runtime_dir}"
+    now = time.time()
+    with _ops_version_cache_lock:
+        cached = _ops_version_cache.get(cache_key)
+        if cached and now - float(cached.get("cached_at", 0.0)) <= ttl_seconds:
+            payload = cached.get("payload")
+            if isinstance(payload, dict):
+                return payload
+    payload = build_ops_version_payload(runtime_dir)
+    with _ops_version_cache_lock:
+        _ops_version_cache[cache_key] = {"cached_at": now, "payload": payload}
+    return payload
+
+
 def build_ops_updater_payload(runtime_dir: Path, *, lines: int = 20) -> Dict[str, Any]:
     normalized_lines = max(1, min(200, _coerce_int(lines, 20)))
     log_path = runtime_dir / "git_sync.log"
@@ -5784,6 +5823,7 @@ def build_dashboard_payload(
     return {
         "latest_report": latest_report,
         "paper_state": paper_state,
+        "ops_version": _cached_ops_version_payload(runtime_dir),
         "history": history[-80:] if include_chart else [],
         "history_count": len(history),
         "live_profit_curve": _build_live_profit_curve(profit_history),
