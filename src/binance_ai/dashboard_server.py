@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import os
 import re
@@ -5443,18 +5444,54 @@ def build_ops_version_payload(runtime_dir: Path, *, refresh: bool = False) -> Di
     upstream_head = _git_value(["rev-parse", "@{u}"], cwd) if not upstream.startswith("ERROR:") else ""
     dirty = bool(_git_value(["status", "--porcelain"], cwd))
     latest_report = _load_json(runtime_dir / "latest_report.json", {})
+    runtime_config = _dashboard_runtime_config()
+    runtime_config_hash = hashlib.sha256(
+        json.dumps(runtime_config, sort_keys=True, ensure_ascii=True, default=str).encode("utf-8")
+    ).hexdigest()
     return {
         "repo_path": str(cwd),
         "runtime_dir": str(runtime_dir),
         "branch": branch,
         "head": head,
+        "head_short": head[:7] if not head.startswith("ERROR:") else head,
         "upstream": upstream,
         "upstream_head": upstream_head,
+        "upstream_head_short": upstream_head[:7] if upstream_head and not upstream_head.startswith("ERROR:") else upstream_head,
         "dirty": dirty,
         "needs_pull": bool(upstream_head and not upstream_head.startswith("ERROR:") and head != upstream_head),
+        "runtime_config_hash": runtime_config_hash,
+        "runtime_config_keys": sorted(runtime_config.keys()),
         "latest_report_timestamp_ms": _latest_report_timestamp_ms(latest_report),
         "cycle_mode": latest_report.get("cycle_mode", ""),
         "cycle_reason": latest_report.get("cycle_reason", ""),
+    }
+
+
+def build_ops_updater_payload(runtime_dir: Path, *, lines: int = 20) -> Dict[str, Any]:
+    normalized_lines = max(1, min(200, _coerce_int(lines, 20)))
+    log_path = runtime_dir / "git_sync.log"
+    entries: List[str] = []
+    if log_path.exists():
+        try:
+            entries = log_path.read_text(encoding="utf-8", errors="replace").splitlines()[-normalized_lines:]
+        except OSError as exc:
+            return {
+                "status": "ERROR",
+                "runtime_dir": str(runtime_dir),
+                "log_path": str(log_path),
+                "log_exists": True,
+                "error": str(exc),
+                "lines": [],
+            }
+    latest = entries[-1] if entries else ""
+    return {
+        "status": "ok" if entries else "missing",
+        "runtime_dir": str(runtime_dir),
+        "log_path": str(log_path),
+        "log_exists": log_path.exists(),
+        "line_count": len(entries),
+        "latest": latest,
+        "lines": entries,
     }
 
 
@@ -6065,6 +6102,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             query = parse_qs(parsed.query)
             refresh = str((query.get("refresh") or ["false"])[0]).lower() in {"1", "true", "yes", "on"}
             self._send_json(build_ops_version_payload(self.runtime_dir, refresh=refresh))
+            return
+        if parsed.path == "/api/ops/updater":
+            query = parse_qs(parsed.query)
+            lines = _coerce_int((query.get("lines") or ["20"])[0], 20)
+            self._send_json(build_ops_updater_payload(self.runtime_dir, lines=lines))
             return
         self.send_error(HTTPStatus.NOT_FOUND, "Not found")
 

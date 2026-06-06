@@ -24,6 +24,7 @@ from binance_ai.dashboard_server import (
     build_decision_drawer_payload,
     build_dashboard_payload,
     build_ops_trades_payload,
+    build_ops_updater_payload,
     build_ops_version_payload,
     build_order_records_payload,
 )
@@ -815,8 +816,44 @@ class DashboardServerTests(unittest.TestCase):
             payload = build_ops_version_payload(runtime_dir)
 
         self.assertIn("head", payload)
+        self.assertIn("head_short", payload)
+        self.assertIn("runtime_config_hash", payload)
+        self.assertEqual(len(payload["runtime_config_hash"]), 64)
+        self.assertIn("runtime_config_keys", payload)
         self.assertEqual(payload["runtime_dir"], str(runtime_dir))
         self.assertEqual(payload["latest_report_timestamp_ms"], 1234)
+
+    def test_ops_updater_payload_reads_recent_git_sync_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_text(
+                runtime_dir / "git_sync.log",
+                "\n".join(
+                    [
+                        "2026-06-06 10:00:00 git-sync check branch=main",
+                        "2026-06-06 10:00:01 no update; service healthy head=aaaaaaa",
+                        "2026-06-06 10:05:00 updated and restarted head=bbbbbbb",
+                    ]
+                ),
+            )
+
+            payload = build_ops_updater_payload(runtime_dir, lines=2)
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertTrue(payload["log_exists"])
+        self.assertEqual(payload["line_count"], 2)
+        self.assertIn("updated and restarted", payload["latest"])
+        self.assertNotIn("10:00:00", "\n".join(payload["lines"]))
+
+    def test_ops_updater_payload_handles_missing_log(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+
+            payload = build_ops_updater_payload(runtime_dir)
+
+        self.assertEqual(payload["status"], "missing")
+        self.assertFalse(payload["log_exists"])
+        self.assertEqual(payload["lines"], [])
 
     def test_build_dashboard_payload_returns_empty_backtest_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
