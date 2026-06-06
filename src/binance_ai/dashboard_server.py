@@ -1098,7 +1098,7 @@ INDEX_HTML = """<!doctype html>
       <header class="top-bar">
         <div class="top-title">
           <div>
-            <div class="top-kicker">XRP/JPY PAPER TRADING</div>
+            <div class="top-kicker">XRP/JPY 模拟盯盘</div>
             <div class="top-name-row"><div class="top-name">Botinance</div><span class="top-version" id="topVersion">ver --</span></div>
           </div>
           <div class="market-pill"><span class="market-dot"></span><span id="topSymbol">XRP/JPY</span></div>
@@ -1114,7 +1114,7 @@ INDEX_HTML = """<!doctype html>
 
       <nav class="tab-bar" aria-label="功能分页">
         <button class="tab-button active" data-tab="trading">实时交易</button>
-        <button class="tab-button" data-tab="ai">AI 决策</button>
+        <button class="tab-button" data-tab="ai">大模型决策</button>
         <button class="tab-button" data-tab="backtest">回测分析</button>
         <button class="tab-button" data-tab="risk">风险控制</button>
         <button class="tab-button" data-tab="system">系统日志</button>
@@ -1127,13 +1127,13 @@ INDEX_HTML = """<!doctype html>
               <div class="panel-header">
                 <div>
                   <div class="panel-title">主周期行情</div>
-                  <div class="panel-subtitle" id="chartSubtitle">K 线、成交量、成交点、AI 否决点、退出线</div>
+                  <div class="panel-subtitle" id="chartSubtitle">K 线、成交量、成交点、大模型否决点、退出线</div>
                 </div>
                 <div class="tool-row">
                   <select class="chart-select" id="chartIntervalSelect" aria-label="K线周期"></select>
                   <span class="tool-pill blue" id="chartInterval">主周期 --</span>
-                  <span class="tool-pill green">PAPER</span>
-                  <span class="tool-pill coral" id="chartPointCount">0 bars</span>
+                  <span class="tool-pill green">模拟</span>
+                  <span class="tool-pill coral" id="chartPointCount">0 根K线</span>
                   <button class="utility-button" data-drawer="evidence" type="button">证据来源</button>
                   <button class="utility-button" data-drawer="decision" type="button">决策链路</button>
                 </div>
@@ -1200,7 +1200,7 @@ INDEX_HTML = """<!doctype html>
             <div class="panel-body" id="aiSummaryCard"></div>
           </article>
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">规则信号 vs AI 裁决</div><div class="panel-subtitle">AI 只负责否决或降风险，不创建新买点</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">规则信号与大模型裁决</div><div class="panel-subtitle">大模型只负责否决或降风险，不创建新买点</div></div></div>
             <div class="panel-body" id="ruleVsAiCard"></div>
           </article>
         </div>
@@ -1210,7 +1210,7 @@ INDEX_HTML = """<!doctype html>
             <div class="panel-body" id="evidenceFull"></div>
           </article>
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">AI 风险闸门</div><div class="panel-subtitle">入场许可、缩仓建议与风险解释</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">大模型风险闸门</div><div class="panel-subtitle">入场许可、缩仓建议与风险解释</div></div></div>
             <div class="panel-body" id="aiRiskFull"></div>
           </article>
         </div>
@@ -1221,20 +1221,20 @@ INDEX_HTML = """<!doctype html>
           <div class="metric-tile"><span>总收益率</span><strong id="btTotalReturn">--</strong></div>
           <div class="metric-tile"><span>最大回撤</span><strong id="btMaxDrawdown">--</strong></div>
           <div class="metric-tile"><span>胜率</span><strong id="btWinRate">--</strong></div>
-          <div class="metric-tile"><span>Profit Factor</span><strong id="btProfitFactor">--</strong></div>
+          <div class="metric-tile"><span>盈亏比因子</span><strong id="btProfitFactor">--</strong></div>
           <div class="metric-tile"><span>单笔期望</span><strong id="btExpectancy">--</strong></div>
           <div class="metric-tile"><span>交易数</span><strong id="btTradeCount">--</strong></div>
         </div>
 
         <div class="backtest-grid" style="margin-top:14px;">
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">Walk-forward 权益曲线</div><div class="panel-subtitle" id="btSourceLabel">等待回测文件</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">滚动验证权益曲线</div><div class="panel-subtitle" id="btSourceLabel">等待回测文件</div></div></div>
             <div class="panel-body">
               <div class="mini-chart"><canvas id="btEquityChart"></canvas></div>
             </div>
           </article>
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">回撤曲线</div><div class="panel-subtitle">按 P6 标准结果文件读取</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">回撤曲线</div><div class="panel-subtitle">按第六阶段标准结果文件读取</div></div></div>
             <div class="panel-body">
               <div class="mini-chart"><canvas id="btDrawdownChart"></canvas></div>
             </div>
@@ -1243,16 +1243,16 @@ INDEX_HTML = """<!doctype html>
 
         <div class="page-grid-2" style="margin-top:14px;">
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">Segment 对比</div><div class="panel-subtitle">固定滚动窗稳定性检验</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">分段对比</div><div class="panel-subtitle">固定滚动窗稳定性检验</div></div></div>
             <div class="panel-body" id="btSegments"></div>
           </article>
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">交易明细</div><div class="panel-subtitle">开平仓、收益、MFE / MAE</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">交易明细</div><div class="panel-subtitle">开平仓、收益、最大有利波动 / 最大不利波动</div></div></div>
             <div class="panel-body" id="btTrades"></div>
           </article>
         </div>
         <article class="panel" style="margin-top:14px;">
-          <div class="panel-header"><div><div class="panel-title">Run Manifest</div><div class="panel-subtitle">配置快照与数据缓存状态</div></div></div>
+          <div class="panel-header"><div><div class="panel-title">运行清单</div><div class="panel-subtitle">配置快照与数据缓存状态</div></div></div>
           <div class="panel-body" id="btManifest"></div>
         </article>
       </section>
@@ -1283,7 +1283,7 @@ INDEX_HTML = """<!doctype html>
       <section class="tab-panel" id="tab-system">
         <div class="page-grid-3">
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">刷新轮 / 决策轮</div><div class="panel-subtitle">runtime 周期状态</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">刷新轮 / 决策轮</div><div class="panel-subtitle">运行周期状态</div></div></div>
             <div class="panel-body" id="systemStateCard"></div>
           </article>
           <article class="panel">
@@ -1291,12 +1291,12 @@ INDEX_HTML = """<!doctype html>
             <div class="panel-body" id="schedulingFull"></div>
           </article>
           <article class="panel">
-            <div class="panel-header"><div><div class="panel-title">数据源状态</div><div class="panel-subtitle">行情、回测、成交、payload 健康度</div></div></div>
+            <div class="panel-header"><div><div class="panel-title">数据源状态</div><div class="panel-subtitle">行情、回测、成交、数据载荷健康度</div></div></div>
             <div class="panel-body" id="payloadHealthCard"></div>
           </article>
         </div>
         <article class="panel" style="margin-top:14px;">
-          <div class="panel-header"><div><div class="panel-title">最近 Runtime 周期</div><div class="panel-subtitle">cycle_reports.jsonl 摘要</div></div></div>
+          <div class="panel-header"><div><div class="panel-title">最近运行周期</div><div class="panel-subtitle">周期报告摘要</div></div></div>
           <div class="panel-body" id="cycleLedger"></div>
         </article>
       </section>
@@ -1536,7 +1536,7 @@ INDEX_HTML = """<!doctype html>
       if (s === "UNKNOWN") return "订单接口状态不确定，下一轮会先查询订单状态，不直接补单。";
       if (s === "CANCELED") return "挂单已撤销，锁定资产已释放。";
       if (s === "EXPIRED") return "交易所返回订单过期，锁定资产已释放。";
-      if (s === "BLOCKED") return "本轮动作被规则、预算、最小成交额或 AI 风险闸门阻塞。";
+      if (s === "BLOCKED") return "本轮动作被规则、预算、最小成交额或大模型风险闸门阻塞。";
       if (s === "NO_ACTION" || s === "HOLD") return "本轮未下单，继续等待策略或退出条件。";
       if (s === "PASS") return "检查通过，但本轮没有需要执行的交易动作。";
       return "暂无执行说明。";
@@ -1616,7 +1616,7 @@ INDEX_HTML = """<!doctype html>
       if (!cfg.order_ladder_enabled) blockers.push("多级挂单未启用");
       if (String(c.latest.cycle_mode || "").toUpperCase() === "REFRESH") blockers.push("当前为刷新轮，等待决策轮或关键阈值事件");
       if (String(c.signal || "").toUpperCase() === "SELL") blockers.push("当前策略为卖出信号");
-      if (c.aiRisk.allow_entry === false) blockers.push("AI 风险闸门否决入场");
+      if (c.aiRisk.allow_entry === false) blockers.push("大模型风险闸门否决入场");
       if (asNumber(activation.pending_buyback_quantity, 0) > 0) blockers.push("存在待回补仓位，优先回补");
       if (asNumber(c.latest.cooldown_remaining_bars || c.executionResult.cooldown_remaining_bars, 0) > 0) blockers.push("回补冷却期内");
       if (plannedSpend <= 0) blockers.push("目标仓位已满足或现金保留线不足");
@@ -1657,13 +1657,13 @@ INDEX_HTML = """<!doctype html>
         order_reprice_deviation_requested: "价差结构偏离，建议重定价",
         open_order_waiting_for_touch: "挂单等待触价成交",
         order_status_unknown_wait: "订单状态待确认，继续查询",
-        ai_risk_worsened_cancel_open_buy: "AI 风险变差，撤买单",
-        ai_risk_observed_keep_open_buy: "AI 普通风险，保留买单",
-        ai_extreme_risk_cancel_open_buy: "AI 极端风险，撤买单",
+        ai_risk_worsened_cancel_open_buy: "大模型风险变差，撤买单",
+        ai_risk_observed_keep_open_buy: "大模型普通风险，保留买单",
+        ai_extreme_risk_cancel_open_buy: "大模型极端风险，撤买单",
         signal_reversed_cancel_open_buy: "信号反转，撤买单",
         signal_reversed_cancel_open_sell: "信号反转，撤卖单",
         paper_limit_order_expired: "交易所过期",
-        ai_entry_veto: "AI 风险闸门否决入场",
+        ai_entry_veto: "大模型风险闸门否决入场",
         net_edge_too_small: "手续费后净边际不足",
         profitability_guard_passed: "交易收益闸门通过",
         target_position_reached_or_cash_reserved: "目标仓位已满足或现金保留线不足",
@@ -1683,12 +1683,80 @@ INDEX_HTML = """<!doctype html>
 
     function labelWithRaw(label, raw) {
       const rawText = String(raw || "");
-      if (!rawText || rawText === label || label === "--") return escapeHtml(label);
-      return `${escapeHtml(label)}<br><span class="muted code">${escapeHtml(rawText)}</span>`;
+      return escapeHtml(label || rawText || "--");
     }
 
     function stateBlock(label, raw) {
-      return `<div class="card-value">${escapeHtml(label)}</div><div class="card-note code">${escapeHtml(raw || "")}</div>`;
+      const rawText = String(raw || "").trim();
+      const detail = rawText && rawText !== label ? `<div class="card-note">${escapeHtml(displayLabel(rawText))}</div>` : "";
+      return `<div class="card-value">${escapeHtml(label)}</div>${detail}`;
+    }
+
+    function displayLabel(value) {
+      const raw = String(value ?? "").trim();
+      if (!raw) return "--";
+      const key = raw.toLowerCase();
+      const labels = {
+        ai: "大模型",
+        paper: "模拟",
+        runtime: "运行数据",
+        postgres: "数据库",
+        file: "文件",
+        file_fallback: "文件回退",
+        runtime_backtest_walk: "滚动验证回测",
+        runtime_backtest_check: "单次检查回测",
+        deferred: "延迟加载",
+        binance: "币安",
+        binance_futures: "币安合约",
+        okx: "欧易",
+        bybit: "Bybit",
+        bullish: "偏多",
+        bearish: "偏空",
+        neutral: "中性",
+        risk_off: "风险回避",
+        range_market_making: "震荡做市",
+        uptrend_probe_entry: "上行试探建仓",
+        uptrend_pullback_entry: "上行回调建仓",
+        uptrend_hold_expansion: "上行持有扩张",
+        uptrend_exhaustion_take_profit: "上行衰竭止盈",
+        downtrend_defensive: "下行防守",
+        panic_risk_reduction: "急跌风险收缩",
+        recovery_after_drop: "下跌后恢复",
+        low_vol_observe: "低波动观察",
+        buy_zone: "买入区",
+        sell_zone: "卖出区",
+        hold: "观望",
+        buy: "买入",
+        sell: "卖出",
+        block: "阻塞",
+        pass: "通过",
+        normal: "常规状态",
+        released_wait_buyback: "释放后等待回补",
+        buyback_order_open: "回补挂单中",
+        buyback_cooldown: "回补冷却中",
+        partial_stop_active: "分层止损中",
+        emergency_exit: "应急退出",
+        config: "配置",
+        main_interval: "主周期",
+        walk_forward: "滚动验证",
+        symbol: "交易对",
+        trade_count: "交易数",
+        completed_trade_count: "已完成交易数",
+        total_return_pct: "总收益率",
+        max_drawdown_pct: "最大回撤",
+        win_rate: "胜率",
+        profit_factor: "盈亏比因子",
+        expectancy_per_trade: "单笔期望",
+        low: "低风险",
+        medium: "中等风险",
+        high: "高风险",
+        extreme: "极端风险",
+      };
+      return labels[key] || triggerLabel(raw) || signalLabel(raw) || raw;
+    }
+
+    function displayList(values) {
+      return (values || []).map((item) => displayLabel(item)).join(" / ");
     }
 
     function cycleModeLabel(mode) {
@@ -1895,10 +1963,10 @@ INDEX_HTML = """<!doctype html>
       const executionResult = c.executionResult || {};
       const executionStatus = c.executionStatus || executionResult.status || "无执行";
 
-      els.chartSubtitle.textContent = `${fmtSymbol(c.symbol, c.quoteAsset)} 实时观察 K 线、成交量、模拟成交点、AI 否决点、退出线`;
-      const chartSource = payload.live_chart_source || "runtime";
+      els.chartSubtitle.textContent = `${fmtSymbol(c.symbol, c.quoteAsset)} 实时观察 K 线、成交量、模拟成交点、大模型否决点、退出线`;
+      const chartSource = displayLabel(payload.live_chart_source || "runtime");
       els.chartInterval.textContent = `图表 ${payload.live_chart_interval_label || payload.live_chart_interval || "1m"} / 策略 ${payload.live_main_interval || "--"} / ${chartSource}`;
-      els.chartPointCount.textContent = `${c.bars.length} bars`;
+      els.chartPointCount.textContent = `${c.bars.length} 根K线`;
       const lastProfitPoint = c.profitCurve.slice(-1)[0] || {};
       const latestRealizedPnl = asNumber(lastProfitPoint.realized_pnl, 0);
       if (els.profitCurveLabel) {
@@ -1938,7 +2006,7 @@ INDEX_HTML = """<!doctype html>
 
       els.sellDecisionCard.innerHTML = `
         <div class="card-label"><span>卖出判断</span>${c.sellDiag.eligible_to_sell ? statusChip("可卖", "sell") : statusChip("持有", "wait")}</div>
-        <div class="card-value">${c.sellDiag.eligible_to_sell ? fmtNumber(c.sellDiag.recommended_sell_quantity, 8) : "HOLD"}</div>
+        <div class="card-value">${c.sellDiag.eligible_to_sell ? fmtNumber(c.sellDiag.recommended_sell_quantity, 8) : "继续持有"}</div>
         ${miniKvRows([
           ["判断原因", escapeHtml(c.sellDiag.blocker || "暂无卖出诊断")],
           ["网格状态", escapeHtml(triggerLabel(c.sellDiag.activation_trigger || c.activationState.last_trigger || "--"))],
@@ -1948,9 +2016,9 @@ INDEX_HTML = """<!doctype html>
       `;
 
       els.riskGateCard.innerHTML = `
-        <div class="card-label"><span>AI 风险闸门</span>${allowEntry === false ? statusChip("否决", "block") : statusChip("允许/未触发", "wait")}</div>
-        ${stateBlock(allowEntry === false ? "否决" : "通过", allowEntry === false ? "BLOCK" : "PASS")}
-        <div class="card-note prose">${escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "暂无 AI 风险闸门输出")}</div>
+        <div class="card-label"><span>大模型风险闸门</span>${allowEntry === false ? statusChip("否决", "block") : statusChip("允许/未触发", "wait")}</div>
+        ${stateBlock(allowEntry === false ? "否决" : "通过", allowEntry === false ? "阻塞" : "通过")}
+        <div class="card-note prose">${escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "暂无大模型风险闸门输出")}</div>
       `;
 
       const orderSummary = c.openOrderGroups || {};
@@ -1977,14 +2045,14 @@ INDEX_HTML = """<!doctype html>
       const scenario = c.scenarioDecision || {};
       const scenarioIndicators = scenario.indicators || {};
       els.scenarioCard.innerHTML = `
-        <div class="card-label"><span>场景判断</span>${statusChip(escapeHtml(scenario.scenario_state || "未知"), "wait")}</div>
-        <div class="card-value small">${escapeHtml(scenario.scenario_state || "--")}</div>
+        <div class="card-label"><span>场景判断</span>${statusChip(escapeHtml(displayLabel(scenario.scenario_state || "未知")), "wait")}</div>
+        <div class="card-value small">${escapeHtml(displayLabel(scenario.scenario_state || "--"))}</div>
         ${miniKvRows([
-          ["MA扩散", scenarioIndicators.ma_expanding_periods !== undefined ? `${scenarioIndicators.ma_expanding_periods} 个周期` : "--"],
-          ["ATR", scenarioIndicators.atr_pct !== undefined ? fmtPercent(scenarioIndicators.atr_pct) : "--"],
+          ["均线扩散", scenarioIndicators.ma_expanding_periods !== undefined ? `${scenarioIndicators.ma_expanding_periods} 个周期` : "--"],
+          ["波动率", scenarioIndicators.atr_pct !== undefined ? fmtPercent(scenarioIndicators.atr_pct) : "--"],
           ["量能", scenarioIndicators.volume_ratio !== undefined ? `${fmtNumber(scenarioIndicators.volume_ratio, 2)}x` : "--"],
-          ["允许动作", (scenario.allowed_actions || []).join(" / ") || "--"],
-          ["禁止动作", (scenario.blocked_actions || []).join(" / ") || "--"],
+          ["允许动作", displayList(scenario.allowed_actions) || "--"],
+          ["禁止动作", displayList(scenario.blocked_actions) || "--"],
         ])}
         <div class="card-note detail">${escapeHtml(scenario.reason_cn || "暂无场景说明")}</div>
       `;
@@ -1993,17 +2061,17 @@ INDEX_HTML = """<!doctype html>
       const externalVotes = c.externalVotes || [];
       const externalHealth = externalConsensus.health || {};
       const sourceText = externalVotes.length
-        ? externalVotes.map((vote) => `${vote.source || "--"}:${vote.direction_vote || "--"} ${fmtPercent(vote.confidence || 0)}`).join(" / ")
+        ? externalVotes.map((vote) => `${displayLabel(vote.source || "--")}：${displayLabel(vote.direction_vote || "--")} ${fmtPercent(vote.confidence || 0)}`).join(" / ")
         : "暂无外部合约数据";
       els.externalSignalCard.innerHTML = `
-        <div class="card-label"><span>外部共识</span>${statusChip(escapeHtml(externalConsensus.direction_vote || "未启用"), externalConsensus.direction_vote === "BULLISH" ? "buy" : externalConsensus.direction_vote === "BEARISH" || externalConsensus.direction_vote === "RISK_OFF" ? "sell" : "wait")}</div>
-        <div class="card-value small">${escapeHtml(externalConsensus.direction_vote || "--")}</div>
+        <div class="card-label"><span>外部共识</span>${statusChip(escapeHtml(displayLabel(externalConsensus.direction_vote || "未启用")), externalConsensus.direction_vote === "BULLISH" ? "buy" : externalConsensus.direction_vote === "BEARISH" || externalConsensus.direction_vote === "RISK_OFF" ? "sell" : "wait")}</div>
+        <div class="card-value small">${escapeHtml(displayLabel(externalConsensus.direction_vote || "--"))}</div>
         ${miniKvRows([
           ["置信度", externalConsensus.confidence !== undefined ? fmtPercent(externalConsensus.confidence) : "--"],
           ["本地/外部", `${fmtPercent(externalConsensus.local_weight || 0.6)} / ${fmtPercent(externalConsensus.external_weight || 0.4)}`],
           ["可用源", externalConsensus.available_sources !== undefined ? `${externalConsensus.available_sources}/${externalConsensus.required_sources || 0}` : "--"],
           ["风险分", externalConsensus.risk_score !== undefined ? fmtPercent(externalConsensus.risk_score) : "--"],
-          ["延迟", externalHealth.sources ? externalHealth.sources.map((item) => `${item.source}:${item.latency_ms || 0}ms`).join(" / ") : "--"],
+          ["延迟", externalHealth.sources ? externalHealth.sources.map((item) => `${displayLabel(item.source)}：${item.latency_ms || 0}毫秒`).join(" / ") : "--"],
         ])}
         <div class="card-note detail">${escapeHtml(externalConsensus.reason_cn || sourceText)}</div>
       `;
@@ -2015,12 +2083,12 @@ INDEX_HTML = """<!doctype html>
       const policyMergedProposalCount = (policyDecision.merged_order_proposals || []).length;
       els.entryPlanCard.innerHTML = `
         <div class="card-label"><span>方向允许性 / 最终下单</span>${statusChip(policyProposalCount > 0 ? "已生成提案" : "未下单", policyProposalCount > 0 ? "buy" : "wait")}</div>
-        <div class="card-value">${escapeHtml(c.directionDecision.recommended_action || "HOLD")}</div>
+        <div class="card-value">${escapeHtml(displayLabel(c.directionDecision.recommended_action || "HOLD"))}</div>
         ${miniKvRows([
           ["公平价", c.directionDecision.fair_value ? fmtCurrency(c.directionDecision.fair_value, c.quoteAsset) : "--"],
           ["买入区", c.directionDecision.buy_zone_price ? `<= ${fmtCurrency(c.directionDecision.buy_zone_price, c.quoteAsset)}` : "--"],
           ["卖出区", c.directionDecision.sell_zone_price ? `>= ${fmtCurrency(c.directionDecision.sell_zone_price, c.quoteAsset)}` : "--"],
-          ["价格区间", escapeHtml(c.directionDecision.price_zone || "--")],
+          ["价格区间", escapeHtml(displayLabel(c.directionDecision.price_zone || "--"))],
           ["候选提案", `${policyMergedProposalCount} 个`],
           ["通过提案", `${policyProposalCount} 个`],
           ["净边际", c.directionDecision.expected_net_edge_pct !== undefined ? fmtPercent(c.directionDecision.expected_net_edge_pct) : "--"],
@@ -2072,7 +2140,7 @@ INDEX_HTML = """<!doctype html>
       const marketState = c.llm.regime_cn || c.llm.market_state || c.llm.market_regime || c.llm.summary_cn || c.llm.summary || "暂无市场状态";
       const riskNote = c.llm.risk_note_cn || c.llm.risk_note || c.llm.risk_summary || c.aiRisk.reason || c.aiRisk.veto_reason || "暂无风险提示";
       const ruleSignal = c.signal;
-      const aiVerdict = c.aiRisk.allow_entry === false ? "AI 否决入场" : "AI 未否决";
+      const aiVerdict = c.aiRisk.allow_entry === false ? "大模型否决入场" : "大模型未否决";
 
       els.aiSummaryCard.innerHTML = kvRows([
         ["模型", escapeHtml(c.llm.model || c.latest.llm_model || "模型未命中，显示兼容端点")],
@@ -2085,10 +2153,10 @@ INDEX_HTML = """<!doctype html>
       els.ruleVsAiCard.innerHTML = `
         <div class="metric-grid">
           <div class="metric-tile"><span>规则信号</span><strong>${signalLabel(ruleSignal)}</strong></div>
-          <div class="metric-tile"><span>AI 裁决</span><strong>${escapeHtml(aiVerdict)}</strong></div>
+          <div class="metric-tile"><span>大模型裁决</span><strong>${escapeHtml(aiVerdict)}</strong></div>
           <div class="metric-tile"><span>允许入场</span><strong>${boolLabel(c.aiRisk.allow_entry)}</strong></div>
         </div>
-        <div class="card-note">关系：策略负责产生买卖信号；AI 风险闸门只做否决、缩仓或风险解释，不新增主动买点。</div>
+        <div class="card-note">关系：策略负责产生买卖信号；大模型风险闸门只做否决、缩仓或风险解释，不新增主动买点。</div>
       `;
 
       els.evidenceFull.innerHTML = renderEvidence(c.latest, 16);
@@ -2108,7 +2176,7 @@ INDEX_HTML = """<!doctype html>
       els.btProfitFactor.textContent = fmtNumber(metrics.profit_factor, 3);
       els.btExpectancy.textContent = fmtNumber(metrics.expectancy_per_trade, 4);
       els.btTradeCount.textContent = `${fmtNumber(metrics.trade_count, 0)} / ${fmtNumber(metrics.completed_trade_count, 0)}`;
-      els.btSourceLabel.textContent = available ? `数据源 ${source}` : (missingReason || "缺失 runtime_backtest_walk / runtime_backtest_check");
+      els.btSourceLabel.textContent = available ? `数据源 ${displayLabel(source)}` : (missingReason || "缺失回测结果目录");
 
       const segments = payload.backtest_segments || [];
       const segmentRows = segments.map((s) => {
@@ -2123,7 +2191,7 @@ INDEX_HTML = """<!doctype html>
           <td>${boolLabel(s.beats_baseline)}</td>
         </tr>`;
       });
-      els.btSegments.innerHTML = table(["段", "训练窗", "测试窗", "收益", "回撤", "胜率", "优于基线"], segmentRows, missingReason || "暂无 walk-forward segment 文件");
+      els.btSegments.innerHTML = table(["段", "训练窗", "测试窗", "收益", "回撤", "胜率", "优于基线"], segmentRows, missingReason || "暂无滚动验证分段文件");
 
       const trades = (payload.backtest_trades || []).slice(-80).reverse();
       const tradeRows = trades.map((t) => `<tr>
@@ -2131,14 +2199,14 @@ INDEX_HTML = """<!doctype html>
         <td>${fmtNumber(t.entry_price, 4)}<br>${fmtNumber(t.exit_price, 4)}</td>
         <td class="${pnlClass(t.realized_pnl)}">${fmtNumber(t.realized_pnl, 4)}</td>
         <td class="${pnlClass(t.return_pct)}">${fmtPercent(t.return_pct)}</td>
-        <td>${fmtNumber(t.hold_bars, 0)} / ${fmtNumber(t.hold_hours, 1)}h</td>
+        <td>${fmtNumber(t.hold_bars, 0)} 根 / ${fmtNumber(t.hold_hours, 1)}小时</td>
         <td>${fmtPercent(t.mfe_pct)} / ${fmtPercent(t.mae_pct)}</td>
-        <td>${escapeHtml(t.exit_reason || "--")}</td>
+        <td>${escapeHtml(reasonLabel(t.exit_reason || "--"))}</td>
       </tr>`);
-      els.btTrades.innerHTML = table(["开平仓", "价格", "盈亏", "收益率", "持仓", "MFE/MAE", "退出"], tradeRows, missingReason || "暂无回测交易明细");
+      els.btTrades.innerHTML = table(["开平仓", "价格", "盈亏", "收益率", "持仓", "有利/不利波动", "退出"], tradeRows, missingReason || "暂无回测交易明细");
 
       const manifest = payload.backtest_manifest || {};
-      els.btManifest.innerHTML = Object.keys(manifest).length ? kvRows(Object.entries(flattenObject(manifest)).slice(0, 20).map(([k, v]) => [k, escapeHtml(String(v))])) : emptyBox(missingReason || "暂无 run_manifest.json");
+      els.btManifest.innerHTML = Object.keys(manifest).length ? kvRows(Object.entries(flattenObject(manifest)).slice(0, 20).map(([k, v]) => [displayLabel(k), escapeHtml(String(v))])) : emptyBox(missingReason || "暂无运行清单文件");
     }
 
     function updateRiskTab(payload) {
@@ -2222,11 +2290,11 @@ INDEX_HTML = """<!doctype html>
       const schedule = c.schedule || {};
 
       els.systemStateCard.innerHTML = kvRows([
-        ["Cycle Mode", escapeHtml(cycleModeLabel(c.latest.cycle_mode))],
+        ["周期模式", escapeHtml(cycleModeLabel(c.latest.cycle_mode))],
         ["本轮时间", escapeHtml(fmtTime(c.latest.generated_at || c.latest.timestamp || c.latest.timestamp_ms))],
         ["最近周期", escapeHtml(String(historyCount))],
         ["最近成交", escapeHtml(String(c.fills.length))],
-        ["主周期 bars", escapeHtml(String(c.bars.length))]
+        ["主周期K线", escapeHtml(String(c.bars.length))]
       ]);
 
       els.schedulingFull.innerHTML = kvRows([
@@ -2241,7 +2309,7 @@ INDEX_HTML = """<!doctype html>
         ["行情数据", c.bars.length ? statusChip("可用", "buy") : statusChip("缺失", "block")],
         ["回测数据", payload.backtest_available ? statusChip("可用", "buy") : statusChip("空状态", "wait")],
         ["回测来源", escapeHtml(payload.backtest_source || "--")],
-        ["AI 否决点", escapeHtml(String(c.vetoes.length))],
+        ["大模型否决点", escapeHtml(String(c.vetoes.length))],
         ["成交标记", escapeHtml(String(c.markers.length))]
       ]);
 
@@ -2253,7 +2321,7 @@ INDEX_HTML = """<!doctype html>
         <td>${escapeHtml(r.position_quantity ? fmtNumber(r.position_quantity, 8) : "0")}</td>
         <td>${escapeHtml(r.buy_blocker || "--")}</td>
         <td>${escapeHtml(r.sell_blocker || "--")}</td>
-        <td>${escapeHtml(r.final_action || "--")} / ${escapeHtml(r.execution_status || "--")}</td>
+        <td>${escapeHtml(displayLabel(r.final_action || "--"))} / ${escapeHtml(executionLabel(r.execution_status))}</td>
       </tr>`);
       els.cycleLedger.innerHTML = table(["时间", "模式", "交易对", "价格", "持仓", "买入判断", "卖出判断", "最终动作"], rows, "暂无历史决策账本");
     }
@@ -2279,7 +2347,7 @@ INDEX_HTML = """<!doctype html>
     function renderAiTimeline(c) {
       const items = [
         ["规则信号", signalLabel(c.signal), c.strategy.reason || c.decision.reason || "策略规则输出"],
-        ["AI 市场判断", c.llm.action_bias_cn || c.llm.action_bias || c.llm.recommendation || "未输出", c.llm.summary_cn || c.llm.summary || c.llm.risk_note_cn || c.llm.risk_note || "暂无说明"],
+        ["大模型市场判断", c.llm.action_bias_cn || c.llm.action_bias || c.llm.recommendation || "未输出", c.llm.summary_cn || c.llm.summary || c.llm.risk_note_cn || c.llm.risk_note || "暂无说明"],
         ["风险闸门", c.aiRisk.allow_entry === false ? "否决入场" : "未否决", c.aiRisk.reason || c.aiRisk.veto_reason || "暂无风险解释"],
         ["执行结果", c.executionStatus || "无执行", c.executionReason || c.decision.execution_reason || ""]
       ].filter((item) => String(item[1] || item[2] || "").trim());
@@ -2311,7 +2379,7 @@ INDEX_HTML = """<!doctype html>
       const eventRows = orderEvents.slice(0, 100).map((e) => `<tr>
         <td class="nowrap">${escapeHtml(fmtTime(e.timestamp_ms || e.time))}</td>
         <td class="code" title="${escapeHtml(e.client_order_id || "")}">${escapeHtml(shortOrderId(e.client_order_id))}</td>
-        <td>${statusChip(signalLabel(e.status || e.event_type || "--"), signalClass(e.status || e.side))}<br><span class="muted code">${escapeHtml(e.status || e.event_type || "--")}</span></td>
+        <td>${statusChip(signalLabel(e.status || e.event_type || "--"), signalClass(e.status || e.side))}</td>
         <td>${labelWithRaw(signalLabel(e.side), e.side)}</td>
         <td>${fmtCurrency(e.fill_price || e.limit_price, c.quoteAsset)}</td>
         <td>${fmtNumber(e.filled_quantity || e.quantity, 8)}</td>
@@ -2320,19 +2388,19 @@ INDEX_HTML = """<!doctype html>
       const externalConsensus = c.externalConsensus || {};
       const blendedScenario = c.blendedScenarioDecision || {};
       const externalVoteRows = (c.externalVotes || []).map((vote) => `<tr>
-        <td>${escapeHtml(vote.source || "--")}</td>
-        <td>${labelWithRaw(signalLabel(vote.direction_vote), vote.direction_vote)}</td>
+        <td>${escapeHtml(displayLabel(vote.source || "--"))}</td>
+        <td>${labelWithRaw(displayLabel(vote.direction_vote), vote.direction_vote)}</td>
         <td>${escapeHtml(fmtPercent(vote.confidence || 0))}</td>
-        <td>${escapeHtml((vote.risk_flags || []).join(" / ") || "--")}</td>
-        <td>${escapeHtml(vote.source_latency_ms !== undefined ? `${vote.source_latency_ms}ms` : "--")}</td>
+        <td>${escapeHtml(displayList(vote.risk_flags) || "--")}</td>
+        <td>${escapeHtml(vote.source_latency_ms !== undefined ? `${vote.source_latency_ms}毫秒` : "--")}</td>
         <td>${escapeHtml(vote.reason_cn || "--")}</td>
       </tr>`);
       return `
         <div class="drawer-section">
           <div class="drawer-section-title">本地 60 / 外部 40 融合明细</div>
           ${kvRows([
-            ["本地场景", labelWithRaw(blendedScenario.scenario_state || c.scenarioDecision.scenario_state || "--", c.scenarioDecision.scenario_state || "")],
-            ["外部共识", labelWithRaw(signalLabel(externalConsensus.direction_vote), externalConsensus.direction_vote || "--")],
+            ["本地场景", labelWithRaw(displayLabel(blendedScenario.scenario_state || c.scenarioDecision.scenario_state || "--"), c.scenarioDecision.scenario_state || "")],
+            ["外部共识", labelWithRaw(displayLabel(externalConsensus.direction_vote), externalConsensus.direction_vote || "--")],
             ["外部置信度", escapeHtml(externalConsensus.confidence !== undefined ? fmtPercent(externalConsensus.confidence) : "--")],
             ["可用来源", escapeHtml(externalConsensus.available_sources !== undefined ? `${externalConsensus.available_sources}/${externalConsensus.required_sources || 0}` : "--")],
             ["融合后说明", escapeHtml(blendedScenario.reason_cn || externalConsensus.reason_cn || "暂无融合说明")],
@@ -2361,7 +2429,7 @@ INDEX_HTML = """<!doctype html>
         els.insightDrawerBody.innerHTML = renderEvidence(c.latest, 30);
       } else {
         els.insightDrawerTitle.textContent = "决策链路";
-        els.insightDrawerSubtitle.textContent = "按真实 cycle_reports 与订单事件生成，不使用固定假数据";
+        els.insightDrawerSubtitle.textContent = "按真实周期报告与订单事件生成，不使用固定假数据";
         els.insightDrawerBody.innerHTML = renderDecisionDrawer(payload);
         refreshDecisionDrawer();
       }
@@ -2381,7 +2449,7 @@ INDEX_HTML = """<!doctype html>
       return kvRows([
         ["允许入场", statusChip(boolLabel(c.aiRisk.allow_entry), c.aiRisk.allow_entry === false ? "block" : "wait")],
         ["缩仓比例", escapeHtml(c.aiRisk.position_scale_pct !== undefined ? fmtPercent(c.aiRisk.position_scale_pct) : fmtNumber(c.aiRisk.position_multiplier, 3))],
-        ["风险等级", escapeHtml(c.aiRisk.risk_level || c.aiRisk.level || "--")],
+        ["风险等级", escapeHtml(displayLabel(c.aiRisk.risk_level || c.aiRisk.level || "--"))],
         ["裁决原因", escapeHtml(c.aiRisk.reason || c.aiRisk.veto_reason || c.aiRisk.summary || "--")],
         ["证据数量", escapeHtml(String((c.latest.evidence_items || c.latest.news_evidence || []).length))]
       ]);
@@ -2442,7 +2510,7 @@ INDEX_HTML = """<!doctype html>
         return `<tr>
           <td class="code" title="${escapeHtml(f.client_order_id || "")}">${escapeHtml(shortOrderId(f.client_order_id))}</td>
           <td>${statusChip(statusText, statusKind)}<br><span class="muted">${escapeHtml(reasonText)}</span></td>
-          <td>${statusChip(side || "--", side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
+          <td>${statusChip(signalLabel(side || "--"), side === "BUY" ? "buy" : side === "SELL" ? "sell" : "wait")}</td>
           <td>${fmtNumber(f.quantity, 8)}</td>
           <td>${fmtCurrency(f.price || f.fill_price || f.limit_price, quoteAsset)}</td>
           <td>${spreadText}</td>
