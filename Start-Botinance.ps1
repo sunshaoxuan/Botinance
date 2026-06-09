@@ -187,6 +187,77 @@ function Import-RuntimeToPostgres {
   }
 }
 
+function Invoke-MaintenanceCommand {
+  param([string]$Python)
+  $commandPath = Join-Path $RootDir "ops\maintenance_command.json"
+  if (-not (Test-Path $commandPath)) {
+    return
+  }
+  $statePath = Join-Path $LogDir "maintenance_state.json"
+  try {
+    $command = Get-Content -Raw -Path $commandPath | ConvertFrom-Json
+  } catch {
+    Write-StartLog "maintenance command parse failed: $($_.Exception.Message)"
+    return
+  }
+  $commandId = [string]$command.id
+  $commandType = [string]$command.type
+  if ([string]::IsNullOrWhiteSpace($commandId) -or [string]::IsNullOrWhiteSpace($commandType)) {
+    Write-StartLog "maintenance command ignored; id or type is empty"
+    return
+  }
+  $state = @{}
+  if (Test-Path $statePath) {
+    try {
+      $state = Get-Content -Raw -Path $statePath | ConvertFrom-Json
+    } catch {
+      $state = @{}
+    }
+  }
+  $applied = @()
+  if ($state.applied_ids) {
+    $applied = @($state.applied_ids)
+  }
+  if ($applied -contains $commandId) {
+    Write-StartLog "maintenance command already applied id=$commandId"
+    return
+  }
+  if ($commandType -ne "reset_paper_from_real_account") {
+    Write-StartLog "maintenance command ignored; unsupported type=$commandType"
+    return
+  }
+
+  Write-StartLog "applying maintenance command id=$commandId type=$commandType"
+  $env:PYTHONPATH = "src"
+  $args = @(
+    "-m", "binance_ai.tools.sync_paper_from_account",
+    "--output-dir", $OutputDir,
+    "--archive-root", $(if ($command.archive_root) { [string]$command.archive_root } else { "runtime_resets" })
+  )
+  if ($command.cash_baseline -eq $true) {
+    $args += "--cash-baseline"
+  }
+  if ($command.min_cash_baseline) {
+    $args += @("--min-cash-baseline", [string]$command.min_cash_baseline)
+  }
+  if ($command.require_asset_min) {
+    foreach ($item in @($command.require_asset_min)) {
+      $args += @("--require-asset-min", [string]$item)
+    }
+  }
+  & $Python @args | Tee-Object -FilePath (Join-Path $LogDir "maintenance_command.log") -Append | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "maintenance command failed id=$commandId exit=$LASTEXITCODE"
+  }
+  $applied += $commandId
+  @{
+    applied_ids = $applied
+    last_applied_id = $commandId
+    last_applied_at = (Get-Date).ToString("s")
+  } | ConvertTo-Json -Depth 6 | Set-Content -Path $statePath -Encoding UTF8
+  Write-StartLog "maintenance command applied id=$commandId"
+}
+
 Set-Location $RootDir
 $PythonExe = Resolve-Python
 Ensure-DbPassword
@@ -209,6 +280,8 @@ if ($postgresReady -and $RunMigration) {
     throw "PostgreSQL is required for Botinance runtime. Start Docker/PostgreSQL or set DB_FALLBACK_TO_FILE=true explicitly."
   }
 }
+
+Invoke-MaintenanceCommand -Python $PythonExe
 
 $env:PYTHONPATH = "src"
 & $PythonExe -m binance_ai.service_manager start `

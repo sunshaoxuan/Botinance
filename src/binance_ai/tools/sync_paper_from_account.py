@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List
 from binance_ai.config import load_settings
 from binance_ai.connectors.binance_spot import BinanceSpotClient
 from binance_ai.models import PortfolioSnapshot, PositionSnapshot
+from binance_ai.storage.runtime import build_runtime_store
 
 
 SIMULATED_RUNTIME_FILES = (
@@ -267,6 +268,13 @@ def clear_simulated_runtime(output_dir: Path, archive_root: Path | None) -> List
     return archived_or_removed
 
 
+def clear_simulated_storage(settings: Any) -> Dict[str, Any]:
+    try:
+        return build_runtime_store(settings).clear_simulated_runtime()
+    except Exception as exc:  # noqa: BLE001 - reset must still clear file state if DB cleanup fails.
+        return {"storage_source": "unavailable", "error": str(exc)[:240]}
+
+
 def write_seed_manifest(
     *,
     output_dir: Path,
@@ -276,6 +284,7 @@ def write_seed_manifest(
     cost_basis_by_symbol: Dict[str, Dict[str, object]],
     stopped_monitor_pid: int | None,
     cleared_files: List[str],
+    cleared_storage: Dict[str, Any] | None = None,
     mode: str = "paper_state_seed_from_real_account",
     validation: Dict[str, object] | None = None,
 ) -> None:
@@ -290,6 +299,7 @@ def write_seed_manifest(
         "cost_basis_by_symbol": cost_basis_by_symbol,
         "stopped_monitor_pid": stopped_monitor_pid,
         "cleared_simulated_files": cleared_files,
+        "cleared_simulated_storage": cleared_storage or {},
         "validation": validation or {},
         "note": "Paper cost basis uses Binance myTrades FIFO when available; otherwise it falls back to the current market price and disables loss-recovery grid sells.",
     }
@@ -411,10 +421,12 @@ def main() -> None:
         )
         manifest_mode = "paper_state_seed_from_real_account"
     cleared_files = clear_simulated_runtime(output_dir, archive_root)
+    cleared_storage = clear_simulated_storage(settings)
     (output_dir / "paper_state.json").write_text(
         json.dumps(asdict(snapshot), ensure_ascii=True, indent=2),
         encoding="utf-8",
     )
+    build_runtime_store(settings).write_portfolio_snapshot(asdict(snapshot))
     write_seed_manifest(
         output_dir=output_dir,
         snapshot=snapshot,
@@ -423,6 +435,7 @@ def main() -> None:
         cost_basis_by_symbol=cost_basis_by_symbol,
         stopped_monitor_pid=stopped_monitor_pid,
         cleared_files=cleared_files,
+        cleared_storage=cleared_storage,
         mode=manifest_mode,
         validation=validation,
     )
@@ -431,6 +444,7 @@ def main() -> None:
         "output_dir": str(output_dir),
         "stopped_monitor_pid": stopped_monitor_pid,
         "cleared_files": cleared_files,
+        "cleared_storage": cleared_storage,
         "quote_asset": snapshot.quote_asset,
         "quote_balance": snapshot.quote_balance,
         "initial_quote_balance": snapshot.initial_quote_balance,

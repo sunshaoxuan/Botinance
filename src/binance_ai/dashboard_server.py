@@ -5744,6 +5744,7 @@ def _seed_paper_from_real_account(
             "cleared_tables": [],
         }
     (runtime_dir / "paper_state.json").write_text(json.dumps(asdict(snapshot), ensure_ascii=True, indent=2), encoding="utf-8")
+    build_runtime_store(settings).write_portfolio_snapshot(asdict(snapshot))
     write_seed_manifest(
         output_dir=runtime_dir,
         snapshot=snapshot,
@@ -5752,6 +5753,7 @@ def _seed_paper_from_real_account(
         cost_basis_by_symbol=cost_basis_by_symbol,
         stopped_monitor_pid=None,
         cleared_files=cleared_files,
+        cleared_storage=storage_reset,
         mode=manifest_mode,
         validation=validation,
     )

@@ -1,0 +1,10 @@
+{
+  "id": "2026-06-10-reset-paper-from-real-account",
+  "type": "reset_paper_from_real_account",
+  "archive_root": "runtime_resets",
+  "cash_baseline": false,
+  "require_asset_min": [
+    "XRP:0"
+  ],
+  "reason": "Clear simulated trading state, keep real market data, and restart paper monitoring from current Binance account balances."
+}
