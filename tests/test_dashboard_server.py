@@ -19,6 +19,7 @@ from binance_ai.dashboard_server import (
     _extract_position_activation_markers,
     _extract_live_ai_veto_markers,
     _extract_live_trade_markers,
+    _load_or_fetch_chart_bars,
     _merge_chart_bars,
     _sample_rows,
     build_decision_drawer_payload,
@@ -1008,6 +1009,64 @@ class DashboardServerTests(unittest.TestCase):
                 {"timestamp_ms": 120_000},
             )
         )
+
+    def test_stale_chart_cache_refreshes_tail_when_fetch_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime_visual"
+            _write_json(
+                runtime_dir / "chart_cache" / "XRPJPY_4h.json",
+                {
+                    "symbol": "XRPJPY",
+                    "interval": "4h",
+                    "label": "4小时",
+                    "source": "binance",
+                    "fetched_at": 1.0,
+                    "bars": [
+                        {
+                            "symbol": "XRPJPY",
+                            "open_time": 0,
+                            "close_time": 14_399_999,
+                            "open": 220.0,
+                            "high": 221.0,
+                            "low": 219.0,
+                            "close": 220.5,
+                            "volume": 10.0,
+                            "sample_count": 1,
+                            "source": "binance",
+                        }
+                    ],
+                },
+            )
+            fresh_bars = [
+                {
+                    "symbol": "XRPJPY",
+                    "open_time": 28_800_000,
+                    "close_time": 43_199_999,
+                    "open": 222.0,
+                    "high": 224.0,
+                    "low": 221.0,
+                    "close": 223.0,
+                    "volume": 20.0,
+                    "sample_count": 1,
+                    "source": "binance",
+                }
+            ]
+
+            with patch("binance_ai.dashboard_server._fetch_chart_bars_from_binance", return_value=(fresh_bars, "binance")):
+                bars, meta = _load_or_fetch_chart_bars(
+                    runtime_dir=runtime_dir,
+                    history=[],
+                    latest_report={"timestamp_ms": 43_200_000},
+                    symbol="XRPJPY",
+                    interval="4h",
+                    limit=160,
+                    allow_fetch=True,
+                )
+
+        self.assertEqual(meta["cache_policy"], "tail_refreshed")
+        self.assertTrue(meta["cache_refreshed"])
+        self.assertFalse(meta["tail_refresh_due"])
+        self.assertEqual(bars[0]["open_time"], fresh_bars[0]["open_time"])
 
     def test_aggregate_chart_bars_builds_non_native_10m_candles(self) -> None:
         bars = [

@@ -4790,6 +4790,34 @@ def _load_or_fetch_chart_bars(
         cache_refreshed = False
         refresh_error = ""
         cache_bars = list(cached.get("bars", []))
+        tail_refresh_due = _chart_cache_needs_tail_refresh(cached, interval, latest_report)
+        if allow_fetch and tail_refresh_due and symbol:
+            try:
+                fresh_bars, fresh_source = _fetch_chart_bars_from_binance(symbol=symbol, interval=interval, limit=limit)
+                if fresh_bars:
+                    bars = _merge_chart_bars(fresh_bars, fallback, limit)
+                    payload = {
+                        "symbol": symbol,
+                        "interval": interval,
+                        "label": _chart_interval_label(interval),
+                        "source": fresh_source,
+                        "fetched_at": time.time(),
+                        "bars": bars,
+                    }
+                    _write_chart_cache(cache_path, payload)
+                    return bars[-limit:], {
+                        "source": fresh_source,
+                        "cache_path": str(cache_path),
+                        "cache_hit": True,
+                        "fetched_at": payload["fetched_at"],
+                        "cache_policy": "tail_refreshed",
+                        "cache_refreshed": True,
+                        "refresh_error": "",
+                        "tail_refresh_due": False,
+                        "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    }
+            except Exception as exc:  # noqa: BLE001 - dashboard must keep stale chart usable if Binance refresh fails.
+                refresh_error = str(exc)[:240]
         bars = _merge_chart_bars(
             cache_bars,
             fallback,
@@ -4803,7 +4831,7 @@ def _load_or_fetch_chart_bars(
             "cache_policy": "immutable_history",
             "cache_refreshed": cache_refreshed,
             "refresh_error": refresh_error,
-            "tail_refresh_due": _chart_cache_needs_tail_refresh(cached, interval, latest_report),
+            "tail_refresh_due": tail_refresh_due,
             "load_ms": round((time.perf_counter() - started_at) * 1000, 2),
         }
 
