@@ -4,6 +4,7 @@ param(
   [int]$Port = $(if ($env:DASHBOARD_PORT) { [int]$env:DASHBOARD_PORT } else { 8765 }),
   [int]$SleepSeconds = $(if ($env:SLEEP_SECONDS) { [int]$env:SLEEP_SECONDS } else { 3 }),
   [int]$MigrationTimeoutSeconds = $(if ($env:BOTI_MIGRATION_TIMEOUT_SECONDS) { [int]$env:BOTI_MIGRATION_TIMEOUT_SECONDS } else { 60 }),
+  [int]$MaintenanceTimeoutSeconds = $(if ($env:BOTI_MAINTENANCE_TIMEOUT_SECONDS) { [int]$env:BOTI_MAINTENANCE_TIMEOUT_SECONDS } else { 90 }),
   [switch]$RunMigration = $([string]::Equals($env:BOTI_RUN_RUNTIME_MIGRATION, "true", [System.StringComparison]::OrdinalIgnoreCase))
 )
 
@@ -245,9 +246,27 @@ function Invoke-MaintenanceCommand {
       $args += @("--require-asset-min", [string]$item)
     }
   }
-  & $Python @args | Tee-Object -FilePath (Join-Path $LogDir "maintenance_command.log") -Append | Out-Null
-  if ($LASTEXITCODE -ne 0) {
-    throw "maintenance command failed id=$commandId exit=$LASTEXITCODE"
+  $scriptBlock = {
+    param($RootDir, $Python, $ArgsList, $LogPath)
+    Set-Location $RootDir
+    $env:PYTHONPATH = "src"
+    & $Python @ArgsList | Tee-Object -FilePath $LogPath -Append | Out-Null
+    exit $LASTEXITCODE
+  }
+  $job = Start-Job -ScriptBlock $scriptBlock -ArgumentList $RootDir, $Python, $args, (Join-Path $LogDir "maintenance_command.log")
+  if (Wait-Job $job -Timeout $MaintenanceTimeoutSeconds) {
+    Receive-Job $job | Out-Null
+    $stateName = $job.State
+    Remove-Job $job
+    if ($stateName -ne "Completed") {
+      Write-StartLog "maintenance command ended with state=$stateName id=$commandId; service startup continues"
+      return
+    }
+  } else {
+    Stop-Job $job -ErrorAction SilentlyContinue
+    Remove-Job $job -Force -ErrorAction SilentlyContinue
+    Write-StartLog "maintenance command timed out after ${MaintenanceTimeoutSeconds}s id=$commandId; service startup continues"
+    return
   }
   $applied += $commandId
   @{
